@@ -346,16 +346,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case util.DeleteRequestMsg:
 		acct := msg.Account
 		folder := msg.Folder
-		m.store.DeleteMessage(acct, folder, msg.Message.ID)
-		if m.coordinator != nil && msg.Message.UID > 0 {
-			cmds = append(cmds, m.coordinator.DeleteMessage(acct, folder, msg.Message.UID))
+		if folder == "Drafts" {
+			m.store.DeleteDraft(acct, msg.Message.ID)
 			cmds = append(cmds, func() tea.Msg {
-				return util.InfoMsg{Text: "Deleting…", IsError: false}
+				return util.InfoMsg{Text: "Draft deleted", IsError: false}
 			})
 		} else {
-			cmds = append(cmds, func() tea.Msg {
-				return util.InfoMsg{Text: "Message deleted", IsError: false}
-			})
+			m.store.DeleteMessage(acct, folder, msg.Message.ID)
+			if m.coordinator != nil && msg.Message.UID > 0 {
+				cmds = append(cmds, m.coordinator.DeleteMessage(acct, folder, msg.Message.UID))
+				cmds = append(cmds, func() tea.Msg {
+					return util.InfoMsg{Text: "Deleting…", IsError: false}
+				})
+			} else {
+				cmds = append(cmds, func() tea.Msg {
+					return util.InfoMsg{Text: "Message deleted", IsError: false}
+				})
+			}
 		}
 		cmds = append(cmds, func() tea.Msg {
 			return util.FolderRefreshMsg{Account: acct, Folder: folder}
@@ -365,14 +372,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case util.BatchDeleteRequestMsg:
 		acct := msg.Account
 		folder := msg.Folder
-		for _, message := range msg.Messages {
-			m.store.DeleteMessage(acct, folder, message.ID)
-			if m.coordinator != nil && message.UID > 0 {
-				cmds = append(cmds, m.coordinator.DeleteMessage(acct, folder, message.UID))
+		if folder == "Drafts" {
+			for _, message := range msg.Messages {
+				m.store.DeleteDraft(acct, message.ID)
+			}
+		} else {
+			for _, message := range msg.Messages {
+				m.store.DeleteMessage(acct, folder, message.ID)
+				if m.coordinator != nil && message.UID > 0 {
+					cmds = append(cmds, m.coordinator.DeleteMessage(acct, folder, message.UID))
+				}
 			}
 		}
 		n := len(msg.Messages)
-		if m.coordinator != nil {
+		if folder == "Drafts" {
+			cmds = append(cmds, func() tea.Msg {
+				return util.InfoMsg{Text: fmt.Sprintf("%d drafts deleted", n), IsError: false}
+			})
+		} else if m.coordinator != nil {
 			cmds = append(cmds, func() tea.Msg {
 				return util.InfoMsg{Text: fmt.Sprintf("Deleting %d messages…", n), IsError: false}
 			})

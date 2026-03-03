@@ -75,7 +75,7 @@ var Normal = NormalKeyMap{
 	Quit:     key.NewBinding(key.WithKeys("q"), key.WithHelp("q", "quit")),
 	Help:     key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
 	Command:  key.NewBinding(key.WithKeys(":"), key.WithHelp(":", "command")),
-	Visual:   key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "visual mode")),
+	Visual:   key.NewBinding(key.WithKeys("v", "V"), key.WithHelp("v/V", "visual mode")),
 	NextPane: key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "next pane")),
 	PrevPane: key.NewBinding(key.WithKeys("shift+tab"), key.WithHelp("shift+tab", "prev pane")),
 	Reply:    key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "reply")),

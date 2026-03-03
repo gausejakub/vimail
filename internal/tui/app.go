@@ -588,7 +588,7 @@ func (m Model) handleVisualKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			})
 		}
 
-	case "esc", "v":
+	case "esc", "v", "V":
 		m.msglist = m.msglist.ExitVisual()
 		m.mode = keys.ModeNormal
 		cmds = append(cmds, func() tea.Msg {

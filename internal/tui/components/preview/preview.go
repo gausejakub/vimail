@@ -23,6 +23,7 @@ type Model struct {
 	focused      bool
 	message      *email.Message
 	scrollOffset int
+	pendingOpen  bool // open in browser once body arrives
 }
 
 func New() Model {
@@ -44,11 +45,16 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	case util.MessageSelectedMsg:
 		m.message = &msg.Message
 		m.scrollOffset = 0
+		m.pendingOpen = false
 	case util.FetchBodyCompleteMsg:
 		if m.message != nil && m.message.UID == msg.UID {
 			m.message.Body = msg.Body
 			m.message.HTMLBody = msg.HTMLBody
 			m.scrollOffset = 0
+			if m.pendingOpen {
+				m.pendingOpen = false
+				return m, m.openInBrowser()
+			}
 		}
 	}
 	return m, nil
@@ -77,23 +83,54 @@ func (m Model) HandleKey(key string) (Model, tea.Cmd) {
 	case "ctrl+u":
 		m.scrollOffset = max(0, m.scrollOffset-m.height/2)
 	case "o":
+		if m.message.Body == "" && m.message.HTMLBody == "" {
+			// Body still loading — open once it arrives.
+			m.pendingOpen = true
+			return m, func() tea.Msg {
+				return util.InfoMsg{Text: "Opening after load…", IsError: false}
+			}
+		}
 		return m, m.openInBrowser()
 	}
 	return m, nil
 }
 
 // openInBrowser writes the HTML body to a temp file and opens it.
+// Falls back to wrapping plain text in HTML when no HTML part exists.
 func (m Model) openInBrowser() tea.Cmd {
-	if m.message == nil || m.message.HTMLBody == "" {
+	if m.message == nil || (m.message.HTMLBody == "" && m.message.Body == "") {
 		return func() tea.Msg {
-			return util.InfoMsg{Text: "No HTML content to open", IsError: false}
+			return util.InfoMsg{Text: "No content to open", IsError: false}
 		}
 	}
+
+	content := m.message.HTMLBody
+	if content == "" {
+		// Wrap plain text in minimal HTML for browser viewing.
+		escaped := html.EscapeString(m.message.Body)
+		content = fmt.Sprintf(`<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>%s</title>
+<style>body{font-family:system-ui,sans-serif;max-width:48em;margin:2em auto;padding:0 1em;line-height:1.6;color:#222}
+.header{color:#666;border-bottom:1px solid #ddd;padding-bottom:1em;margin-bottom:1em}</style></head>
+<body><div class="header"><strong>From:</strong> %s<br><strong>To:</strong> %s<br><strong>Subject:</strong> %s</div>
+<pre style="white-space:pre-wrap;word-wrap:break-word">%s</pre></body></html>`,
+			html.EscapeString(m.message.Subject),
+			html.EscapeString(m.message.From),
+			html.EscapeString(m.message.To),
+			html.EscapeString(m.message.Subject),
+			escaped)
+	}
+
+	msgID := fmt.Sprintf("%d", m.message.UID)
+	if m.message.ID != "" {
+		msgID = m.message.ID
+	}
+
 	return func() tea.Msg {
 		dir := filepath.Join(os.TempDir(), "vimail")
 		os.MkdirAll(dir, 0700)
-		path := filepath.Join(dir, fmt.Sprintf("msg-%d.html", m.message.UID))
-		if err := os.WriteFile(path, []byte(m.message.HTMLBody), 0600); err != nil {
+		path := filepath.Join(dir, fmt.Sprintf("msg-%s.html", msgID))
+		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 			return util.InfoMsg{Text: "Failed to write HTML: " + err.Error(), IsError: true}
 		}
 		if err := exec.Command("open", path).Start(); err != nil {
@@ -167,13 +204,11 @@ func (m Model) View() string {
 		allLines = append(allLines, lipgloss.NewStyle().Foreground(t.Text()).Render(bl))
 	}
 
-	// Hint for HTML viewing
-	if msg.HTMLBody != "" {
-		allLines = append(allLines,
-			"",
-			lipgloss.NewStyle().Foreground(t.TextMuted()).Render("Press 'o' to open HTML in browser"),
-		)
-	}
+	// Hint for browser viewing
+	allLines = append(allLines,
+		"",
+		lipgloss.NewStyle().Foreground(t.TextMuted()).Render("Press 'o' to open in browser"),
+	)
 
 	// Apply scroll offset
 	start := min(m.scrollOffset, len(allLines))
@@ -277,11 +312,7 @@ func (m Model) contentHeight() int {
 	}
 	bodyWidth := max(10, m.width-1)
 	wrapped := wordwrap.String(m.message.Body, bodyWidth)
-	extra := 0
-	if m.message.HTMLBody != "" {
-		extra = 2
-	}
-	return 5 + strings.Count(wrapped, "\n") + 1 + extra
+	return 5 + strings.Count(wrapped, "\n") + 1 + 2 // +2 for "open in browser" hint
 }
 
 func (m Model) maxScroll() int {

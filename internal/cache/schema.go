@@ -78,5 +78,9 @@ func Open(path string) (*sql.DB, error) {
 	// Add html_body column if missing (migration for existing databases).
 	db.Exec(`ALTER TABLE messages ADD COLUMN html_body TEXT NOT NULL DEFAULT ''`)
 
+	// Re-fetch bodies that were cached without HTML support (body_fetched=0
+	// but body is non-empty means an older code path stored the body).
+	db.Exec(`UPDATE messages SET body = '' WHERE body_fetched = 0 AND body != ''`)
+
 	return db, nil
 }

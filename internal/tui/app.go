@@ -541,6 +541,11 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m = m.cycleFocus(1)
 		} else if k == "h" || k == "left" {
 			m = m.cycleFocus(-1)
+		} else if k == "o" {
+			// Open in browser works from any pane
+			var cmd tea.Cmd
+			m.preview, cmd = m.preview.HandleKey(k)
+			cmds = append(cmds, cmd)
 		} else {
 			// Forward to focused pane
 			var cmd tea.Cmd

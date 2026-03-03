@@ -23,6 +23,19 @@ func RunSetup(cfg config.Config) error {
 		fmt.Printf("\n── Setting up: %s (%s) ──\n", acct.Name, acct.Email)
 
 		method := ParseAuthMethod(acct.AuthMethod)
+
+		// Check if credentials already exist.
+		if hasCredentials(acct.Email, method) {
+			fmt.Printf("  Credentials already configured.\n")
+			fmt.Printf("  Re-enter credentials? [y/N]: ")
+			answer, _ := reader.ReadString('\n')
+			answer = strings.TrimSpace(strings.ToLower(answer))
+			if answer != "y" && answer != "yes" {
+				fmt.Println("  Skipped.")
+				continue
+			}
+		}
+
 		switch method {
 		case AuthOAuth2Gmail, AuthOAuth2Outlook:
 			r := &OAuth2Resolver{}
@@ -55,4 +68,16 @@ func RunSetup(cfg config.Config) error {
 
 	fmt.Println("\nSetup complete!")
 	return nil
+}
+
+// hasCredentials checks whether credentials already exist in the keyring for an account.
+func hasCredentials(email string, method AuthMethod) bool {
+	switch method {
+	case AuthOAuth2Gmail, AuthOAuth2Outlook:
+		tok, err := GetPassword(email + ":oauth2-token")
+		return err == nil && tok != ""
+	default:
+		pw, err := GetPassword(email)
+		return err == nil && pw != ""
+	}
 }

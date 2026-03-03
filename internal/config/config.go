@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 
 	"github.com/BurntSushi/toml"
-	"github.com/adrg/xdg"
 )
 
 type GeneralConfig struct {
@@ -13,12 +12,15 @@ type GeneralConfig struct {
 }
 
 type AccountConfig struct {
-	Name     string `toml:"name"`
-	Email    string `toml:"email"`
-	IMAPHost string `toml:"imap_host"`
-	IMAPPort int    `toml:"imap_port"`
-	SMTPHost string `toml:"smtp_host"`
-	SMTPPort int    `toml:"smtp_port"`
+	Name       string `toml:"name"`
+	Email      string `toml:"email"`
+	IMAPHost   string `toml:"imap_host"`
+	IMAPPort   int    `toml:"imap_port"`
+	SMTPHost   string `toml:"smtp_host"`
+	SMTPPort   int    `toml:"smtp_port"`
+	AuthMethod string `toml:"auth_method"` // "plain" | "app-password" | "oauth2-gmail" | "oauth2-outlook"
+	Username   string `toml:"username"`    // defaults to email if empty
+	TLS        string `toml:"tls"`         // "tls" (default) | "starttls" | "none"
 }
 
 type ThemeConfig struct {
@@ -37,13 +39,14 @@ func DefaultConfig() Config {
 			PreviewPane: true,
 		},
 		Theme: ThemeConfig{
-			Name: "vmail",
+			Name: "vimail",
 		},
 	}
 }
 
 func configPath() string {
-	return filepath.Join(xdg.ConfigHome, "vmail", "config.toml")
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".config", "vimail", "config.toml")
 }
 
 func Load() (Config, error) {

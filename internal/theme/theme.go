@@ -2,7 +2,7 @@ package theme
 
 import "github.com/charmbracelet/lipgloss"
 
-// Theme defines the color palette interface for vmail.
+// Theme defines the color palette interface for vimail.
 // All methods return lipgloss.Color — components compose their own styles.
 type Theme interface {
 	Name() string
@@ -68,7 +68,7 @@ func Get(name string) Theme {
 	if t, ok := registry[name]; ok {
 		return t
 	}
-	return registry["vmail"]
+	return registry["vimail"]
 }
 
 func Names() []string {
@@ -85,7 +85,7 @@ func SetCurrent(name string) {
 
 func Current() Theme {
 	if currentTheme == nil {
-		return Get("vmail")
+		return Get("vimail")
 	}
 	return currentTheme
 }

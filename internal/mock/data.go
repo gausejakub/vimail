@@ -75,7 +75,7 @@ var messages = map[string]map[string][]Message{
 			},
 			{
 				ID: "p3", From: "GitHub <noreply@github.com>", To: "alice@example.com",
-				Subject: "[vmail] New issue: Add theme support", Body: "A new issue has been opened in gause/vmail:\n\n#42 Add theme support\n\nOpened by @contributor\n\nWe should support multiple color themes including tokyonight, catppuccin, and gruvbox.",
+				Subject: "[vimail] New issue: Add theme support", Body: "A new issue has been opened in gause/vimail:\n\n#42 Add theme support\n\nOpened by @contributor\n\nWe should support multiple color themes including tokyonight, catppuccin, and gruvbox.",
 				Date: time.Now().Add(-1 * time.Hour), Unread: true, Flagged: true,
 			},
 			{

@@ -6,9 +6,9 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/gause/vmail/internal/theme"
-	"github.com/gause/vmail/internal/tui/keys"
-	"github.com/gause/vmail/internal/tui/util"
+	"github.com/gausejakub/vimail/internal/theme"
+	"github.com/gausejakub/vimail/internal/tui/keys"
+	"github.com/gausejakub/vimail/internal/tui/util"
 	"github.com/kujtimiihoxha/vimtea"
 )
 

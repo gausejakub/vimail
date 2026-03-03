@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 
@@ -52,6 +53,16 @@ func runSetup() {
 }
 
 func runTUI() {
+	// Redirect log output to a file so it doesn't corrupt bubbletea's alt-screen.
+	home, _ := os.UserHomeDir()
+	logDir := filepath.Join(home, ".local", "share", "vimail")
+	os.MkdirAll(logDir, 0700)
+	logFile, err := os.OpenFile(filepath.Join(logDir, "vimail.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err == nil {
+		log.SetOutput(logFile)
+		defer logFile.Close()
+	}
+
 	// Check for truecolor support.
 	ct := os.Getenv("COLORTERM")
 	if ct != "truecolor" && ct != "24bit" {

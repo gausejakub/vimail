@@ -53,6 +53,14 @@ CREATE TABLE IF NOT EXISTS drafts (
 );
 CREATE INDEX IF NOT EXISTS idx_drafts_account ON drafts(account);
 
+CREATE TABLE IF NOT EXISTS pending_deletes (
+	folder_id INTEGER NOT NULL REFERENCES folders(id),
+	uid       INTEGER NOT NULL,
+	account   TEXT NOT NULL,
+	folder    TEXT NOT NULL,
+	PRIMARY KEY (folder_id, uid)
+);
+
 CREATE TABLE IF NOT EXISTS schema_version (
 	version INTEGER NOT NULL
 );

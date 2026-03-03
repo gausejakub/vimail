@@ -135,6 +135,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.msglist, cmd = m.msglist.Update(msg)
 		cmds = append(cmds, cmd)
+		m.mailbox, cmd = m.mailbox.Update(msg)
+		cmds = append(cmds, cmd)
 		// Update preview for message now under cursor.
 		if selected := m.msglist.SelectedMessage(); selected != nil {
 			sel := *selected

@@ -430,6 +430,28 @@ func (m Model) InVisualMode() bool {
 	return m.visualMode
 }
 
+// VisualRange returns the low and high indices of the visual selection.
+func (m Model) VisualRange() (int, int) {
+	lo, hi := m.visualAnchor, m.cursor
+	if lo > hi {
+		lo, hi = hi, lo
+	}
+	return lo, hi
+}
+
+// SetCursor moves the cursor to the given position, clamped to valid bounds.
+func (m Model) SetCursor(pos int) Model {
+	if pos < 0 {
+		pos = 0
+	}
+	if pos >= len(m.messages) && len(m.messages) > 0 {
+		pos = len(m.messages) - 1
+	}
+	m.cursor = pos
+	m.ensureVisible()
+	return m
+}
+
 // SelectedMessages returns the contiguous range of messages between the
 // visual anchor and the cursor (inclusive).
 func (m Model) SelectedMessages() []email.Message {

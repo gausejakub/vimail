@@ -29,6 +29,10 @@ type IMAPWorker struct {
 	// Maps display folder name → actual IMAP mailbox name.
 	folderMap map[string]string
 
+	// opMu serializes all IMAP operations (SELECT/FETCH/STORE/etc.)
+	// to prevent concurrent SELECT from switching the active mailbox.
+	opMu sync.Mutex
+
 	// For IDLE notifications.
 	mu      sync.Mutex
 	newMail bool
@@ -128,6 +132,9 @@ func (w *IMAPWorker) IsConnected() bool {
 
 // ListMailboxes fetches the list of mailboxes and syncs them to the cache.
 func (w *IMAPWorker) ListMailboxes() ([]string, error) {
+	w.opMu.Lock()
+	defer w.opMu.Unlock()
+
 	if w.client == nil {
 		return nil, fmt.Errorf("not connected")
 	}
@@ -163,6 +170,9 @@ func (w *IMAPWorker) ListMailboxes() ([]string, error) {
 // SyncFolder performs an incremental sync of a folder.
 // Returns the number of new messages fetched.
 func (w *IMAPWorker) SyncFolder(folder string) (int, error) {
+	w.opMu.Lock()
+	defer w.opMu.Unlock()
+
 	if w.client == nil {
 		return 0, fmt.Errorf("not connected")
 	}
@@ -238,6 +248,9 @@ func (w *IMAPWorker) SyncFolder(folder string) (int, error) {
 
 // FetchBody fetches the full body of a specific message by UID.
 func (w *IMAPWorker) FetchBody(folder string, uid uint32) (BodyResult, error) {
+	w.opMu.Lock()
+	defer w.opMu.Unlock()
+
 	if w.client == nil {
 		return BodyResult{}, fmt.Errorf("not connected")
 	}
@@ -299,6 +312,9 @@ func (w *IMAPWorker) FetchBody(folder string, uid uint32) (BodyResult, error) {
 
 // MarkRead sets the \Seen flag on a message by UID.
 func (w *IMAPWorker) MarkRead(folder string, uid uint32) error {
+	w.opMu.Lock()
+	defer w.opMu.Unlock()
+
 	if w.client == nil {
 		return fmt.Errorf("not connected")
 	}
@@ -325,6 +341,9 @@ func (w *IMAPWorker) MarkRead(folder string, uid uint32) error {
 // Idle starts IMAP IDLE on the given folder and blocks until
 // new mail arrives or the timeout is reached. Returns true if new mail arrived.
 func (w *IMAPWorker) Idle(folder string, timeout time.Duration) (bool, error) {
+	w.opMu.Lock()
+	defer w.opMu.Unlock()
+
 	if w.client == nil {
 		return false, fmt.Errorf("not connected")
 	}
@@ -373,6 +392,9 @@ func (w *IMAPWorker) Idle(folder string, timeout time.Duration) (bool, error) {
 
 // AppendToFolder appends a message to a server folder (e.g. Sent).
 func (w *IMAPWorker) AppendToFolder(folder string, message []byte, flags []imap.Flag) error {
+	w.opMu.Lock()
+	defer w.opMu.Unlock()
+
 	if w.client == nil {
 		return fmt.Errorf("not connected")
 	}
@@ -391,6 +413,9 @@ func (w *IMAPWorker) AppendToFolder(folder string, message []byte, flags []imap.
 
 // MoveToTrash moves a message to the Trash folder via IMAP (COPY + STORE \Deleted + EXPUNGE).
 func (w *IMAPWorker) MoveToTrash(folder string, uid uint32) error {
+	w.opMu.Lock()
+	defer w.opMu.Unlock()
+
 	if w.client == nil {
 		return fmt.Errorf("not connected")
 	}
@@ -423,6 +448,52 @@ func (w *IMAPWorker) MoveToTrash(folder string, uid uint32) error {
 	}
 
 	// EXPUNGE.
+	expungeCmd := w.client.Expunge()
+	if err := expungeCmd.Close(); err != nil {
+		return fmt.Errorf("EXPUNGE: %w", err)
+	}
+
+	return nil
+}
+
+// MoveToTrashBatch moves multiple messages to the Trash folder in a single IMAP operation.
+func (w *IMAPWorker) MoveToTrashBatch(folder string, uids []uint32) error {
+	w.opMu.Lock()
+	defer w.opMu.Unlock()
+
+	if w.client == nil {
+		return fmt.Errorf("not connected")
+	}
+	if len(uids) == 0 {
+		return nil
+	}
+
+	imapName := w.imapMailboxName(folder)
+	trashName := w.imapMailboxName("Trash")
+
+	selCmd := w.client.Select(imapName, nil)
+	if _, err := selCmd.Wait(); err != nil {
+		return fmt.Errorf("SELECT %s: %w", imapName, err)
+	}
+
+	var seqSet imap.UIDSet
+	for _, uid := range uids {
+		seqSet.AddNum(imap.UID(uid))
+	}
+
+	copyCmd := w.client.Copy(seqSet, trashName)
+	if _, err := copyCmd.Wait(); err != nil {
+		return fmt.Errorf("COPY to %s: %w", trashName, err)
+	}
+
+	storeCmd := w.client.Store(seqSet, &imap.StoreFlags{
+		Op:    imap.StoreFlagsAdd,
+		Flags: []imap.Flag{imap.FlagDeleted},
+	}, nil)
+	if err := storeCmd.Close(); err != nil {
+		return fmt.Errorf("STORE +FLAGS \\Deleted: %w", err)
+	}
+
 	expungeCmd := w.client.Expunge()
 	if err := expungeCmd.Close(); err != nil {
 		return fmt.Errorf("EXPUNGE: %w", err)

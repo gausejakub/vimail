@@ -207,20 +207,10 @@ func (s *SQLiteStore) DeleteMessage(acctEmail, folder, id string) {
 	if err != nil {
 		return
 	}
-	if folder == "Trash" {
-		// Already in Trash — permanently delete.
-		s.db.Exec(`DELETE FROM messages WHERE folder_id = ? AND uid = ?`, folderID, id)
-		return
-	}
-	// Move to Trash folder.
-	var trashID int
-	err = s.db.QueryRow(`SELECT id FROM folders WHERE account = ? AND name = ?`, acctEmail, "Trash").Scan(&trashID)
-	if err != nil {
-		// No Trash folder — just delete.
-		s.db.Exec(`DELETE FROM messages WHERE folder_id = ? AND uid = ?`, folderID, id)
-		return
-	}
-	s.db.Exec(`UPDATE messages SET folder_id = ? WHERE folder_id = ? AND uid = ?`, trashID, folderID, id)
+	// Always delete locally. The IMAP worker handles server-side Trash move,
+	// and the Trash folder will populate on next sync. This avoids a race
+	// where HighestUID drops and the next sync re-adds deleted messages.
+	s.db.Exec(`DELETE FROM messages WHERE folder_id = ? AND uid = ?`, folderID, id)
 }
 
 // UpsertMessage inserts or updates a message in the cache.

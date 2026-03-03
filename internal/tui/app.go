@@ -380,11 +380,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.store.DeleteDraft(acct, message.ID)
 			}
 		} else {
+			var uids []uint32
 			for _, message := range msg.Messages {
 				m.store.DeleteMessage(acct, folder, message.ID)
-				if m.coordinator != nil && message.UID > 0 {
-					cmds = append(cmds, m.coordinator.DeleteMessage(acct, folder, message.UID))
+				if message.UID > 0 {
+					uids = append(uids, message.UID)
 				}
+			}
+			if m.coordinator != nil && len(uids) > 0 {
+				cmds = append(cmds, m.coordinator.DeleteMessages(acct, folder, uids))
 			}
 		}
 		n := len(msg.Messages)

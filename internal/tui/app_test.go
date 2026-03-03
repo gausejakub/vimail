@@ -6,10 +6,11 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/gause/vmail/internal/config"
-	"github.com/gause/vmail/internal/tui/keys"
-	"github.com/gause/vmail/internal/tui/layout"
-	"github.com/gause/vmail/internal/tui/util"
+	"github.com/gausejakub/vimail/internal/config"
+	"github.com/gausejakub/vimail/internal/email"
+	"github.com/gausejakub/vimail/internal/tui/keys"
+	"github.com/gausejakub/vimail/internal/tui/layout"
+	"github.com/gausejakub/vimail/internal/tui/util"
 )
 
 // ---------------------------------------------------------------------------
@@ -51,7 +52,7 @@ func keyMsg(s string) tea.KeyMsg {
 // testApp creates a sized Model ready for testing.
 func testApp() Model {
 	cfg := config.DefaultConfig()
-	m := New(cfg)
+	m := New(cfg, email.NewMockStore())
 	// Simulate a reasonable terminal size so layout is computed.
 	sized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = sized.(Model)
@@ -322,7 +323,7 @@ func TestPaneCycleArrowKeys(t *testing.T) {
 func TestPaneCycleWithoutPreview(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.General.PreviewPane = false
-	m := New(cfg)
+	m := New(cfg, email.NewMockStore())
 	sized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = sized.(Model)
 	drainCmds(&m, m.Init())
@@ -738,7 +739,8 @@ func TestBoundaryNavigation(t *testing.T) {
 		t.Fatal("j at bottom should not move past last message")
 	}
 
-	// Go to top
+	// Go to top (gg)
+	send(&m, "g")
 	send(&m, "g")
 	top := m.msglist.SelectedMessage()
 

@@ -5,9 +5,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/gause/vmail/internal/theme"
-	"github.com/gause/vmail/internal/tui/keys"
-	"github.com/gause/vmail/internal/tui/util"
+	"github.com/gausejakub/vimail/internal/theme"
+	"github.com/gausejakub/vimail/internal/tui/keys"
+	"github.com/gausejakub/vimail/internal/tui/util"
 )
 
 type clearInfoMsg struct{}
@@ -20,6 +20,8 @@ type Model struct {
 	syncStatus  string
 	infoText    string
 	infoIsError bool
+	connected   bool
+	syncing     bool
 }
 
 func New() Model {
@@ -54,6 +56,14 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	case util.FolderSelectedMsg:
 		m.account = msg.Account
 		m.folder = msg.Folder
+	case util.SyncStartMsg:
+		m.syncing = true
+	case util.SyncAllCompleteMsg:
+		m.syncing = false
+		m.syncStatus = "just now"
+		m.connected = true
+	case util.ConnectionStatusMsg:
+		m.connected = msg.Connected
 	}
 	return m, nil
 }
@@ -99,10 +109,24 @@ func (m Model) View() string {
 			Render(m.infoText)
 	}
 
+	var syncText string
+	if m.syncing {
+		syncText = "⟳ syncing…"
+	} else if m.connected {
+		syncText = "● ↻ " + m.syncStatus
+	} else {
+		syncText = "↻ " + m.syncStatus
+	}
+	syncFg := t.TextMuted()
+	if m.syncing {
+		syncFg = t.Info()
+	} else if m.connected {
+		syncFg = t.Success()
+	}
 	sync := lipgloss.NewStyle().
-		Foreground(t.TextMuted()).
+		Foreground(syncFg).
 		Background(bg).
-		Render("↻ " + m.syncStatus)
+		Render(syncText)
 
 	help := lipgloss.NewStyle().
 		Foreground(t.TextMuted()).

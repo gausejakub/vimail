@@ -1,28 +1,33 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/gause/vmail/internal/config"
-	"github.com/gause/vmail/internal/mock"
-	"github.com/gause/vmail/internal/theme"
-	"github.com/gause/vmail/internal/tui/components/compose"
-	"github.com/gause/vmail/internal/tui/components/help"
-	"github.com/gause/vmail/internal/tui/components/mailbox"
-	"github.com/gause/vmail/internal/tui/components/msglist"
-	"github.com/gause/vmail/internal/tui/components/preview"
-	"github.com/gause/vmail/internal/tui/components/status"
-	"github.com/gause/vmail/internal/tui/keys"
-	"github.com/gause/vmail/internal/tui/layout"
-	"github.com/gause/vmail/internal/tui/util"
+	"github.com/gausejakub/vimail/internal/config"
+	"github.com/gausejakub/vimail/internal/email"
+	"github.com/gausejakub/vimail/internal/theme"
+	"github.com/gausejakub/vimail/internal/tui/components/compose"
+	"github.com/gausejakub/vimail/internal/tui/components/help"
+	"github.com/gausejakub/vimail/internal/tui/components/mailbox"
+	"github.com/gausejakub/vimail/internal/tui/components/msglist"
+	"github.com/gausejakub/vimail/internal/tui/components/preview"
+	"github.com/gausejakub/vimail/internal/tui/components/status"
+	"github.com/gausejakub/vimail/internal/tui/keys"
+	"github.com/gausejakub/vimail/internal/tui/layout"
+	"github.com/gausejakub/vimail/internal/tui/util"
+	"github.com/gausejakub/vimail/internal/worker"
 )
 
 type Model struct {
-	cfg    config.Config
+	cfg         config.Config
+	store       email.Store
+	coordinator *worker.Coordinator // nil when using mock data
+
 	width  int
 	height int
 
@@ -41,7 +46,16 @@ type Model struct {
 	cmdActive bool
 }
 
-func New(cfg config.Config) Model {
+// syncTickMsg triggers periodic sync refresh.
+type syncTickMsg struct{}
+
+// WithCoordinator sets the coordinator for real email connectivity.
+func WithCoordinator(m Model, c *worker.Coordinator) Model {
+	m.coordinator = c
+	return m
+}
+
+func New(cfg config.Config, store email.Store) Model {
 	theme.SetCurrent(cfg.Theme.Name)
 
 	cmdInput := textinput.New()
@@ -50,11 +64,12 @@ func New(cfg config.Config) Model {
 
 	m := Model{
 		cfg:         cfg,
+		store:       store,
 		mode:        keys.ModeNormal,
 		focusedPane: layout.PaneMsgList,
 		layout:      layout.SplitPaneLayout{ShowPreview: cfg.General.PreviewPane},
-		mailbox:     mailbox.New(),
-		msglist:     msglist.New().Focus(),
+		mailbox:     mailbox.New(store),
+		msglist:     msglist.New(store).Focus(),
 		preview:     preview.New(),
 		status:      status.New(),
 		compose:     compose.New(),
@@ -64,14 +79,28 @@ func New(cfg config.Config) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	// Auto-select first message so preview isn't empty on launch
-	msgs := mock.MessagesFor(mock.Accounts[0].Email, "Inbox")
-	if len(msgs) > 0 {
-		return func() tea.Msg {
-			return util.MessageSelectedMsg{Message: msgs[0]}
+	var cmds []tea.Cmd
+
+	// Auto-select first message so preview isn't empty on launch.
+	accts := m.store.Accounts()
+	if len(accts) > 0 {
+		msgs := m.store.MessagesFor(accts[0].Email, "Inbox")
+		if len(msgs) > 0 {
+			cmds = append(cmds, func() tea.Msg {
+				return util.MessageSelectedMsg{Message: msgs[0]}
+			})
 		}
 	}
-	return nil
+
+	// Trigger initial sync if coordinator is available.
+	if m.coordinator != nil {
+		cmds = append(cmds, func() tea.Msg {
+			return util.SyncStartMsg{}
+		})
+		cmds = append(cmds, m.coordinator.SyncAll())
+	}
+
+	return tea.Batch(cmds...)
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -92,10 +121,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status, cmd = m.status.Update(msg)
 		cmds = append(cmds, cmd)
 		// Auto-select first message in new folder
-		msgs := mock.MessagesFor(msg.Account, msg.Folder)
+		msgs := m.store.MessagesFor(msg.Account, msg.Folder)
 		if len(msgs) > 0 {
 			cmds = append(cmds, func() tea.Msg {
 				return util.MessageSelectedMsg{Message: msgs[0]}
+			})
+		} else {
+			m.preview = m.preview.ClearMessage()
+		}
+		return m, tea.Batch(cmds...)
+
+	case util.FolderRefreshMsg:
+		var cmd tea.Cmd
+		m.msglist, cmd = m.msglist.Update(msg)
+		cmds = append(cmds, cmd)
+		// Update preview for message now under cursor.
+		if selected := m.msglist.SelectedMessage(); selected != nil {
+			sel := *selected
+			cmds = append(cmds, func() tea.Msg {
+				return util.MessageSelectedMsg{Message: sel}
 			})
 		} else {
 			m.preview = m.preview.ClearMessage()
@@ -106,6 +150,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.preview, cmd = m.preview.Update(msg)
 		cmds = append(cmds, cmd)
+		acct := m.mailbox.SelectedEmail()
+		folder := m.msglist.CurrentFolder()
+		// Lazy-fetch body if coordinator is available and body is empty.
+		if m.coordinator != nil && msg.Message.Body == "" && msg.Message.UID > 0 {
+			cmds = append(cmds, m.coordinator.FetchBody(acct, folder, msg.Message.UID))
+		}
+		// Mark as read when focused.
+		if msg.Message.Unread {
+			m.store.MarkRead(acct, folder, msg.Message.ID)
+			m.msglist = m.msglist.MarkCurrentRead()
+			if m.coordinator != nil && msg.Message.UID > 0 {
+				cmds = append(cmds, m.coordinator.MarkRead(acct, folder, msg.Message.UID))
+			}
+		}
 		return m, tea.Batch(cmds...)
 
 	case util.ComposeCloseMsg:
@@ -122,9 +180,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		currentEmail := m.mailbox.SelectedEmail()
 		draftID := msg.DraftID
 		if draftID == "" {
-			draftID = mock.NextDraftID()
+			draftID = m.store.NextDraftID()
 		}
-		mock.SaveDraft(currentEmail, mock.Message{
+		m.store.SaveDraft(currentEmail, email.Message{
 			ID:      draftID,
 			From:    currentEmail,
 			To:      msg.To,
@@ -160,17 +218,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.compose = m.compose.Hide()
 		m.mode = keys.ModeNormal
 		currentEmail := m.mailbox.SelectedEmail()
-		// Remove draft if we were editing one
+		// Remove draft if we were editing one.
 		if draftID != "" {
-			mock.DeleteDraft(currentEmail, draftID)
+			m.store.DeleteDraft(currentEmail, draftID)
 		}
-		m.mailbox = m.mailbox.SelectFolder(currentEmail, "Sent")
-		cmds = append(cmds, func() tea.Msg {
-			return util.FolderSelectedMsg{Account: currentEmail, Folder: "Sent"}
-		})
-		cmds = append(cmds, func() tea.Msg {
-			return util.InfoMsg{Text: "Message sent (mock)", IsError: false}
-		})
+		if m.coordinator != nil {
+			// Real send via SMTP.
+			cmds = append(cmds, m.coordinator.SendAndArchive(currentEmail, worker.SendRequest{
+				From:    currentEmail,
+				To:      msg.To,
+				Subject: msg.Subject,
+				Body:    msg.Body,
+			}))
+			cmds = append(cmds, func() tea.Msg {
+				return util.InfoMsg{Text: "Sending…", IsError: false}
+			})
+		} else {
+			// Mock send.
+			m.mailbox = m.mailbox.SelectFolder(currentEmail, "Sent")
+			cmds = append(cmds, func() tea.Msg {
+				return util.FolderSelectedMsg{Account: currentEmail, Folder: "Sent"}
+			})
+			cmds = append(cmds, func() tea.Msg {
+				return util.InfoMsg{Text: "Message sent (mock)", IsError: false}
+			})
+		}
 		return m, tea.Batch(cmds...)
 
 	case util.InfoMsg:
@@ -184,6 +256,157 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.status, cmd = m.status.Update(msg)
 		cmds = append(cmds, cmd)
+		return m, tea.Batch(cmds...)
+
+	case util.SyncStartMsg:
+		var cmd tea.Cmd
+		m.status, cmd = m.status.Update(msg)
+		cmds = append(cmds, cmd)
+		return m, tea.Batch(cmds...)
+
+	case util.SyncAllCompleteMsg:
+		var cmd tea.Cmd
+		m.status, cmd = m.status.Update(msg)
+		cmds = append(cmds, cmd)
+		// Refresh the current view after sync.
+		acctEmail := m.mailbox.SelectedEmail()
+		folder := m.msglist.CurrentFolder()
+		if acctEmail != "" {
+			cmds = append(cmds, func() tea.Msg {
+				return util.FolderSelectedMsg{Account: acctEmail, Folder: folder}
+			})
+		}
+		if len(msg.Errors) > 0 {
+			errText := msg.Errors[0].Error()
+			cmds = append(cmds, func() tea.Msg {
+				return util.InfoMsg{Text: errText, IsError: true}
+			})
+		} else {
+			cmds = append(cmds, func() tea.Msg {
+				return util.InfoMsg{Text: "Sync complete", IsError: false}
+			})
+		}
+		// Schedule periodic refresh (5 minutes).
+		cmds = append(cmds, tea.Tick(5*time.Minute, func(time.Time) tea.Msg {
+			return syncTickMsg{}
+		}))
+		return m, tea.Batch(cmds...)
+
+	case syncTickMsg:
+		if m.coordinator != nil {
+			cmds = append(cmds, m.coordinator.SyncAll())
+		}
+		return m, tea.Batch(cmds...)
+
+	case worker.SyncResult:
+		if msg.Err != nil {
+			cmds = append(cmds, func() tea.Msg {
+				return util.InfoMsg{Text: "Sync error: " + msg.Err.Error(), IsError: true}
+			})
+		}
+		// Refresh if we're viewing this folder.
+		if m.msglist.CurrentAccount() == msg.Account && m.msglist.CurrentFolder() == msg.Folder {
+			cmds = append(cmds, func() tea.Msg {
+				return util.FolderSelectedMsg{Account: msg.Account, Folder: msg.Folder}
+			})
+		}
+		return m, tea.Batch(cmds...)
+
+	case worker.FetchBodyResult:
+		if msg.Err == nil {
+			bodyMsg := util.FetchBodyCompleteMsg{
+				Account:  msg.Account,
+				Folder:   msg.Folder,
+				UID:      msg.UID,
+				Body:     msg.Body,
+				HTMLBody: msg.HTMLBody,
+			}
+			var cmd tea.Cmd
+			m.preview, cmd = m.preview.Update(bodyMsg)
+			cmds = append(cmds, cmd)
+		} else {
+			cmds = append(cmds, func() tea.Msg {
+				return util.InfoMsg{Text: "Fetch body: " + msg.Err.Error(), IsError: true}
+			})
+		}
+		return m, tea.Batch(cmds...)
+
+	case worker.SendResult:
+		if msg.Err != nil {
+			cmds = append(cmds, func() tea.Msg {
+				return util.InfoMsg{Text: "Send failed: " + msg.Err.Error(), IsError: true}
+			})
+		} else {
+			cmds = append(cmds, func() tea.Msg {
+				return util.InfoMsg{Text: "Message sent", IsError: false}
+			})
+		}
+		return m, tea.Batch(cmds...)
+
+	case util.DeleteRequestMsg:
+		acct := msg.Account
+		folder := msg.Folder
+		m.store.DeleteMessage(acct, folder, msg.Message.ID)
+		if m.coordinator != nil && msg.Message.UID > 0 {
+			cmds = append(cmds, m.coordinator.DeleteMessage(acct, folder, msg.Message.UID))
+			cmds = append(cmds, func() tea.Msg {
+				return util.InfoMsg{Text: "Deleting…", IsError: false}
+			})
+		} else {
+			cmds = append(cmds, func() tea.Msg {
+				return util.InfoMsg{Text: "Message deleted", IsError: false}
+			})
+		}
+		cmds = append(cmds, func() tea.Msg {
+			return util.FolderRefreshMsg{Account: acct, Folder: folder}
+		})
+		return m, tea.Batch(cmds...)
+
+	case util.BatchDeleteRequestMsg:
+		acct := msg.Account
+		folder := msg.Folder
+		for _, message := range msg.Messages {
+			m.store.DeleteMessage(acct, folder, message.ID)
+			if m.coordinator != nil && message.UID > 0 {
+				cmds = append(cmds, m.coordinator.DeleteMessage(acct, folder, message.UID))
+			}
+		}
+		n := len(msg.Messages)
+		if m.coordinator != nil {
+			cmds = append(cmds, func() tea.Msg {
+				return util.InfoMsg{Text: fmt.Sprintf("Deleting %d messages…", n), IsError: false}
+			})
+		} else {
+			cmds = append(cmds, func() tea.Msg {
+				return util.InfoMsg{Text: fmt.Sprintf("%d messages deleted", n), IsError: false}
+			})
+		}
+		cmds = append(cmds, func() tea.Msg {
+			return util.FolderRefreshMsg{Account: acct, Folder: folder}
+		})
+		return m, tea.Batch(cmds...)
+
+	case worker.DeleteResult:
+		if msg.Err != nil {
+			cmds = append(cmds, func() tea.Msg {
+				return util.InfoMsg{Text: "Delete failed: " + msg.Err.Error(), IsError: true}
+			})
+		} else {
+			cmds = append(cmds, func() tea.Msg {
+				return util.InfoMsg{Text: "Message deleted", IsError: false}
+			})
+		}
+		return m, tea.Batch(cmds...)
+
+	case util.ConnectionStatusMsg:
+		var cmd tea.Cmd
+		m.status, cmd = m.status.Update(msg)
+		cmds = append(cmds, cmd)
+		if msg.Err != nil {
+			cmds = append(cmds, func() tea.Msg {
+				return util.InfoMsg{Text: msg.Account + ": disconnected", IsError: true}
+			})
+		}
 		return m, tea.Batch(cmds...)
 
 	case tea.KeyMsg:
@@ -208,7 +431,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleCommandKey(msg)
 		}
 
-		// Normal/Visual mode
+		// Visual mode
+		if m.mode == keys.ModeVisual {
+			return m.handleVisualKey(msg)
+		}
+
+		// Normal mode
 		return m.handleNormalKey(msg)
 	}
 
@@ -291,6 +519,15 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+	case key.Matches(msg, keys.Normal.Visual):
+		if m.focusedPane == layout.PaneMsgList {
+			m.msglist = m.msglist.EnterVisual()
+			m.mode = keys.ModeVisual
+			cmds = append(cmds, func() tea.Msg {
+				return keys.ModeChangedMsg{Mode: keys.ModeVisual}
+			})
+		}
+
 	case key.Matches(msg, keys.Normal.NextPane):
 		m = m.cycleFocus(1)
 
@@ -317,6 +554,47 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			cmds = append(cmds, cmd)
 		}
+	}
+
+	return m, tea.Batch(cmds...)
+}
+
+func (m Model) handleVisualKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+	k := msg.String()
+
+	switch k {
+	case "d":
+		selected := m.msglist.SelectedMessages()
+		m.msglist = m.msglist.ExitVisual()
+		m.mode = keys.ModeNormal
+		cmds = append(cmds, func() tea.Msg {
+			return keys.ModeChangedMsg{Mode: keys.ModeNormal}
+		})
+		if len(selected) > 0 {
+			acct := m.msglist.CurrentAccount()
+			folder := m.msglist.CurrentFolder()
+			cmds = append(cmds, func() tea.Msg {
+				return util.BatchDeleteRequestMsg{
+					Account:  acct,
+					Folder:   folder,
+					Messages: selected,
+				}
+			})
+		}
+
+	case "esc", "v":
+		m.msglist = m.msglist.ExitVisual()
+		m.mode = keys.ModeNormal
+		cmds = append(cmds, func() tea.Msg {
+			return keys.ModeChangedMsg{Mode: keys.ModeNormal}
+		})
+
+	default:
+		// Forward movement keys to msglist (j, k, G, gg, etc.)
+		var cmd tea.Cmd
+		m.msglist, cmd = m.msglist.HandleKey(k)
+		cmds = append(cmds, cmd)
 	}
 
 	return m, tea.Batch(cmds...)
@@ -378,8 +656,14 @@ func (m Model) executeCommand(input string) tea.Cmd {
 		}
 
 	case "sync":
+		if m.coordinator != nil {
+			return tea.Batch(
+				func() tea.Msg { return util.SyncStartMsg{} },
+				m.coordinator.SyncAll(),
+			)
+		}
 		return func() tea.Msg {
-			return util.InfoMsg{Text: "Sync not implemented yet", IsError: false}
+			return util.InfoMsg{Text: "Sync not available (using mock data)", IsError: false}
 		}
 
 	default:

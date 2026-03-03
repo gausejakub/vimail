@@ -5,9 +5,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/gause/vmail/internal/mock"
-	"github.com/gause/vmail/internal/theme"
-	"github.com/gause/vmail/internal/tui/util"
+	"github.com/gausejakub/vimail/internal/email"
+	"github.com/gausejakub/vimail/internal/theme"
+	"github.com/gausejakub/vimail/internal/tui/util"
 )
 
 // item represents a row in the flat mailbox list — either an account header or a folder.
@@ -21,17 +21,17 @@ type Model struct {
 	width    int
 	height   int
 	focused  bool
-	accounts []mock.Account
-	folders  map[string][]mock.Folder // keyed by email
+	accounts []email.Account
+	folders  map[string][]email.Folder // keyed by email
 	items    []item
 	cursor   int
 }
 
-func New() Model {
-	accts := mock.Accounts
-	fmap := make(map[string][]mock.Folder)
+func New(store email.Store) Model {
+	accts := store.Accounts()
+	fmap := make(map[string][]email.Folder)
 	for _, a := range accts {
-		fmap[a.Email] = mock.FoldersFor(a.Email)
+		fmap[a.Email] = store.FoldersFor(a.Email)
 	}
 	m := Model{
 		accounts: accts,
@@ -123,48 +123,78 @@ func (m Model) View() string {
 
 		if it.isAccount {
 			acct := m.accounts[it.accountIdx]
-			style := lipgloss.NewStyle().Width(m.width)
-			prefix := "  "
+			prefix := "> "
+			text := padRight(prefix+acct.Name, m.width)
 
+			style := lipgloss.NewStyle().Foreground(t.Primary()).Bold(true)
 			if isCursor {
-				style = style.Background(t.Selection()).Foreground(t.SelectionText()).Bold(true)
-				prefix = "▸ "
-			} else {
-				style = style.Foreground(t.Primary()).Bold(true)
-				prefix = "▸ "
+				style = lipgloss.NewStyle().Background(t.Selection()).Foreground(t.SelectionText()).Bold(true)
 			}
-			lines = append(lines, style.Render(prefix+acct.Name))
+			lines = append(lines, style.Render(text))
 		} else {
 			acct := m.accounts[it.accountIdx]
 			folder := m.folders[acct.Email][it.folderIdx]
 
-			fStyle := lipgloss.NewStyle().Width(m.width)
 			fPrefix := "    "
-
 			if isCursor {
-				fStyle = fStyle.Background(t.Selection()).Foreground(t.SelectionText()).Bold(true)
-				fPrefix = "  ▸ "
-			} else if folder.UnreadCount > 0 {
-				fStyle = fStyle.Foreground(t.Text())
-			} else {
-				fStyle = fStyle.Foreground(t.TextMuted())
+				fPrefix = "  > "
 			}
 
-			label := folder.Name
+			// Build plain text first, pad to width, then colorize.
+			plainLabel := folder.Name
 			if folder.UnreadCount > 0 {
-				countStyle := lipgloss.NewStyle().Foreground(t.Accent())
-				if isCursor {
-					countStyle = countStyle.Foreground(t.SelectionText())
-				}
-				label = fmt.Sprintf("%s %s", folder.Name, countStyle.Render(fmt.Sprintf("%d", folder.UnreadCount)))
+				plainLabel = fmt.Sprintf("%s %d", folder.Name, folder.UnreadCount)
 			}
-			lines = append(lines, fStyle.Render(fPrefix+label))
+			plainLine := fPrefix + plainLabel
+			padLen := m.width - len([]rune(plainLine))
+			if padLen < 0 {
+				padLen = 0
+			}
+
+			// Colorize segments.
+			var line string
+			if folder.UnreadCount > 0 {
+				countStr := fmt.Sprintf("%d", folder.UnreadCount)
+				nameStr := fPrefix + folder.Name + " "
+				fg := t.Text()
+				countFg := t.Accent()
+				if isCursor {
+					fg = t.SelectionText()
+					countFg = t.SelectionText()
+				}
+				nameStyle := lipgloss.NewStyle().Foreground(fg)
+				countStyle := lipgloss.NewStyle().Foreground(countFg)
+				if isCursor {
+					nameStyle = nameStyle.Background(t.Selection()).Bold(true)
+					countStyle = countStyle.Background(t.Selection()).Bold(true)
+				}
+				line = nameStyle.Render(nameStr) + countStyle.Render(countStr)
+			} else {
+				fg := t.TextMuted()
+				style := lipgloss.NewStyle().Foreground(fg)
+				if isCursor {
+					style = lipgloss.NewStyle().Background(t.Selection()).Foreground(t.SelectionText()).Bold(true)
+				}
+				line = style.Render(fPrefix + folder.Name)
+			}
+
+			// Append padding (plain spaces, with bg if cursor).
+			if padLen > 0 {
+				pad := fmt.Sprintf("%*s", padLen, "")
+				if isCursor {
+					line += lipgloss.NewStyle().Background(t.Selection()).Render(pad)
+				} else {
+					line += pad
+				}
+			}
+			lines = append(lines, line)
 		}
 	}
 
 	// Pad remaining height
+	emptyLine := fmt.Sprintf("%*s", m.width, "")
 	for len(lines) < m.height {
-		lines = append(lines, lipgloss.NewStyle().Width(m.width).Render(""))
+		lines = append(lines, emptyLine)
 	}
 
 	result := ""
@@ -250,4 +280,13 @@ func (m Model) SelectFolder(email, folder string) Model {
 		}
 	}
 	return m
+}
+
+func padRight(s string, width int) string {
+	r := []rune(s)
+	if len(r) >= width {
+		return string(r[:width])
+	}
+	pad := width - len(r)
+	return s + fmt.Sprintf("%*s", pad, "")
 }

@@ -4,7 +4,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/gause/vmail/internal/theme"
+	"github.com/gausejakub/vimail/internal/theme"
 )
 
 type binding struct {
@@ -27,19 +27,19 @@ var bindings = []binding{
 	{"c", "Compose new message"},
 	{"r", "Reply to message"},
 	{"f", "Forward"},
-	{"d", "Delete"},
+	{"dd", "Delete message"},
 	{"R", "Refresh"},
 	{"Ctrl+S", "Send (in compose)"},
 	{"", ""},
 	{"Modes", sectionMarker},
 	{":", "Command mode"},
-	{"v", "Visual mode"},
+	{"v", "Visual select (d to delete)"},
 	{"?", "Toggle help"},
 	{"q", "Quit"},
 	{"", ""},
 	{"Commands", sectionMarker},
 	{":theme <name>", "Switch theme"},
-	{":quit", "Quit vmail"},
+	{":quit", "Quit vimail"},
 }
 
 // View renders the help dialog content.
@@ -49,7 +49,7 @@ func View(maxWidth int) string {
 	title := lipgloss.NewStyle().
 		Foreground(t.Primary()).
 		Bold(true).
-		Render("  vmail — Keyboard Shortcuts")
+		Render("  vimail — Keyboard Shortcuts")
 
 	sectionStyle := lipgloss.NewStyle().
 		Foreground(t.TextMuted()).

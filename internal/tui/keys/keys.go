@@ -80,7 +80,7 @@ var Normal = NormalKeyMap{
 	PrevPane: key.NewBinding(key.WithKeys("shift+tab"), key.WithHelp("shift+tab", "prev pane")),
 	Reply:    key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "reply")),
 	Forward:  key.NewBinding(key.WithKeys("f"), key.WithHelp("f", "forward")),
-	Delete:   key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "delete")),
+	Delete:   key.NewBinding(key.WithKeys("d"), key.WithHelp("dd", "delete")),
 	Compose:  key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "compose")),
 	Refresh:  key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "refresh")),
 	Escape:   key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "escape")),

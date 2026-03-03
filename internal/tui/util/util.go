@@ -1,6 +1,6 @@
 package util
 
-import "github.com/gause/vmail/internal/mock"
+import "github.com/gausejakub/vimail/internal/email"
 
 // InfoMsg is displayed in the status bar with an optional error flag.
 type InfoMsg struct {
@@ -26,7 +26,7 @@ type FolderSelectedMsg struct {
 
 // MessageSelectedMsg is emitted when a message is selected in the message list.
 type MessageSelectedMsg struct {
-	Message mock.Message
+	Message email.Message
 }
 
 // ComposeSubmitMsg is emitted when the compose overlay submits.
@@ -49,5 +49,84 @@ type ComposeSaveDraftMsg struct {
 
 // OpenDraftMsg requests opening a draft message in the compose overlay.
 type OpenDraftMsg struct {
-	Message mock.Message
+	Message email.Message
+}
+
+// SyncStartMsg signals that a sync operation has started.
+type SyncStartMsg struct {
+	Account string
+}
+
+// SyncCompleteMsg signals that a folder sync completed.
+type SyncCompleteMsg struct {
+	Account  string
+	Folder   string
+	NewCount int
+	Err      error
+}
+
+// SyncAllCompleteMsg signals that initial sync of all accounts finished.
+type SyncAllCompleteMsg struct {
+	Errors []error
+}
+
+// SendStartMsg signals that a message send has started.
+type SendStartMsg struct{}
+
+// SendCompleteMsg signals that a message send completed.
+type SendCompleteMsg struct {
+	MessageID string
+	Err       error
+}
+
+// FetchBodyCompleteMsg signals that a message body fetch completed.
+type FetchBodyCompleteMsg struct {
+	Account  string
+	Folder   string
+	UID      uint32
+	Body     string
+	HTMLBody string
+	Err      error
+}
+
+// ConnectionStatusMsg reports connection state for an account.
+type ConnectionStatusMsg struct {
+	Account   string
+	Connected bool
+	Err       error
+}
+
+// NewMailMsg signals new mail arrived via IDLE.
+type NewMailMsg struct {
+	Account string
+	Folder  string
+	Count   int
+}
+
+// FolderRefreshMsg reloads messages for the current folder without resetting cursor.
+type FolderRefreshMsg struct {
+	Account string
+	Folder  string
+}
+
+// DeleteRequestMsg is emitted by the message list when the user presses dd.
+type DeleteRequestMsg struct {
+	Account string
+	Folder  string
+	Message email.Message
+}
+
+// BatchDeleteRequestMsg is emitted by the message list in visual mode when the user presses d.
+type BatchDeleteRequestMsg struct {
+	Account  string
+	Folder   string
+	Messages []email.Message
+}
+
+// DeleteCompleteMsg signals that a message delete completed.
+type DeleteCompleteMsg struct {
+	Account string
+	Folder  string
+	UID     uint32
+	Err     error
 }

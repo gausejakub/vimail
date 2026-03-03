@@ -1,6 +1,6 @@
 package layout
 
-import "github.com/charmbracelet/lipgloss"
+import "strings"
 
 // Pane identifies each column in the 3-pane layout.
 type Pane int
@@ -47,10 +47,32 @@ func (s *SplitPaneLayout) Resize(w, h, statusBarHeight int) {
 	}
 }
 
-// Compose joins the three panes horizontally.
+// Compose joins the three panes horizontally by directly concatenating
+// corresponding lines. This avoids lipgloss.JoinHorizontal which can
+// mismeasure ANSI-styled content and add unwanted padding.
 func (s SplitPaneLayout) Compose(mailbox, msglist, preview string) string {
+	mLines := strings.Split(mailbox, "\n")
+	mlLines := strings.Split(msglist, "\n")
+
+	var pLines []string
 	if s.ShowPreview {
-		return lipgloss.JoinHorizontal(lipgloss.Top, mailbox, msglist, preview)
+		pLines = strings.Split(preview, "\n")
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, mailbox, msglist)
+
+	var b strings.Builder
+	for i := 0; i < s.PaneHeight; i++ {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		if i < len(mLines) {
+			b.WriteString(mLines[i])
+		}
+		if i < len(mlLines) {
+			b.WriteString(mlLines[i])
+		}
+		if s.ShowPreview && i < len(pLines) {
+			b.WriteString(pLines[i])
+		}
+	}
+	return b.String()
 }

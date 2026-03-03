@@ -162,6 +162,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Message.Unread {
 			m.store.MarkRead(acct, folder, msg.Message.ID)
 			m.msglist = m.msglist.MarkCurrentRead()
+			m.mailbox, _ = m.mailbox.Update(util.FolderRefreshMsg{Account: acct, Folder: folder})
 			if m.coordinator != nil && msg.Message.UID > 0 {
 				cmds = append(cmds, m.coordinator.MarkRead(acct, folder, msg.Message.UID))
 			}

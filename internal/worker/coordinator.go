@@ -163,28 +163,11 @@ func (c *Coordinator) SendAndArchive(acctEmail string, req SendRequest) tea.Cmd 
 
 // DeleteMessage returns a tea.Cmd that moves a message to Trash via IMAP.
 func (c *Coordinator) DeleteMessage(acctEmail, folder string, uid uint32) tea.Cmd {
-	return func() tea.Msg {
-		w := c.getIMAPWorker(acctEmail)
-		if w == nil {
-			return DeleteResult{
-				Account: acctEmail,
-				Folder:  folder,
-				UID:     uid,
-				Err:     fmt.Errorf("no IMAP worker for %s", acctEmail),
-			}
-		}
-
-		err := w.MoveToTrash(folder, uid)
-		return DeleteResult{
-			Account: acctEmail,
-			Folder:  folder,
-			UID:     uid,
-			Err:     err,
-		}
-	}
+	return c.DeleteMessages(acctEmail, folder, []uint32{uid})
 }
 
 // DeleteMessages returns a tea.Cmd that moves multiple messages to Trash via IMAP in a single batch.
+// Clears pending deletes on success so future syncs don't block them.
 func (c *Coordinator) DeleteMessages(acctEmail, folder string, uids []uint32) tea.Cmd {
 	return func() tea.Msg {
 		w := c.getIMAPWorker(acctEmail)
@@ -197,11 +180,33 @@ func (c *Coordinator) DeleteMessages(acctEmail, folder string, uids []uint32) te
 		}
 
 		err := w.MoveToTrashBatch(folder, uids)
+		if err == nil {
+			c.store.ClearPendingDeletes(acctEmail, folder, uids)
+		}
 		return DeleteResult{
 			Account: acctEmail,
 			Folder:  folder,
 			Err:     err,
 		}
+	}
+}
+
+// RetryPendingDeletes retries any pending deletions that failed previously.
+func (c *Coordinator) RetryPendingDeletes() tea.Cmd {
+	return func() tea.Msg {
+		pending := c.store.PendingDeletes()
+		for _, pd := range pending {
+			w := c.getIMAPWorker(pd.Account)
+			if w == nil {
+				continue
+			}
+			if err := w.MoveToTrashBatch(pd.Folder, pd.UIDs); err != nil {
+				log.Printf("retry delete %s/%s: %v", pd.Account, pd.Folder, err)
+				continue
+			}
+			c.store.ClearPendingDeletes(pd.Account, pd.Folder, pd.UIDs)
+		}
+		return nil
 	}
 }
 
@@ -226,6 +231,19 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig) error {
 	c.mu.Lock()
 	c.imap[acct.Email] = w
 	c.mu.Unlock()
+
+	// Retry any pending deletions before syncing folders.
+	pending := c.store.PendingDeletes()
+	for _, pd := range pending {
+		if pd.Account != acct.Email {
+			continue
+		}
+		if err := w.MoveToTrashBatch(pd.Folder, pd.UIDs); err != nil {
+			log.Printf("retry delete %s/%s: %v", pd.Account, pd.Folder, err)
+		} else {
+			c.store.ClearPendingDeletes(pd.Account, pd.Folder, pd.UIDs)
+		}
+	}
 
 	// List mailboxes.
 	folders, err := w.ListMailboxes()

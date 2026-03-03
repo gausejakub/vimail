@@ -412,12 +412,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case worker.DeleteResult:
 		if msg.Err != nil {
+			errText := "IMAP delete failed: " + msg.Err.Error()
 			cmds = append(cmds, func() tea.Msg {
-				return util.InfoMsg{Text: "Delete failed: " + msg.Err.Error(), IsError: true}
+				return util.InfoMsg{Text: errText, IsError: true}
 			})
 		} else {
 			cmds = append(cmds, func() tea.Msg {
-				return util.InfoMsg{Text: "Message deleted", IsError: false}
+				return util.InfoMsg{Text: "Deleted on server", IsError: false}
 			})
 		}
 		return m, tea.Batch(cmds...)

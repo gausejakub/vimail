@@ -456,7 +456,8 @@ func (w *IMAPWorker) MoveToTrash(folder string, uid uint32) error {
 	return nil
 }
 
-// MoveToTrashBatch moves multiple messages to the Trash folder in a single IMAP operation.
+// MoveToTrashBatch moves multiple messages to the Trash folder via IMAP.
+// Processes UIDs in chunks to avoid server-side limits and timeouts.
 func (w *IMAPWorker) MoveToTrashBatch(folder string, uids []uint32) error {
 	w.opMu.Lock()
 	defer w.opMu.Unlock()
@@ -471,6 +472,28 @@ func (w *IMAPWorker) MoveToTrashBatch(folder string, uids []uint32) error {
 	imapName := w.imapMailboxName(folder)
 	trashName := w.imapMailboxName("Trash")
 
+	log.Printf("IMAP delete: %d UIDs from %s (%s) → %s", len(uids), folder, imapName, trashName)
+
+	const chunkSize = 50
+	for i := 0; i < len(uids); i += chunkSize {
+		end := i + chunkSize
+		if end > len(uids) {
+			end = len(uids)
+		}
+		chunk := uids[i:end]
+
+		if err := w.moveChunkToTrash(imapName, trashName, chunk); err != nil {
+			return fmt.Errorf("chunk %d-%d: %w", i, end-1, err)
+		}
+		log.Printf("IMAP delete: processed %d/%d UIDs", end, len(uids))
+	}
+
+	return nil
+}
+
+// moveChunkToTrash moves a chunk of UIDs to trash (SELECT + COPY + STORE + EXPUNGE).
+// Caller must hold opMu.
+func (w *IMAPWorker) moveChunkToTrash(imapName, trashName string, uids []uint32) error {
 	selCmd := w.client.Select(imapName, nil)
 	if _, err := selCmd.Wait(); err != nil {
 		return fmt.Errorf("SELECT %s: %w", imapName, err)

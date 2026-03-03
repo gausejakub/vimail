@@ -207,18 +207,26 @@ func (s *SQLiteStore) DeleteMessage(acctEmail, folder, id string) {
 	if err != nil {
 		return
 	}
-	// Always delete locally. The IMAP worker handles server-side Trash move,
-	// and the Trash folder will populate on next sync. This avoids a race
-	// where HighestUID drops and the next sync re-adds deleted messages.
 	s.db.Exec(`DELETE FROM messages WHERE folder_id = ? AND uid = ?`, folderID, id)
+	// Track as pending delete so sync won't re-add from server.
+	s.db.Exec(`INSERT OR IGNORE INTO pending_deletes (folder_id, uid, account, folder) VALUES (?, ?, ?, ?)`,
+		folderID, id, acctEmail, folder)
 }
 
 // UpsertMessage inserts or updates a message in the cache.
+// Skips messages that are pending deletion (deleted locally, awaiting IMAP confirm).
 func (s *SQLiteStore) UpsertMessage(acctEmail, folder string, msg email.Message) error {
 	var folderID int
 	err := s.db.QueryRow(`SELECT id FROM folders WHERE account = ? AND name = ?`, acctEmail, folder).Scan(&folderID)
 	if err != nil {
 		return fmt.Errorf("folder %q not found for %s: %w", folder, acctEmail, err)
+	}
+
+	// Skip if this UID is pending deletion.
+	var pending int
+	s.db.QueryRow(`SELECT 1 FROM pending_deletes WHERE folder_id = ? AND uid = ?`, folderID, msg.UID).Scan(&pending)
+	if pending == 1 {
+		return nil
 	}
 
 	unread := 0
@@ -289,6 +297,48 @@ func (s *SQLiteStore) HighestUID(acctEmail, folder string) (uint32, error) {
 	var uid uint32
 	err = s.db.QueryRow(`SELECT COALESCE(MAX(uid), 0) FROM messages WHERE folder_id = ?`, folderID).Scan(&uid)
 	return uid, err
+}
+
+// PendingDelete represents a message that was deleted locally but not yet on the server.
+type PendingDelete struct {
+	Account string
+	Folder  string
+	UIDs    []uint32
+}
+
+// PendingDeletes returns all pending deletions grouped by account+folder.
+func (s *SQLiteStore) PendingDeletes() []PendingDelete {
+	rows, err := s.db.Query(`SELECT account, folder, uid FROM pending_deletes ORDER BY account, folder`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	grouped := make(map[string]*PendingDelete)
+	for rows.Next() {
+		var acct, folder string
+		var uid uint32
+		if err := rows.Scan(&acct, &folder, &uid); err != nil {
+			continue
+		}
+		key := acct + "\x00" + folder
+		if _, ok := grouped[key]; !ok {
+			grouped[key] = &PendingDelete{Account: acct, Folder: folder}
+		}
+		grouped[key].UIDs = append(grouped[key].UIDs, uid)
+	}
+	var result []PendingDelete
+	for _, pd := range grouped {
+		result = append(result, *pd)
+	}
+	return result
+}
+
+// ClearPendingDeletes removes pending delete entries after IMAP confirms deletion.
+func (s *SQLiteStore) ClearPendingDeletes(acctEmail, folder string, uids []uint32) {
+	for _, uid := range uids {
+		s.db.Exec(`DELETE FROM pending_deletes WHERE account = ? AND folder = ? AND uid = ?`, acctEmail, folder, uid)
+	}
 }
 
 // UpdateMessageBody updates the text and HTML body of a message.

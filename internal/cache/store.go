@@ -246,7 +246,6 @@ func (s *SQLiteStore) UpsertMessage(acctEmail, folder string, msg email.Message)
 			from_addr = excluded.from_addr,
 			to_addr = excluded.to_addr,
 			subject = excluded.subject,
-			body = excluded.body,
 			date = excluded.date,
 			unread = excluded.unread,
 			flagged = excluded.flagged

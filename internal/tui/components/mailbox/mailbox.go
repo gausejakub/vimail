@@ -21,6 +21,7 @@ type Model struct {
 	width    int
 	height   int
 	focused  bool
+	store    email.Store
 	accounts []email.Account
 	folders  map[string][]email.Folder // keyed by email
 	items    []item
@@ -34,6 +35,7 @@ func New(store email.Store) Model {
 		fmap[a.Email] = store.FoldersFor(a.Email)
 	}
 	m := Model{
+		store:    store,
 		accounts: accts,
 		folders:  fmap,
 	}
@@ -62,6 +64,8 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+	case util.FolderRefreshMsg:
+		m.folders[msg.Account] = m.store.FoldersFor(msg.Account)
 	}
 	return m, nil
 }

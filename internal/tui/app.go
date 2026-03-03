@@ -591,7 +591,9 @@ func (m Model) handleVisualKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch k {
 	case "d":
 		selected := m.msglist.SelectedMessages()
+		lo, _ := m.msglist.VisualRange()
 		m.msglist = m.msglist.ExitVisual()
+		m.msglist = m.msglist.SetCursor(lo)
 		m.mode = keys.ModeNormal
 		cmds = append(cmds, func() tea.Msg {
 			return keys.ModeChangedMsg{Mode: keys.ModeNormal}

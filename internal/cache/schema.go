@@ -64,8 +64,15 @@ func Open(path string) (*sql.DB, error) {
 		return nil, err
 	}
 
-	// WAL mode for concurrent reads.
+	// Single connection avoids SQLITE_BUSY when multiple goroutines write.
+	// WAL mode still allows concurrent reads within the same connection.
+	db.SetMaxOpenConns(1)
+
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
 		db.Close()
 		return nil, err
 	}

@@ -184,6 +184,27 @@ func (c *Coordinator) DeleteMessage(acctEmail, folder string, uid uint32) tea.Cm
 	}
 }
 
+// DeleteMessages returns a tea.Cmd that moves multiple messages to Trash via IMAP in a single batch.
+func (c *Coordinator) DeleteMessages(acctEmail, folder string, uids []uint32) tea.Cmd {
+	return func() tea.Msg {
+		w := c.getIMAPWorker(acctEmail)
+		if w == nil {
+			return DeleteResult{
+				Account: acctEmail,
+				Folder:  folder,
+				Err:     fmt.Errorf("no IMAP worker for %s", acctEmail),
+			}
+		}
+
+		err := w.MoveToTrashBatch(folder, uids)
+		return DeleteResult{
+			Account: acctEmail,
+			Folder:  folder,
+			Err:     err,
+		}
+	}
+}
+
 // syncAccount connects and syncs all folders for a single account.
 func (c *Coordinator) syncAccount(acct config.AccountConfig) error {
 	if acct.IMAPHost == "" {

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/gausejakub/vimail/internal/config"
+	"golang.org/x/term"
 )
 
 // RunSetup runs the interactive credential setup flow for all configured accounts.
@@ -50,11 +51,12 @@ func RunSetup(cfg config.Config) error {
 		default: // plain or app-password
 			fmt.Printf("  Auth method: %s\n", acct.AuthMethod)
 			fmt.Printf("  Enter password for %s: ", acct.Email)
-			password, err := reader.ReadString('\n')
+			raw, err := term.ReadPassword(int(os.Stdin.Fd()))
+			fmt.Println() // newline after hidden input
 			if err != nil {
 				return fmt.Errorf("reading password: %w", err)
 			}
-			password = strings.TrimSpace(password)
+			password := strings.TrimSpace(string(raw))
 			if password == "" {
 				fmt.Println("  Skipped (empty password).")
 				continue

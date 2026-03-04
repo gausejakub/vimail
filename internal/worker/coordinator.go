@@ -223,6 +223,13 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig) error {
 		return fmt.Errorf("no credentials resolved")
 	}
 
+	// Disconnect old worker if it exists to avoid leaking connections.
+	c.mu.Lock()
+	if old, ok := c.imap[acct.Email]; ok {
+		old.Disconnect()
+	}
+	c.mu.Unlock()
+
 	w := NewIMAPWorker(acct, creds, c.store)
 	if err := w.Connect(); err != nil {
 		return err

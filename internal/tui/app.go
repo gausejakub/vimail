@@ -267,9 +267,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, cmd)
 		return m, tea.Batch(cmds...)
 
-	case util.SyncAllCompleteMsg:
+	case worker.SyncAllCompleteMsg:
 		var cmd tea.Cmd
-		m.status, cmd = m.status.Update(msg)
+		m.status, cmd = m.status.Update(util.SyncAllCompleteMsg{Errors: msg.Errors})
 		cmds = append(cmds, cmd)
 		// Refresh the current view after sync.
 		acctEmail := m.mailbox.SelectedEmail()

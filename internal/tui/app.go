@@ -271,6 +271,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.status, cmd = m.status.Update(util.SyncAllCompleteMsg{Errors: msg.Errors})
 		cmds = append(cmds, cmd)
+		// Reload mailbox sidebar (folders may have been discovered by IMAP).
+		m.mailbox = m.mailbox.Reload()
 		// Refresh the current view after sync.
 		acctEmail := m.mailbox.SelectedEmail()
 		folder := m.msglist.CurrentFolder()

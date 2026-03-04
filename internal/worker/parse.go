@@ -50,14 +50,13 @@ func formatAddress(addr imap.Address) string {
 	name := addr.Name
 	emailAddr := addr.Addr()
 
-	if name != "" {
-		return name
+	if name != "" && emailAddr != "" {
+		return fmt.Sprintf("%s <%s>", name, emailAddr)
 	}
-	// No display name — use the local part of the email.
-	if at := strings.Index(emailAddr, "@"); at > 0 {
-		return emailAddr[:at]
+	if emailAddr != "" {
+		return emailAddr
 	}
-	return emailAddr
+	return name
 }
 
 // BodyResult holds both the plain-text and raw HTML versions of an email body.

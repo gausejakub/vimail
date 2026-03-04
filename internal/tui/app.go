@@ -327,6 +327,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.preview, cmd = m.preview.Update(bodyMsg)
 			cmds = append(cmds, cmd)
+			// Also update the message list so reply has the body.
+			m.msglist = m.msglist.UpdateBody(msg.UID, msg.Body, msg.HTMLBody)
 		} else {
 			cmds = append(cmds, func() tea.Msg {
 				return util.InfoMsg{Text: "Fetch body: " + msg.Err.Error(), IsError: true}

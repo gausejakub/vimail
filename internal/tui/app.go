@@ -343,6 +343,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, func() tea.Msg {
 				return util.InfoMsg{Text: "Message sent", IsError: false}
 			})
+			// Sync the Sent folder so the message appears.
+			acctEmail := m.mailbox.SelectedEmail()
+			if m.coordinator != nil && acctEmail != "" {
+				cmds = append(cmds, m.coordinator.SyncFolder(acctEmail, "Sent"))
+			}
 		}
 		return m, tea.Batch(cmds...)
 

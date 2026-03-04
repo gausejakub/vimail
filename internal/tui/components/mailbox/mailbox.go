@@ -66,8 +66,19 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		m.height = msg.Height
 	case util.FolderRefreshMsg:
 		m.folders[msg.Account] = m.store.FoldersFor(msg.Account)
+		m.items = m.buildItems()
 	}
 	return m, nil
+}
+
+// Reload reloads all accounts and folders from the store.
+func (m Model) Reload() Model {
+	m.accounts = m.store.Accounts()
+	for _, a := range m.accounts {
+		m.folders[a.Email] = m.store.FoldersFor(a.Email)
+	}
+	m.items = m.buildItems()
+	return m
 }
 
 // HandleKey processes a key press and returns the updated model + any command.

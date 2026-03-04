@@ -132,6 +132,18 @@ func (m Model) selectCurrent() tea.Cmd {
 	return nil
 }
 
+// UpdateBody updates the body of a message in the list (after lazy fetch).
+func (m Model) UpdateBody(uid uint32, body, htmlBody string) Model {
+	for i := range m.messages {
+		if m.messages[i].UID == uid {
+			m.messages[i].Body = body
+			m.messages[i].HTMLBody = htmlBody
+			break
+		}
+	}
+	return m
+}
+
 func (m *Model) ensureVisible() {
 	visibleRows := m.height - 2 // header + column header
 	if visibleRows < 1 {

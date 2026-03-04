@@ -2,6 +2,7 @@ package msglist
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -267,7 +268,7 @@ func (m Model) renderMessage(idx int, msg email.Message) string {
 	}
 
 	timeStr := relativeTime(msg.Date)
-	fromName := sanitize(msg.From)
+	fromName := sanitize(displayName(msg.From))
 	subject := sanitize(msg.Subject)
 
 	return formatRow(indicator, fromName, subject, timeStr, m.width, indFg, fromFg, subjFg, timeFg, bg, msg.Unread)
@@ -334,6 +335,14 @@ func padLeft(s string, width int) string {
 
 // sanitize strips newlines, carriage returns, tabs, and other control
 // characters that would break the fixed-row layout.
+// displayName extracts the human-readable name from "Name <email>" format.
+func displayName(addr string) string {
+	if idx := strings.Index(addr, " <"); idx > 0 {
+		return addr[:idx]
+	}
+	return addr
+}
+
 func sanitize(s string) string {
 	var b []rune
 	for _, r := range s {

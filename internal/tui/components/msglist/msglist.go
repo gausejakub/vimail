@@ -119,6 +119,19 @@ func (m Model) HandleKey(key string) (Model, tea.Cmd) {
 		}
 	}
 
+	// No-op on empty list (except pending keys).
+	if len(m.messages) == 0 {
+		switch key {
+		case "d":
+			m.pendingKey = "d"
+		case "g":
+			m.pendingKey = "g"
+		default:
+			m.countBuf = ""
+		}
+		return m, nil
+	}
+
 	switch key {
 	case "j", "down":
 		n := m.consumeCount()
@@ -153,7 +166,7 @@ func (m Model) HandleKey(key string) (Model, tea.Cmd) {
 			if m.cursor >= len(m.messages) {
 				m.cursor = len(m.messages) - 1
 			}
-		} else if len(m.messages) > 0 {
+		} else {
 			m.cursor = len(m.messages) - 1
 		}
 		m.ensureVisible()

@@ -44,6 +44,8 @@ type Model struct {
 
 	cmdInput  textinput.Model
 	cmdActive bool
+
+	syncPending int // number of accounts still syncing
 }
 
 // syncTickMsg triggers periodic sync refresh.
@@ -94,6 +96,7 @@ func (m Model) Init() tea.Cmd {
 
 	// Trigger initial sync if coordinator is available.
 	if m.coordinator != nil {
+		m.syncPending = len(m.cfg.Accounts)
 		cmds = append(cmds, func() tea.Msg {
 			return util.SyncStartMsg{}
 		})
@@ -265,51 +268,61 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.status, cmd = m.status.Update(msg)
 		cmds = append(cmds, cmd)
+		m.syncPending = len(m.cfg.Accounts)
 		m.msglist = m.msglist.SetSyncing(true)
+		for _, acct := range m.cfg.Accounts {
+			m.mailbox = m.mailbox.SetAccountSyncing(acct.Email, true)
+		}
 		return m, tea.Batch(cmds...)
 
-	case worker.SyncAllCompleteMsg:
-		var cmd tea.Cmd
-		m.status, cmd = m.status.Update(util.SyncAllCompleteMsg{Errors: msg.Errors})
-		cmds = append(cmds, cmd)
-		m.msglist = m.msglist.SetSyncing(false)
-		// Reload mailbox sidebar (folders may have been discovered by IMAP).
+	case worker.SyncAccountCompleteMsg:
+		m.syncPending--
+		m.mailbox = m.mailbox.SetAccountSyncing(msg.Account, false)
+		// Reload mailbox sidebar with newly discovered folders.
 		m.mailbox = m.mailbox.Reload()
-		// Refresh the current view after sync.
-		// If current inbox is empty, try to find the first account with messages.
+		// Refresh current view if it belongs to this account.
 		acctEmail := m.mailbox.SelectedEmail()
 		folder := m.msglist.CurrentFolder()
-		if acctEmail != "" {
-			msgs := m.store.MessagesFor(acctEmail, folder)
-			if len(msgs) == 0 {
-				// Current folder empty — find first inbox with messages.
-				for _, acct := range m.store.Accounts() {
-					if am := m.store.MessagesFor(acct.Email, "Inbox"); len(am) > 0 {
-						acctEmail = acct.Email
-						folder = "Inbox"
-						m.mailbox = m.mailbox.SelectFolder(acctEmail, folder)
-						break
-					}
-				}
-			}
+		if msg.Account == acctEmail || m.msglist.CurrentAccount() == msg.Account {
 			cmds = append(cmds, func() tea.Msg {
 				return util.FolderSelectedMsg{Account: acctEmail, Folder: folder}
 			})
 		}
-		if len(msg.Errors) > 0 {
-			errText := msg.Errors[0].Error()
+		// If current folder is still empty, try to find one with messages.
+		currentMsgs := m.store.MessagesFor(acctEmail, folder)
+		if len(currentMsgs) == 0 {
+			for _, acct := range m.store.Accounts() {
+				if am := m.store.MessagesFor(acct.Email, "Inbox"); len(am) > 0 {
+					acctEmail = acct.Email
+					folder = "Inbox"
+					m.mailbox = m.mailbox.SelectFolder(acctEmail, folder)
+					cmds = append(cmds, func() tea.Msg {
+						return util.FolderSelectedMsg{Account: acctEmail, Folder: folder}
+					})
+					break
+				}
+			}
+		}
+		if msg.Err != nil {
+			errText := msg.Err.Error()
 			cmds = append(cmds, func() tea.Msg {
 				return util.InfoMsg{Text: errText, IsError: true}
 			})
-		} else {
+		}
+		// All accounts done?
+		if m.syncPending <= 0 {
+			m.msglist = m.msglist.SetSyncing(false)
+			var cmd tea.Cmd
+			m.status, cmd = m.status.Update(util.SyncAllCompleteMsg{})
+			cmds = append(cmds, cmd)
 			cmds = append(cmds, func() tea.Msg {
 				return util.InfoMsg{Text: "Sync complete", IsError: false}
 			})
+			// Schedule periodic refresh (5 minutes).
+			cmds = append(cmds, tea.Tick(5*time.Minute, func(time.Time) tea.Msg {
+				return syncTickMsg{}
+			}))
 		}
-		// Schedule periodic refresh (5 minutes).
-		cmds = append(cmds, tea.Tick(5*time.Minute, func(time.Time) tea.Msg {
-			return syncTickMsg{}
-		}))
 		return m, tea.Batch(cmds...)
 
 	case syncTickMsg:

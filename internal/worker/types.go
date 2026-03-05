@@ -47,6 +47,12 @@ type FetchBodyResult struct {
 	Err      error
 }
 
+// SyncAccountCompleteMsg signals that a single account finished syncing.
+type SyncAccountCompleteMsg struct {
+	Account string
+	Err     error
+}
+
 // SyncAllCompleteMsg signals that initial sync of all accounts is done.
 type SyncAllCompleteMsg struct {
 	Errors []error

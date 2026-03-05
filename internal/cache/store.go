@@ -37,20 +37,7 @@ func (s *SQLiteStore) SeedAccount(name, acctEmail, imapHost string, imapPort int
 			smtp_host = excluded.smtp_host,
 			smtp_port = excluded.smtp_port
 	`, acctEmail, name, imapHost, imapPort, smtpHost, smtpPort)
-	if err != nil {
-		return err
-	}
-
-	// Ensure default folders exist.
-	for _, folder := range []string{"Inbox", "Sent", "Drafts", "Trash"} {
-		_, err := s.db.Exec(`
-			INSERT OR IGNORE INTO folders (account, name) VALUES (?, ?)
-		`, acctEmail, folder)
-		if err != nil {
-			return err
-		}
-	}
-	return nil
+	return err
 }
 
 func (s *SQLiteStore) Accounts() []email.Account {

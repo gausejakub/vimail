@@ -52,28 +52,26 @@ func (c *Coordinator) ResolveCredentials() []error {
 }
 
 // SyncAll returns a tea.Cmd that syncs all accounts concurrently.
+// Each account reports its own completion via SyncAccountCompleteMsg,
+// and a final SyncAllCompleteMsg is sent when all are done.
 func (c *Coordinator) SyncAll() tea.Cmd {
-	return func() tea.Msg {
-		var wg sync.WaitGroup
-		var mu sync.Mutex
-		var errs []error
+	var cmds []tea.Cmd
 
-		for _, acct := range c.cfg.Accounts {
-			acct := acct
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				if err := c.syncAccount(acct); err != nil {
-					mu.Lock()
-					errs = append(errs, fmt.Errorf("%s: %w", acct.Email, err))
-					mu.Unlock()
-				}
-			}()
-		}
-		wg.Wait()
-
-		return SyncAllCompleteMsg{Errors: errs}
+	for _, acct := range c.cfg.Accounts {
+		acct := acct
+		cmds = append(cmds, func() tea.Msg {
+			var syncErr error
+			if err := c.syncAccount(acct); err != nil {
+				syncErr = fmt.Errorf("%s: %w", acct.Email, err)
+			}
+			return SyncAccountCompleteMsg{
+				Account: acct.Email,
+				Err:     syncErr,
+			}
+		})
 	}
+
+	return tea.Batch(cmds...)
 }
 
 // SyncFolder returns a tea.Cmd that syncs a specific folder.

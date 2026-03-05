@@ -26,6 +26,7 @@ type Model struct {
 	folders  map[string][]email.Folder // keyed by email
 	items    []item
 	cursor   int
+	syncing  map[string]bool // accounts currently syncing
 }
 
 func New(store email.Store) Model {
@@ -38,6 +39,7 @@ func New(store email.Store) Model {
 		store:    store,
 		accounts: accts,
 		folders:  fmap,
+		syncing:  make(map[string]bool),
 	}
 	m.items = m.buildItems()
 	return m
@@ -139,7 +141,11 @@ func (m Model) View() string {
 		if it.isAccount {
 			acct := m.accounts[it.accountIdx]
 			prefix := "> "
-			text := padRight(prefix+acct.Name, m.width)
+			label := acct.Name
+			if m.syncing[acct.Email] {
+				label += " syncing…"
+			}
+			text := padRight(prefix+label, m.width)
 
 			style := lipgloss.NewStyle().Foreground(t.Primary()).Bold(true)
 			if isCursor {
@@ -294,6 +300,12 @@ func (m Model) SelectFolder(email, folder string) Model {
 			return m
 		}
 	}
+	return m
+}
+
+// SetAccountSyncing marks an account as syncing or done.
+func (m Model) SetAccountSyncing(email string, syncing bool) Model {
+	m.syncing[email] = syncing
 	return m
 }
 

@@ -17,6 +17,19 @@ func testStore(t *testing.T) *SQLiteStore {
 	return NewSQLiteStore(db)
 }
 
+// seedWithFolders creates an account and the default folders (Inbox, Sent, Drafts, Trash).
+func seedWithFolders(t *testing.T, s *SQLiteStore, name, acctEmail string) {
+	t.Helper()
+	if err := s.SeedAccount(name, acctEmail, "", 993, "", 587); err != nil {
+		t.Fatalf("SeedAccount: %v", err)
+	}
+	for _, folder := range []string{"Inbox", "Sent", "Drafts", "Trash"} {
+		if _, err := s.EnsureFolder(acctEmail, folder); err != nil {
+			t.Fatalf("EnsureFolder(%s): %v", folder, err)
+		}
+	}
+}
+
 func TestSeedAccount(t *testing.T) {
 	s := testStore(t)
 
@@ -36,19 +49,10 @@ func TestSeedAccount(t *testing.T) {
 		t.Fatalf("name = %q, want Personal", accts[0].Name)
 	}
 
-	// Default folders created
+	// SeedAccount no longer creates default folders — IMAP discovers them.
 	folders := s.FoldersFor("alice@example.com")
-	if len(folders) < 4 {
-		t.Fatalf("got %d folders, want >= 4", len(folders))
-	}
-	names := make(map[string]bool)
-	for _, f := range folders {
-		names[f.Name] = true
-	}
-	for _, want := range []string{"Inbox", "Sent", "Drafts", "Trash"} {
-		if !names[want] {
-			t.Fatalf("missing folder %q", want)
-		}
+	if len(folders) != 0 {
+		t.Fatalf("got %d folders, want 0 (no default seeding)", len(folders))
 	}
 }
 
@@ -69,7 +73,7 @@ func TestSeedAccountUpsert(t *testing.T) {
 
 func TestMessagesFor(t *testing.T) {
 	s := testStore(t)
-	s.SeedAccount("Test", "a@b.com", "", 993, "", 587)
+	seedWithFolders(t, s, "Test", "a@b.com")
 
 	msg := email.Message{
 		UID:     1,
@@ -102,7 +106,7 @@ func TestMessagesFor(t *testing.T) {
 
 func TestMessagesForEmptyFolder(t *testing.T) {
 	s := testStore(t)
-	s.SeedAccount("Test", "a@b.com", "", 993, "", 587)
+	seedWithFolders(t, s, "Test", "a@b.com")
 
 	msgs := s.MessagesFor("a@b.com", "Inbox")
 	if msgs != nil {
@@ -112,7 +116,7 @@ func TestMessagesForEmptyFolder(t *testing.T) {
 
 func TestMessagesForNonexistentFolder(t *testing.T) {
 	s := testStore(t)
-	s.SeedAccount("Test", "a@b.com", "", 993, "", 587)
+	seedWithFolders(t, s, "Test", "a@b.com")
 
 	msgs := s.MessagesFor("a@b.com", "Nonexistent")
 	if msgs != nil {
@@ -122,7 +126,7 @@ func TestMessagesForNonexistentFolder(t *testing.T) {
 
 func TestDrafts(t *testing.T) {
 	s := testStore(t)
-	s.SeedAccount("Test", "a@b.com", "", 993, "", 587)
+	seedWithFolders(t, s, "Test", "a@b.com")
 
 	// Save a draft
 	draft := email.Message{
@@ -185,7 +189,7 @@ func TestNextDraftID(t *testing.T) {
 
 func TestFolderUnreadCount(t *testing.T) {
 	s := testStore(t)
-	s.SeedAccount("Test", "a@b.com", "", 993, "", 587)
+	seedWithFolders(t, s, "Test", "a@b.com")
 
 	// Add 2 unread and 1 read message
 	for i, unread := range []bool{true, true, false} {
@@ -232,7 +236,7 @@ func TestEnsureFolder(t *testing.T) {
 
 func TestUIDValidity(t *testing.T) {
 	s := testStore(t)
-	s.SeedAccount("Test", "a@b.com", "", 993, "", 587)
+	seedWithFolders(t, s, "Test", "a@b.com")
 
 	val, err := s.GetUIDValidity("a@b.com", "Inbox")
 	if err != nil {
@@ -251,7 +255,7 @@ func TestUIDValidity(t *testing.T) {
 
 func TestPurgeFolder(t *testing.T) {
 	s := testStore(t)
-	s.SeedAccount("Test", "a@b.com", "", 993, "", 587)
+	seedWithFolders(t, s, "Test", "a@b.com")
 
 	s.UpsertMessage("a@b.com", "Inbox", email.Message{UID: 1, From: "x", To: "y", Date: time.Now()})
 	s.UpsertMessage("a@b.com", "Inbox", email.Message{UID: 2, From: "x", To: "y", Date: time.Now()})
@@ -270,7 +274,7 @@ func TestPurgeFolder(t *testing.T) {
 
 func TestHighestUID(t *testing.T) {
 	s := testStore(t)
-	s.SeedAccount("Test", "a@b.com", "", 993, "", 587)
+	seedWithFolders(t, s, "Test", "a@b.com")
 
 	uid, _ := s.HighestUID("a@b.com", "Inbox")
 	if uid != 0 {
@@ -288,7 +292,7 @@ func TestHighestUID(t *testing.T) {
 
 func TestUpdateMessageBody(t *testing.T) {
 	s := testStore(t)
-	s.SeedAccount("Test", "a@b.com", "", 993, "", 587)
+	seedWithFolders(t, s, "Test", "a@b.com")
 
 	s.UpsertMessage("a@b.com", "Inbox", email.Message{UID: 1, From: "x", To: "y", Date: time.Now(), Body: ""})
 	s.UpdateMessageBody("a@b.com", "Inbox", 1, "Full body text", "<p>Full body text</p>")
@@ -307,8 +311,8 @@ func TestUpdateMessageBody(t *testing.T) {
 
 func TestMultipleAccounts(t *testing.T) {
 	s := testStore(t)
-	s.SeedAccount("Personal", "alice@a.com", "", 993, "", 587)
-	s.SeedAccount("Work", "alice@b.com", "", 993, "", 587)
+	seedWithFolders(t, s, "Personal", "alice@a.com")
+	seedWithFolders(t, s, "Work", "alice@b.com")
 
 	accts := s.Accounts()
 	if len(accts) != 2 {

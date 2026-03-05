@@ -314,3 +314,9 @@ func (s *MockStore) DeleteMessage(acctEmail, folder, id string) {
 		}
 	}
 }
+
+func (s *MockStore) DeleteMessages(acctEmail, folder string, ids []string) {
+	for _, id := range ids {
+		s.DeleteMessage(acctEmail, folder, id)
+	}
+}

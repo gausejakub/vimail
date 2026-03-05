@@ -11,4 +11,5 @@ type Store interface {
 	NextDraftID() string
 	MarkRead(email, folder, id string)
 	DeleteMessage(email, folder, id string)
+	DeleteMessages(email, folder string, ids []string)
 }

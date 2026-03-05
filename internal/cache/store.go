@@ -200,6 +200,31 @@ func (s *SQLiteStore) DeleteMessage(acctEmail, folder, id string) {
 		folderID, id, acctEmail, folder)
 }
 
+// DeleteMessages batch-deletes messages by ID in a single transaction.
+func (s *SQLiteStore) DeleteMessages(acctEmail, folder string, ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	var folderID int
+	err := s.db.QueryRow(`SELECT id FROM folders WHERE account = ? AND name = ?`, acctEmail, folder).Scan(&folderID)
+	if err != nil {
+		return
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return
+	}
+	delMsg, _ := tx.Prepare(`DELETE FROM messages WHERE folder_id = ? AND uid = ?`)
+	insPend, _ := tx.Prepare(`INSERT OR IGNORE INTO pending_deletes (folder_id, uid, account, folder) VALUES (?, ?, ?, ?)`)
+	for _, id := range ids {
+		delMsg.Exec(folderID, id)
+		insPend.Exec(folderID, id, acctEmail, folder)
+	}
+	delMsg.Close()
+	insPend.Close()
+	tx.Commit()
+}
+
 // UpsertMessage inserts or updates a message in the cache.
 // Skips messages that are pending deletion (deleted locally, awaiting IMAP confirm).
 func (s *SQLiteStore) UpsertMessage(acctEmail, folder string, msg email.Message) error {

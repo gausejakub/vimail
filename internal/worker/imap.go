@@ -495,7 +495,13 @@ func (w *IMAPWorker) MoveToTrashBatch(folder string, uids []uint32) error {
 
 	log.Printf("IMAP delete: %d UIDs from %s (%s) → %s", len(uids), folder, imapName, trashName)
 
-	const chunkSize = 50
+	// SELECT once for all chunks.
+	selCmd := w.client.Select(imapName, nil)
+	if _, err := selCmd.Wait(); err != nil {
+		return fmt.Errorf("SELECT %s: %w", imapName, err)
+	}
+
+	const chunkSize = 500
 	for i := 0; i < len(uids); i += chunkSize {
 		end := i + chunkSize
 		if end > len(uids) {
@@ -503,23 +509,24 @@ func (w *IMAPWorker) MoveToTrashBatch(folder string, uids []uint32) error {
 		}
 		chunk := uids[i:end]
 
-		if err := w.moveChunkToTrash(imapName, trashName, chunk); err != nil {
+		if err := w.moveChunkToTrash(trashName, chunk); err != nil {
 			return fmt.Errorf("chunk %d-%d: %w", i, end-1, err)
 		}
 		log.Printf("IMAP delete: processed %d/%d UIDs", end, len(uids))
 	}
 
+	// Single EXPUNGE after all chunks.
+	expungeCmd := w.client.Expunge()
+	if err := expungeCmd.Close(); err != nil {
+		return fmt.Errorf("EXPUNGE: %w", err)
+	}
+
 	return nil
 }
 
-// moveChunkToTrash moves a chunk of UIDs to trash (SELECT + COPY + STORE + EXPUNGE).
-// Caller must hold opMu.
-func (w *IMAPWorker) moveChunkToTrash(imapName, trashName string, uids []uint32) error {
-	selCmd := w.client.Select(imapName, nil)
-	if _, err := selCmd.Wait(); err != nil {
-		return fmt.Errorf("SELECT %s: %w", imapName, err)
-	}
-
+// moveChunkToTrash moves a chunk of UIDs to trash (COPY + STORE \Deleted).
+// Caller must hold opMu and have the mailbox already SELECTed.
+func (w *IMAPWorker) moveChunkToTrash(trashName string, uids []uint32) error {
 	var seqSet imap.UIDSet
 	for _, uid := range uids {
 		seqSet.AddNum(imap.UID(uid))
@@ -536,11 +543,6 @@ func (w *IMAPWorker) moveChunkToTrash(imapName, trashName string, uids []uint32)
 	}, nil)
 	if err := storeCmd.Close(); err != nil {
 		return fmt.Errorf("STORE +FLAGS \\Deleted: %w", err)
-	}
-
-	expungeCmd := w.client.Expunge()
-	if err := expungeCmd.Close(); err != nil {
-		return fmt.Errorf("EXPUNGE: %w", err)
 	}
 
 	return nil

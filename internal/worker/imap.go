@@ -117,7 +117,16 @@ func (w *IMAPWorker) authenticate(client *imapclient.Client) error {
 }
 
 // Disconnect closes the IMAP connection gracefully.
+// It acquires opMu to wait for any in-flight operations to finish
+// before tearing down the client.
 func (w *IMAPWorker) Disconnect() {
+	w.opMu.Lock()
+	defer w.opMu.Unlock()
+	w.disconnectLocked()
+}
+
+// disconnectLocked closes the IMAP connection. Caller must hold opMu.
+func (w *IMAPWorker) disconnectLocked() {
 	if w.client != nil {
 		cmd := w.client.Logout()
 		cmd.Wait()
@@ -534,8 +543,9 @@ func (w *IMAPWorker) imapMailboxName(folder string) string {
 }
 
 // reconnect attempts to re-establish the IMAP connection.
+// Caller must hold opMu.
 func (w *IMAPWorker) reconnect() error {
-	w.Disconnect()
+	w.disconnectLocked()
 	return w.Connect()
 }
 

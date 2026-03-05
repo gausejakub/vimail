@@ -23,6 +23,7 @@ type Model struct {
 	folder     string
 	account    string
 	pendingKey string // for multi-key sequences (dd, gg)
+	countBuf   string // numeric prefix for commands (e.g. 500gg)
 
 	visualMode   bool
 	visualAnchor int
@@ -78,6 +79,7 @@ func (m Model) HandleKey(key string) (Model, tea.Cmd) {
 		case pending == "d" && key == "d":
 			if m.cursor < len(m.messages) {
 				msg := m.messages[m.cursor]
+				m.countBuf = ""
 				return m, func() tea.Msg {
 					return util.DeleteRequestMsg{
 						Account: m.account,
@@ -86,26 +88,58 @@ func (m Model) HandleKey(key string) (Model, tea.Cmd) {
 					}
 				}
 			}
+			m.countBuf = ""
 			return m, nil
 		case pending == "g" && key == "g":
-			m.cursor = 0
+			count := m.consumeCount()
+			if count > 0 {
+				m.cursor = count - 1 // 1-indexed like Vim
+			} else {
+				m.cursor = 0
+			}
+			if m.cursor >= len(m.messages) {
+				m.cursor = len(m.messages) - 1
+			}
+			if m.cursor < 0 {
+				m.cursor = 0
+			}
 			m.ensureVisible()
 			return m, m.selectCurrent()
 		}
+		m.countBuf = ""
 		// Pending cancelled; fall through to process this key normally.
+	}
+
+	// Accumulate digits for count prefix (e.g. 500gg, 10j).
+	if len(key) == 1 && key[0] >= '0' && key[0] <= '9' {
+		// Don't start with 0 (0 is not a valid line number prefix).
+		if m.countBuf != "" || key != "0" {
+			m.countBuf += key
+			return m, nil
+		}
 	}
 
 	switch key {
 	case "j", "down":
-		if m.cursor < len(m.messages)-1 {
-			m.cursor++
-			m.ensureVisible()
+		n := m.consumeCount()
+		if n == 0 {
+			n = 1
 		}
+		m.cursor += n
+		if m.cursor >= len(m.messages) {
+			m.cursor = len(m.messages) - 1
+		}
+		m.ensureVisible()
 	case "k", "up":
-		if m.cursor > 0 {
-			m.cursor--
-			m.ensureVisible()
+		n := m.consumeCount()
+		if n == 0 {
+			n = 1
 		}
+		m.cursor -= n
+		if m.cursor < 0 {
+			m.cursor = 0
+		}
+		m.ensureVisible()
 	case "d":
 		m.pendingKey = "d"
 		return m, nil
@@ -113,12 +147,33 @@ func (m Model) HandleKey(key string) (Model, tea.Cmd) {
 		m.pendingKey = "g"
 		return m, nil
 	case "G":
-		if len(m.messages) > 0 {
+		count := m.consumeCount()
+		if count > 0 {
+			m.cursor = count - 1
+			if m.cursor >= len(m.messages) {
+				m.cursor = len(m.messages) - 1
+			}
+		} else if len(m.messages) > 0 {
 			m.cursor = len(m.messages) - 1
-			m.ensureVisible()
 		}
+		m.ensureVisible()
+	default:
+		m.countBuf = ""
 	}
 	return m, m.selectCurrent()
+}
+
+// consumeCount reads and resets the accumulated numeric count. Returns 0 if none.
+func (m *Model) consumeCount() int {
+	if m.countBuf == "" {
+		return 0
+	}
+	n := 0
+	for _, c := range m.countBuf {
+		n = n*10 + int(c-'0')
+	}
+	m.countBuf = ""
+	return n
 }
 
 // selectCurrent emits a MessageSelectedMsg for the message under the cursor.

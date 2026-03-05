@@ -511,6 +511,17 @@ func (m Model) MarkCurrentRead() Model {
 	return m
 }
 
+// MarkReadByID sets the Unread flag to false for the message with the given ID.
+func (m Model) MarkReadByID(id string) Model {
+	for i := range m.messages {
+		if m.messages[i].ID == id {
+			m.messages[i].Unread = false
+			break
+		}
+	}
+	return m
+}
+
 // MarkReadRange marks all messages in the given index range as read.
 func (m Model) MarkReadRange(lo, hi int) Model {
 	for i := lo; i <= hi && i < len(m.messages); i++ {

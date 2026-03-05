@@ -164,7 +164,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Mark as read when focused.
 		if msg.Message.Unread {
 			m.store.MarkRead(acct, folder, msg.Message.ID)
-			m.msglist = m.msglist.MarkCurrentRead()
+			m.msglist = m.msglist.MarkReadByID(msg.Message.ID)
 			m.mailbox, _ = m.mailbox.Update(util.FolderRefreshMsg{Account: acct, Folder: folder})
 			if m.coordinator != nil && msg.Message.UID > 0 {
 				cmds = append(cmds, m.coordinator.MarkRead(acct, folder, msg.Message.UID))
@@ -327,6 +327,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case syncTickMsg:
 		if m.coordinator != nil {
+			m.syncPending = len(m.cfg.Accounts)
+			for _, acct := range m.cfg.Accounts {
+				m.mailbox = m.mailbox.SetAccountSyncing(acct.Email, true)
+			}
 			cmds = append(cmds, m.coordinator.SyncAll())
 		}
 		return m, tea.Batch(cmds...)

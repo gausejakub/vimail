@@ -142,10 +142,20 @@ func (m Model) View() string {
 			acct := m.accounts[it.accountIdx]
 			prefix := "> "
 			label := acct.Name
+			text := prefix + label
 			if m.syncing[acct.Email] {
-				label += " syncing…"
+				suffix := " ⟳"
+				maxLabel := m.width - len([]rune(prefix)) - len([]rune(suffix))
+				if maxLabel < 0 {
+					maxLabel = 0
+				}
+				r := []rune(label)
+				if len(r) > maxLabel {
+					label = string(r[:maxLabel])
+				}
+				text = prefix + label + suffix
 			}
-			text := padRight(prefix+label, m.width)
+			text = padRight(text, m.width)
 
 			style := lipgloss.NewStyle().Foreground(t.Primary()).Bold(true)
 			if isCursor {

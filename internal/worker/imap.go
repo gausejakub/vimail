@@ -126,12 +126,24 @@ func (w *IMAPWorker) Disconnect() {
 }
 
 // disconnectLocked closes the IMAP connection. Caller must hold opMu.
+// Uses a short timeout for graceful logout to avoid hanging on dead connections.
 func (w *IMAPWorker) disconnectLocked() {
-	if w.client != nil {
+	if w.client == nil {
+		return
+	}
+	done := make(chan struct{})
+	go func() {
 		cmd := w.client.Logout()
 		cmd.Wait()
-		w.client = nil
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		log.Printf("IMAP logout timed out for %s, forcing close", w.acct.Email)
+		w.client.Close()
 	}
+	w.client = nil
 }
 
 // IsConnected returns true if the IMAP client exists.

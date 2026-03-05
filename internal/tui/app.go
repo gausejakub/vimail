@@ -265,18 +265,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.status, cmd = m.status.Update(msg)
 		cmds = append(cmds, cmd)
+		m.msglist = m.msglist.SetSyncing(true)
 		return m, tea.Batch(cmds...)
 
 	case worker.SyncAllCompleteMsg:
 		var cmd tea.Cmd
 		m.status, cmd = m.status.Update(util.SyncAllCompleteMsg{Errors: msg.Errors})
 		cmds = append(cmds, cmd)
+		m.msglist = m.msglist.SetSyncing(false)
 		// Reload mailbox sidebar (folders may have been discovered by IMAP).
 		m.mailbox = m.mailbox.Reload()
 		// Refresh the current view after sync.
+		// If current inbox is empty, try to find the first account with messages.
 		acctEmail := m.mailbox.SelectedEmail()
 		folder := m.msglist.CurrentFolder()
 		if acctEmail != "" {
+			msgs := m.store.MessagesFor(acctEmail, folder)
+			if len(msgs) == 0 {
+				// Current folder empty — find first inbox with messages.
+				for _, acct := range m.store.Accounts() {
+					if am := m.store.MessagesFor(acct.Email, "Inbox"); len(am) > 0 {
+						acctEmail = acct.Email
+						folder = "Inbox"
+						m.mailbox = m.mailbox.SelectFolder(acctEmail, folder)
+						break
+					}
+				}
+			}
 			cmds = append(cmds, func() tea.Msg {
 				return util.FolderSelectedMsg{Account: acctEmail, Folder: folder}
 			})

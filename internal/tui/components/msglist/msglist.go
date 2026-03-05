@@ -27,6 +27,13 @@ type Model struct {
 
 	visualMode   bool
 	visualAnchor int
+	syncing      bool
+}
+
+// SetSyncing updates the syncing state indicator.
+func (m Model) SetSyncing(s bool) Model {
+	m.syncing = s
+	return m
 }
 
 func New(store email.Store) Model {
@@ -277,8 +284,11 @@ func (m Model) View() string {
 		for i := 0; i < topPad; i++ {
 			lines = append(lines, emptyLine)
 		}
-		// Center "No messages" text
+		// Center status text
 		msg := "No messages"
+		if m.syncing {
+			msg = "Syncing…"
+		}
 		pad := (m.width - len(msg)) / 2
 		if pad < 0 {
 			pad = 0

@@ -434,6 +434,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		})
 		return m, tea.Batch(cmds...)
 
+	case util.BatchMarkReadRequestMsg:
+		acct := msg.Account
+		folder := msg.Folder
+		for _, message := range msg.Messages {
+			if message.Unread {
+				m.store.MarkRead(acct, folder, message.ID)
+				if m.coordinator != nil && message.UID > 0 {
+					cmds = append(cmds, m.coordinator.MarkRead(acct, folder, message.UID))
+				}
+			}
+		}
+		n := 0
+		for _, message := range msg.Messages {
+			if message.Unread {
+				n++
+			}
+		}
+		m.mailbox, _ = m.mailbox.Update(util.FolderRefreshMsg{Account: acct, Folder: folder})
+		cmds = append(cmds, func() tea.Msg {
+			return util.InfoMsg{Text: fmt.Sprintf("%d messages marked as read", n), IsError: false}
+		})
+		return m, tea.Batch(cmds...)
+
 	case worker.DeleteResult:
 		if msg.Err != nil {
 			errText := "IMAP delete failed: " + msg.Err.Error()
@@ -632,6 +655,27 @@ func (m Model) handleVisualKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			folder := m.msglist.CurrentFolder()
 			cmds = append(cmds, func() tea.Msg {
 				return util.BatchDeleteRequestMsg{
+					Account:  acct,
+					Folder:   folder,
+					Messages: selected,
+				}
+			})
+		}
+
+	case "r":
+		selected := m.msglist.SelectedMessages()
+		lo, hi := m.msglist.VisualRange()
+		m.msglist = m.msglist.MarkReadRange(lo, hi)
+		m.msglist = m.msglist.ExitVisual()
+		m.mode = keys.ModeNormal
+		cmds = append(cmds, func() tea.Msg {
+			return keys.ModeChangedMsg{Mode: keys.ModeNormal}
+		})
+		if len(selected) > 0 {
+			acct := m.msglist.CurrentAccount()
+			folder := m.msglist.CurrentFolder()
+			cmds = append(cmds, func() tea.Msg {
+				return util.BatchMarkReadRequestMsg{
 					Account:  acct,
 					Folder:   folder,
 					Messages: selected,

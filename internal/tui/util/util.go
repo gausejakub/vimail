@@ -123,6 +123,13 @@ type BatchDeleteRequestMsg struct {
 	Messages []email.Message
 }
 
+// BatchMarkReadRequestMsg is emitted in visual mode when the user marks selected messages as read.
+type BatchMarkReadRequestMsg struct {
+	Account  string
+	Folder   string
+	Messages []email.Message
+}
+
 // DeleteCompleteMsg signals that a message delete completed.
 type DeleteCompleteMsg struct {
 	Account string

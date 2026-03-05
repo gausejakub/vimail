@@ -511,6 +511,14 @@ func (m Model) MarkCurrentRead() Model {
 	return m
 }
 
+// MarkReadRange marks all messages in the given index range as read.
+func (m Model) MarkReadRange(lo, hi int) Model {
+	for i := lo; i <= hi && i < len(m.messages); i++ {
+		m.messages[i].Unread = false
+	}
+	return m
+}
+
 // EnterVisual activates visual mode with the anchor at the current cursor.
 func (m Model) EnterVisual() Model {
 	m.visualMode = true

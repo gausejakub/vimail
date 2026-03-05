@@ -450,21 +450,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case util.BatchMarkReadRequestMsg:
 		acct := msg.Account
 		folder := msg.Folder
+		n := 0
 		for _, message := range msg.Messages {
 			if message.Unread {
+				n++
 				m.store.MarkRead(acct, folder, message.ID)
 				if m.coordinator != nil && message.UID > 0 {
 					cmds = append(cmds, m.coordinator.MarkRead(acct, folder, message.UID))
 				}
 			}
 		}
-		n := 0
-		for _, message := range msg.Messages {
-			if message.Unread {
-				n++
-			}
-		}
-		m.mailbox, _ = m.mailbox.Update(util.FolderRefreshMsg{Account: acct, Folder: folder})
+		// Reload message list + mailbox sidebar from the store.
+		cmds = append(cmds, func() tea.Msg {
+			return util.FolderRefreshMsg{Account: acct, Folder: folder}
+		})
 		cmds = append(cmds, func() tea.Msg {
 			return util.InfoMsg{Text: fmt.Sprintf("%d messages marked as read", n), IsError: false}
 		})

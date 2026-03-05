@@ -57,19 +57,14 @@ vimail launches in fullscreen (alt-screen) mode. Press `q` or `:quit` to exit.
 
 ### Account Setup
 
-After adding accounts to `config.toml`, run the setup command to store credentials:
+1. Add accounts to `~/.config/vimail/config.toml` (see examples below)
+2. Run `vimail setup` to store credentials in your OS keyring
 
 ```sh
 vimail setup
 ```
 
-This walks through each configured account and stores credentials securely in your OS keyring.
-
-- **plain / app-password** — prompts for your password and stores it in the OS keyring
-- **oauth2-gmail** — runs the OAuth2 device flow for Gmail (opens browser for authorization)
-- **oauth2-outlook** — runs the OAuth2 device flow for Outlook/Microsoft 365
-
-If no accounts are configured, `vimail setup` will remind you to add them to `config.toml` first.
+This walks through each configured account and securely stores your password in the OS keyring. If credentials already exist, it will ask before overwriting.
 
 ## Configuration
 
@@ -81,7 +76,36 @@ preview_pane = true
 
 [theme]
 name = "tokyonight"
+```
 
+### Adding a Gmail account
+
+Gmail requires an **app password** (regular passwords don't work with IMAP):
+
+1. Enable 2-Factor Authentication at https://myaccount.google.com/security
+2. Generate an app password at https://myaccount.google.com/apppasswords
+3. Copy the 16-character code
+4. Add to config:
+
+```toml
+[[accounts]]
+name = "Gmail"
+email = "you@gmail.com"
+imap_host = "imap.gmail.com"
+imap_port = 993
+smtp_host = "smtp.gmail.com"
+smtp_port = 587
+auth_method = "app-password"
+tls = "tls"
+```
+
+5. Run `vimail setup` and paste the 16-character app password when prompted
+
+### Adding other providers
+
+Most providers work with a regular password or app password:
+
+```toml
 [[accounts]]
 name = "Personal"
 email = "alice@example.com"
@@ -89,21 +113,21 @@ imap_host = "imap.example.com"
 imap_port = 993
 smtp_host = "smtp.example.com"
 smtp_port = 587
-auth_method = "plain"       # "plain" | "app-password" | "oauth2-gmail" | "oauth2-outlook"
+auth_method = "plain"       # "plain" | "app-password"
 tls = "tls"                 # "tls" (default) | "starttls" | "none"
-
-[[accounts]]
-name = "Gmail"
-email = "alice@gmail.com"
-imap_host = "imap.gmail.com"
-imap_port = 993
-smtp_host = "smtp.gmail.com"
-smtp_port = 587
-auth_method = "oauth2-gmail"
-tls = "tls"
 ```
 
-After adding accounts, run `vimail setup` to store credentials (see [Account Setup](#account-setup)).
+Common provider settings:
+
+| Provider | IMAP Host | IMAP Port | SMTP Host | SMTP Port |
+|----------|-----------|-----------|-----------|-----------|
+| Gmail | imap.gmail.com | 993 | smtp.gmail.com | 587 |
+| Outlook/Hotmail | outlook.office365.com | 993 | smtp.office365.com | 587 |
+| Yahoo | imap.mail.yahoo.com | 993 | smtp.mail.yahoo.com | 587 |
+| iCloud | imap.mail.me.com | 993 | smtp.mail.me.com | 587 |
+| Seznam.cz | imap.seznam.cz | 993 | smtp.seznam.cz | 465 |
+
+After adding accounts, run `vimail setup` to store credentials.
 
 ## Keybindings
 
@@ -112,8 +136,10 @@ After adding accounts, run `vimail setup` to store credentials (see [Account Set
 | Key | Action |
 |-----|--------|
 | `j` / `k` | Move down / up in current pane |
+| `10j` / `5k` | Move N lines down / up |
 | `h` / `l` | Switch pane left / right |
-| `g` / `G` | Jump to top / bottom |
+| `gg` / `G` | Jump to top / bottom |
+| `500gg` / `500G` | Jump to line N |
 | `Ctrl+D` / `Ctrl+U` | Half-page scroll (preview) |
 | `Tab` / `Shift+Tab` | Next / previous pane |
 
@@ -188,7 +214,7 @@ go test ./...
 
 ## Status
 
-vimail is functional with real IMAP/SMTP connectivity, OAuth2 and app-password auth, SQLite message caching, and incremental sync. Falls back to mock data when no accounts are configured.
+vimail is functional with real IMAP/SMTP connectivity, app-password auth, SQLite message caching, and incremental sync. Falls back to mock data when no accounts are configured.
 
 ## License
 

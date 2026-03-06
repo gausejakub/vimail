@@ -3,14 +3,13 @@ package worker
 import (
 	"bytes"
 	"fmt"
-	"html"
 	"io"
-	"regexp"
 	"strings"
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-message/mail"
 	"github.com/gausejakub/vimail/internal/email"
+	"github.com/jaytaylor/html2text"
 )
 
 // ParseEnvelope converts an IMAP envelope into an email.Message.
@@ -261,38 +260,16 @@ func looksLikeHTML(s string) bool {
 		strings.Contains(s, "<table") || strings.Contains(s, "<p>")
 }
 
-var (
-	reStyle   = regexp.MustCompile(`(?is)<style[^>]*>.*?</style>`)
-	reScript  = regexp.MustCompile(`(?is)<script[^>]*>.*?</script>`)
-	reTag     = regexp.MustCompile(`<[^>]+>`)
-	reSpaces = regexp.MustCompile(`[ \t]+`)
-	reBlanks = regexp.MustCompile(`\n{3,}`)
-)
-
-// stripHTML converts HTML to readable plain text.
+// stripHTML converts HTML to readable plain text using html2text.
 func stripHTML(raw string) string {
-	// Remove style and script blocks.
-	s := reStyle.ReplaceAllString(raw, "")
-	s = reScript.ReplaceAllString(s, "")
-
-	// Insert newlines for block elements.
-	for _, tag := range []string{"br", "BR", "p", "P", "div", "DIV", "tr", "TR", "li", "LI", "h1", "h2", "h3", "h4", "h5", "h6"} {
-		s = strings.ReplaceAll(s, "<"+tag+">", "\n")
-		s = strings.ReplaceAll(s, "<"+tag+" ", "\n<"+tag+" ")
-		s = strings.ReplaceAll(s, "</"+tag+">", "\n")
+	text, err := html2text.FromString(raw, html2text.Options{
+		PrettyTables: false,
+		OmitLinks:    false,
+	})
+	if err != nil {
+		return raw
 	}
-
-	// Strip all remaining tags.
-	s = reTag.ReplaceAllString(s, "")
-
-	// Decode all HTML entities (&nbsp;, &zwnj;, &#8204;, etc.).
-	s = html.UnescapeString(s)
-
-	// Normalize whitespace.
-	s = reSpaces.ReplaceAllString(s, " ")
-	s = reBlanks.ReplaceAllString(s, "\n\n")
-
-	return strings.TrimSpace(s)
+	return text
 }
 
 // FolderName maps an IMAP mailbox name to a display name.

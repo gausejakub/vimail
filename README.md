@@ -12,6 +12,11 @@ vmail brings the speed of Vim navigation to your inbox with a 3-pane layout, mod
 - **Hot-swappable themes** — Switch with `:theme <name>` at any time
 - **Compose with Vim** — Full Vim keybindings in the message body editor
 - **Multiple accounts** — Manage several email accounts in one view
+- **Attachments** — View metadata in preview, save to disk with `S`
+- **Visual mode batch ops** — Select messages with `v`, then delete (`d`) or mark as read (`r`)
+- **HTML email rendering** — Clean text conversion via html2text, open raw HTML in browser with `o`
+- **JSON auto-format** — Pretty-prints JSON bodies in the preview pane
+- **Incremental sync** — Per-account IMAP sync with loading indicators
 - **Pure Go** — No CGO required, single static binary
 
 ## Requirements
@@ -21,10 +26,14 @@ vmail brings the speed of Vim navigation to your inbox with a 3-pane layout, mod
 
 ## Install
 
+### Download binary
+
+Grab the latest release from [GitHub Releases](https://github.com/gausejakub/vimail/releases/latest) — no Go required.
+
 ### From source
 
 ```sh
-git clone https://github.com/gause/vmail.git
+git clone https://github.com/gausejakub/vimail.git
 cd vmail
 go build -o vmail .
 ```
@@ -38,7 +47,7 @@ mv vmail ~/.local/bin/
 ### Go install
 
 ```sh
-go install github.com/gause/vmail@latest
+go install github.com/gausejakub/vimail@latest
 ```
 
 ## Usage
@@ -151,6 +160,7 @@ After adding accounts, run `vimail setup` to store credentials.
 | `r` | Reply to selected message |
 | `f` | Forward |
 | `dd` | Delete message |
+| `S` | Save attachments to ~/Downloads |
 | `o` | Open in browser |
 | `R` | Refresh |
 | `Enter` | Open draft (in Drafts folder) |
@@ -162,7 +172,7 @@ After adding accounts, run `vimail setup` to store credentials.
 | Key | Action |
 |-----|--------|
 | `:` | Enter command mode |
-| `v` / `V` | Enter visual mode (select range, `d` to delete) |
+| `v` / `V` | Enter visual mode (select range, `d` to delete, `r` to mark read) |
 | `?` | Toggle help overlay |
 | `q` | Quit |
 

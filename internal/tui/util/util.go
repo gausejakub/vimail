@@ -81,12 +81,13 @@ type SendCompleteMsg struct {
 
 // FetchBodyCompleteMsg signals that a message body fetch completed.
 type FetchBodyCompleteMsg struct {
-	Account  string
-	Folder   string
-	UID      uint32
-	Body     string
-	HTMLBody string
-	Err      error
+	Account     string
+	Folder      string
+	UID         uint32
+	Body        string
+	HTMLBody    string
+	Attachments []email.Attachment
+	Err         error
 }
 
 // ConnectionStatusMsg reports connection state for an account.
@@ -128,6 +129,21 @@ type BatchMarkReadRequestMsg struct {
 	Account  string
 	Folder   string
 	Messages []email.Message
+}
+
+// SaveAttachmentsRequestMsg requests saving all attachments for the current message.
+type SaveAttachmentsRequestMsg struct {
+	Account     string
+	Folder      string
+	UID         uint32
+	Attachments []email.Attachment
+}
+
+// SaveAttachmentsResultMsg reports the result of saving attachments.
+type SaveAttachmentsResultMsg struct {
+	Count int
+	Dir   string
+	Err   error
 }
 
 // DeleteCompleteMsg signals that a message delete completed.

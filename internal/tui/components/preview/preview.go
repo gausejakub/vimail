@@ -50,6 +50,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		if m.message != nil && m.message.UID == msg.UID {
 			m.message.Body = msg.Body
 			m.message.HTMLBody = msg.HTMLBody
+			m.message.Attachments = msg.Attachments
 			m.scrollOffset = 0
 			if m.pendingOpen {
 				m.pendingOpen = false
@@ -204,6 +205,25 @@ func (m Model) View() string {
 		allLines = append(allLines, lipgloss.NewStyle().Foreground(t.Text()).Render(bl))
 	}
 
+	// Attachment list
+	if len(msg.Attachments) > 0 {
+		allLines = append(allLines,
+			"",
+			lipgloss.NewStyle().Foreground(t.BorderDim()).Render(strings.Repeat("─", m.width)),
+			lipgloss.NewStyle().Foreground(t.TextEmphasized()).Bold(true).Render(
+				fmt.Sprintf("Attachments (%d)", len(msg.Attachments))),
+		)
+		for _, att := range msg.Attachments {
+			label := fmt.Sprintf("  %s  %s", att.Filename, formatSize(att.Size))
+			allLines = append(allLines,
+				lipgloss.NewStyle().Foreground(t.Text()).Render(label),
+			)
+		}
+		allLines = append(allLines,
+			lipgloss.NewStyle().Foreground(t.TextMuted()).Render("  Press 'S' to save attachments"),
+		)
+	}
+
 	// Hint for browser viewing
 	allLines = append(allLines,
 		"",
@@ -306,13 +326,31 @@ func sanitizeBody(s string) string {
 	return strings.Join(out, "\n")
 }
 
+func formatSize(b int) string {
+	switch {
+	case b >= 1024*1024:
+		return fmt.Sprintf("%.1f MB", float64(b)/(1024*1024))
+	case b >= 1024:
+		return fmt.Sprintf("%.0f KB", float64(b)/1024)
+	case b > 0:
+		return fmt.Sprintf("%d B", b)
+	default:
+		return ""
+	}
+}
+
 func (m Model) contentHeight() int {
 	if m.message == nil {
 		return 0
 	}
 	bodyWidth := max(10, m.width-1)
 	wrapped := wordwrap.String(m.message.Body, bodyWidth)
-	return 5 + strings.Count(wrapped, "\n") + 1 + 2 // +2 for "open in browser" hint
+	h := 5 + strings.Count(wrapped, "\n") + 1
+	if len(m.message.Attachments) > 0 {
+		h += 3 + len(m.message.Attachments) // separator + header + files + save hint
+	}
+	h += 2 // "open in browser" hint
+	return h
 }
 
 func (m Model) maxScroll() int {

@@ -331,6 +331,53 @@ func (w *IMAPWorker) FetchBody(folder string, uid uint32) (BodyResult, error) {
 	return result, nil
 }
 
+// FetchRawMessage fetches the full RFC 5322 message bytes for a UID.
+func (w *IMAPWorker) FetchRawMessage(folder string, uid uint32) ([]byte, error) {
+	w.opMu.Lock()
+	defer w.opMu.Unlock()
+
+	if w.client == nil {
+		return nil, fmt.Errorf("not connected")
+	}
+
+	imapName := w.imapMailboxName(folder)
+	selCmd := w.client.Select(imapName, nil)
+	if _, err := selCmd.Wait(); err != nil {
+		return nil, fmt.Errorf("SELECT %s: %w", imapName, err)
+	}
+
+	var seqSet imap.UIDSet
+	seqSet.AddNum(imap.UID(uid))
+
+	fetchCmd := w.client.Fetch(seqSet, &imap.FetchOptions{
+		BodySection: []*imap.FetchItemBodySection{{}},
+	})
+
+	var raw []byte
+	for {
+		msgData := fetchCmd.Next()
+		if msgData == nil {
+			break
+		}
+		for {
+			item := msgData.Next()
+			if item == nil {
+				break
+			}
+			if bs, ok := item.(imapclient.FetchItemDataBodySection); ok {
+				data, err := io.ReadAll(bs.Literal)
+				if err == nil {
+					raw = data
+				}
+			}
+		}
+	}
+	if err := fetchCmd.Close(); err != nil {
+		return raw, fmt.Errorf("FETCH: %w", err)
+	}
+	return raw, nil
+}
+
 // MarkRead sets the \Seen flag on a message by UID.
 func (w *IMAPWorker) MarkRead(folder string, uid uint32) error {
 	w.opMu.Lock()

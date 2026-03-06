@@ -3,12 +3,16 @@ package worker
 import (
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"sync"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/gausejakub/vimail/internal/auth"
 	"github.com/gausejakub/vimail/internal/cache"
 	"github.com/gausejakub/vimail/internal/config"
+	"github.com/gausejakub/vimail/internal/email"
+	"github.com/gausejakub/vimail/internal/tui/util"
 )
 
 // Coordinator manages IMAP and SMTP workers for all configured accounts.
@@ -111,12 +115,13 @@ func (c *Coordinator) FetchBody(acctEmail, folder string, uid uint32) tea.Cmd {
 
 		result, err := w.FetchBody(folder, uid)
 		return FetchBodyResult{
-			Account:  acctEmail,
-			Folder:   folder,
-			UID:      uid,
-			Body:     result.Text,
-			HTMLBody: result.HTML,
-			Err:      err,
+			Account:     acctEmail,
+			Folder:      folder,
+			UID:         uid,
+			Body:        result.Text,
+			HTMLBody:    result.HTML,
+			Attachments: result.Attachments,
+			Err:         err,
 		}
 	}
 }
@@ -131,6 +136,59 @@ func (c *Coordinator) MarkRead(acctEmail, folder string, uid uint32) tea.Cmd {
 		w.MarkRead(folder, uid)
 		return nil
 	}
+}
+
+// SaveAttachments fetches the raw message and saves all attachments to ~/Downloads.
+func (c *Coordinator) SaveAttachments(acctEmail, folder string, uid uint32, attachments []email.Attachment) tea.Cmd {
+	return func() tea.Msg {
+		w := c.getIMAPWorker(acctEmail)
+		if w == nil {
+			return util.SaveAttachmentsResultMsg{Err: fmt.Errorf("no IMAP worker for %s", acctEmail)}
+		}
+
+		raw, err := w.FetchRawMessage(folder, uid)
+		if err != nil {
+			return util.SaveAttachmentsResultMsg{Err: fmt.Errorf("fetch message: %w", err)}
+		}
+
+		parts, err := ExtractAttachmentData(raw)
+		if err != nil {
+			return util.SaveAttachmentsResultMsg{Err: fmt.Errorf("parse attachments: %w", err)}
+		}
+
+		home, _ := os.UserHomeDir()
+		dir := filepath.Join(home, "Downloads")
+		os.MkdirAll(dir, 0755)
+
+		saved := 0
+		for _, att := range parts {
+			path := filepath.Join(dir, att.Filename)
+			// Avoid overwriting: append (1), (2), etc.
+			path = uniquePath(path)
+			if err := os.WriteFile(path, att.Data, 0644); err != nil {
+				log.Printf("save attachment %s: %v", att.Filename, err)
+				continue
+			}
+			saved++
+		}
+
+		return util.SaveAttachmentsResultMsg{Count: saved, Dir: dir}
+	}
+}
+
+func uniquePath(path string) string {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return path
+	}
+	ext := filepath.Ext(path)
+	base := path[:len(path)-len(ext)]
+	for i := 1; i < 1000; i++ {
+		candidate := fmt.Sprintf("%s (%d)%s", base, i, ext)
+		if _, err := os.Stat(candidate); os.IsNotExist(err) {
+			return candidate
+		}
+	}
+	return path
 }
 
 // SendAndArchive returns a tea.Cmd that sends an email via SMTP and

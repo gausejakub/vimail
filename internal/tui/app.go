@@ -352,20 +352,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case worker.FetchBodyResult:
 		if msg.Err == nil {
 			bodyMsg := util.FetchBodyCompleteMsg{
-				Account:  msg.Account,
-				Folder:   msg.Folder,
-				UID:      msg.UID,
-				Body:     msg.Body,
-				HTMLBody: msg.HTMLBody,
+				Account:     msg.Account,
+				Folder:      msg.Folder,
+				UID:         msg.UID,
+				Body:        msg.Body,
+				HTMLBody:    msg.HTMLBody,
+				Attachments: msg.Attachments,
 			}
 			var cmd tea.Cmd
 			m.preview, cmd = m.preview.Update(bodyMsg)
 			cmds = append(cmds, cmd)
 			// Also update the message list so reply has the body.
-			m.msglist = m.msglist.UpdateBody(msg.UID, msg.Body, msg.HTMLBody)
+			m.msglist = m.msglist.UpdateBody(msg.UID, msg.Body, msg.HTMLBody, msg.Attachments)
 		} else {
 			cmds = append(cmds, func() tea.Msg {
 				return util.InfoMsg{Text: "Fetch body: " + msg.Err.Error(), IsError: true}
+			})
+		}
+		return m, tea.Batch(cmds...)
+
+	case util.SaveAttachmentsResultMsg:
+		if msg.Err != nil {
+			cmds = append(cmds, func() tea.Msg {
+				return util.InfoMsg{Text: "Save failed: " + msg.Err.Error(), IsError: true}
+			})
+		} else {
+			dir := msg.Dir
+			n := msg.Count
+			cmds = append(cmds, func() tea.Msg {
+				return util.InfoMsg{Text: fmt.Sprintf("%d attachments saved to %s", n, dir), IsError: false}
 			})
 		}
 		return m, tea.Batch(cmds...)
@@ -636,6 +651,22 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.preview, cmd = m.preview.HandleKey(k)
 			cmds = append(cmds, cmd)
+		} else if k == "S" {
+			// Save attachments for current message
+			if sel := m.msglist.SelectedMessage(); sel != nil && len(sel.Attachments) > 0 {
+				acct := m.mailbox.SelectedEmail()
+				folder := m.msglist.CurrentFolder()
+				if m.coordinator != nil {
+					cmds = append(cmds, func() tea.Msg {
+						return util.InfoMsg{Text: fmt.Sprintf("Saving %d attachments…", len(sel.Attachments)), IsError: false}
+					})
+					cmds = append(cmds, m.coordinator.SaveAttachments(acct, folder, sel.UID, sel.Attachments))
+				}
+			} else {
+				cmds = append(cmds, func() tea.Msg {
+					return util.InfoMsg{Text: "No attachments", IsError: false}
+				})
+			}
 		} else {
 			// Forward to focused pane
 			var cmd tea.Cmd

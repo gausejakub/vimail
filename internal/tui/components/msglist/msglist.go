@@ -207,12 +207,13 @@ func (m Model) selectCurrent() tea.Cmd {
 	return nil
 }
 
-// UpdateBody updates the body of a message in the list (after lazy fetch).
-func (m Model) UpdateBody(uid uint32, body, htmlBody string) Model {
+// UpdateBody updates the body and attachments of a message in the list (after lazy fetch).
+func (m Model) UpdateBody(uid uint32, body, htmlBody string, attachments []email.Attachment) Model {
 	for i := range m.messages {
 		if m.messages[i].UID == uid {
 			m.messages[i].Body = body
 			m.messages[i].HTMLBody = htmlBody
+			m.messages[i].Attachments = attachments
 			break
 		}
 	}

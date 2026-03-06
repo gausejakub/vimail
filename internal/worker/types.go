@@ -39,12 +39,13 @@ type FetchBodyRequest struct {
 
 // FetchBodyResult is the result of fetching a message body.
 type FetchBodyResult struct {
-	Account  string
-	Folder   string
-	UID      uint32
-	Body     string
-	HTMLBody string
-	Err      error
+	Account     string
+	Folder      string
+	UID         uint32
+	Body        string
+	HTMLBody    string
+	Attachments []email.Attachment
+	Err         error
 }
 
 // SyncAccountCompleteMsg signals that a single account finished syncing.

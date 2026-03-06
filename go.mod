@@ -48,7 +48,7 @@ require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/kujtimiihoxha/vimtea v0.0.2
+	github.com/gausejakub/vimail/pkg/vimtea v0.0.0
 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-localereader v0.0.1 // indirect
@@ -68,4 +68,4 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 )
 
-replace github.com/kujtimiihoxha/vimtea => ./pkg/vimtea
+replace github.com/gausejakub/vimail/pkg/vimtea => ./pkg/vimtea

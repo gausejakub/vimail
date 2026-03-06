@@ -11,7 +11,7 @@ import (
 	"github.com/gausejakub/vimail/internal/theme"
 	"github.com/gausejakub/vimail/internal/tui/keys"
 	"github.com/gausejakub/vimail/internal/tui/util"
-	"github.com/kujtimiihoxha/vimtea"
+	"github.com/gausejakub/vimail/pkg/vimtea"
 )
 
 const (

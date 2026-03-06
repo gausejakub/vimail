@@ -27,10 +27,22 @@ type ThemeConfig struct {
 	Name string `toml:"name"`
 }
 
+type AIAgentConfig struct {
+	Name string   `toml:"name"`
+	Cmd  string   `toml:"cmd"`
+	Args []string `toml:"args"`
+}
+
+type AIConfig struct {
+	Default string          `toml:"default"`
+	Agents  []AIAgentConfig `toml:"agents"`
+}
+
 type Config struct {
 	General  GeneralConfig   `toml:"general"`
 	Accounts []AccountConfig `toml:"accounts"`
 	Theme    ThemeConfig     `toml:"theme"`
+	AI       AIConfig        `toml:"ai"`
 }
 
 func DefaultConfig() Config {
@@ -40,6 +52,12 @@ func DefaultConfig() Config {
 		},
 		Theme: ThemeConfig{
 			Name: "vimail",
+		},
+		AI: AIConfig{
+			Default: "claude",
+			Agents: []AIAgentConfig{
+				{Name: "claude", Cmd: "claude", Args: []string{"--print", "-p", "{prompt}"}},
+			},
 		},
 	}
 }

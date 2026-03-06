@@ -10,6 +10,7 @@ vimail brings the speed of Vim navigation to your inbox with a 3-pane layout, mo
 - **3-pane layout** — Mailbox sidebar, message list, and preview pane
 - **8 color themes** — vimail, tokyonight, catppuccin, kanagawa, gruvbox, nord, matrix, system
 - **Hot-swappable themes** — Switch with `:theme <name>` at any time
+- **AI compose assistant** — `:ai` in the editor to draft or rewrite emails using any CLI agent
 - **Compose with Vim** — Full Vim keybindings in the message body editor
 - **Multiple accounts** — Manage several email accounts in one view
 - **Attachments** — View metadata in preview, save to disk with `S`
@@ -183,10 +184,95 @@ After adding accounts, run `vimail setup` to store credentials.
 | `:quit` / `:q` | Quit vimail |
 | `:theme <name>` | Switch theme |
 | `:sync` | Sync mail |
+| `:ai` | AI-assisted compose (default agent) |
+| `:ai <name>` | AI-assisted compose with a specific agent |
 
 ### Available themes
 
 `vimail` `tokyonight` `catppuccin` `kanagawa` `gruvbox` `nord` `matrix` `system`
+
+## AI Compose Assistant
+
+vimail can use any CLI-based AI tool to help draft, rewrite, or reply to emails. Type `:ai` in the compose editor and the current body is sent to the AI agent — the response replaces the editor content.
+
+### How it works
+
+1. Open compose (`c`), reply (`r`), or a draft (`Enter`)
+2. Type a prompt in the body (e.g. "write a polite decline to this meeting")
+3. Press `Esc` to enter normal mode
+4. Type `:ai` and press `Enter`
+5. The hint line shows "Thinking..." while the agent runs
+6. The response replaces the editor body — review, edit, and send with `Ctrl+S`
+
+When replying, the quoted text (lines starting with `>`) is included as context, so the agent writes a reply to the original message.
+
+### Default setup
+
+Out of the box, vimail uses [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-cli). If `claude` is in your `$PATH`, no configuration is needed — just use `:ai`.
+
+### Configuring agents
+
+Add an `[ai]` section to `~/.config/vimail/config.toml` to define one or more agents:
+
+```toml
+[ai]
+default = "claude"
+
+[[ai.agents]]
+name = "claude"
+cmd = "claude"
+args = ["--print", "-p", "{prompt}"]
+
+[[ai.agents]]
+name = "ollama"
+cmd = "ollama"
+args = ["run", "llama3.2", "{prompt}"]
+
+[[ai.agents]]
+name = "gemini"
+cmd = "gemini"
+args = ["-p", "{prompt}"]
+
+[[ai.agents]]
+name = "gpt"
+cmd = "sgpt"
+args = ["--no-md", "{prompt}"]
+
+[[ai.agents]]
+name = "local"
+cmd = "llm"
+args = ["-m", "mistral", "{prompt}"]
+```
+
+Each agent needs:
+
+| Field | Description |
+|-------|-------------|
+| `name` | Identifier used with `:ai <name>` |
+| `cmd` | Binary name or path (must be in `$PATH`) |
+| `args` | Arguments passed to the binary. `{prompt}` is replaced with the full prompt |
+
+The `{prompt}` placeholder is replaced with the system prompt (which includes To, Subject, and compose context) plus the editor body.
+
+### Usage examples
+
+| Command | What happens |
+|---------|-------------|
+| `:ai` | Uses the default agent |
+| `:ai ollama` | Uses the agent named "ollama" |
+| `:ai gpt` | Uses the agent named "gpt" |
+
+### Compatible CLI tools
+
+Any tool that accepts a prompt as an argument and prints the response to stdout will work:
+
+- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-cli) — `claude --print -p`
+- [Ollama](https://ollama.com) — `ollama run <model>`
+- [llm](https://github.com/simonw/llm) — `llm -m <model>`
+- [Gemini CLI](https://github.com/google-gemini/gemini-cli) — `gemini -p`
+- [sgpt](https://github.com/tbckr/sgpt) — `sgpt --no-md`
+- [aichat](https://github.com/sigoden/aichat) — `aichat -m <model>`
+- [mods](https://github.com/charmbracelet/mods) — `mods`
 
 ## Project structure
 
@@ -196,6 +282,7 @@ internal/
   config/                        TOML config loading
   auth/                          OS keyring, OAuth2 device flow, setup CLI
   email/                         Domain types (Account, Folder, Message), Store interface
+  ai/                            AI agent CLI wrapper (claude, ollama, etc.)
   cache/                         SQLite schema + Store implementation
   worker/                        IMAP worker, SMTP worker, Coordinator
   mock/                          Mock data for dev mode

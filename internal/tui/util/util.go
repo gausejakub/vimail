@@ -153,3 +153,15 @@ type DeleteCompleteMsg struct {
 	UID     uint32
 	Err     error
 }
+
+// AIRequestMsg signals that the :ai command was invoked.
+type AIRequestMsg struct {
+	Agent string // optional agent name; empty = default
+	Body  string
+}
+
+// AIResponseMsg carries the result of an AI generation request.
+type AIResponseMsg struct {
+	Text string
+	Err  error
+}

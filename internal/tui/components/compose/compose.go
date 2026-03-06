@@ -6,6 +6,8 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/gausejakub/vimail/internal/ai"
+	"github.com/gausejakub/vimail/internal/config"
 	"github.com/gausejakub/vimail/internal/theme"
 	"github.com/gausejakub/vimail/internal/tui/keys"
 	"github.com/gausejakub/vimail/internal/tui/util"
@@ -32,9 +34,13 @@ type Model struct {
 
 	// Draft tracking
 	draftID string // non-empty when editing an existing draft
+
+	// AI state
+	aiCfg     config.AIConfig
+	aiPending bool
 }
 
-func New() Model {
+func New(aiCfg config.AIConfig) Model {
 	inputs := make([]textinput.Model, fieldCount)
 
 	to := textinput.New()
@@ -48,11 +54,14 @@ func New() Model {
 	subj.Prompt = "Subject: "
 	inputs[fieldSubject] = subj
 
-	return Model{
+	m := Model{
 		inputs:  inputs,
 		editor:  newEditor(""),
 		focused: fieldTo,
+		aiCfg:   aiCfg,
 	}
+	m.registerAICommand()
+	return m
 }
 
 func newEditor(content string) vimtea.Editor {
@@ -76,6 +85,31 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
+	case util.AIRequestMsg:
+		m.aiPending = true
+		aiCfg := m.aiCfg
+		agent := msg.Agent
+		to := m.inputs[fieldTo].Value()
+		subject := m.inputs[fieldSubject].Value()
+		body := msg.Body
+		return m, func() tea.Msg {
+			result, err := ai.Generate(aiCfg, agent, to, subject, body)
+			return util.AIResponseMsg{Text: result, Err: err}
+		}
+
+	case util.AIResponseMsg:
+		m.aiPending = false
+		if msg.Err != nil {
+			return m, func() tea.Msg {
+				return util.InfoMsg{Text: msg.Err.Error(), IsError: true}
+			}
+		}
+		m.editor = newEditor(msg.Text)
+		m.registerAICommand()
+		return m, func() tea.Msg {
+			return util.InfoMsg{Text: "AI draft ready"}
+		}
+
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+s":
@@ -236,9 +270,13 @@ func (m Model) View() string {
 	}
 
 	lines = append(lines, editorView)
+	hint := "  Tab: next field | :ai: assist | Ctrl+S: send | Esc: cancel"
+	if m.aiPending {
+		hint = "  Thinking..."
+	}
 	lines = append(lines, lipgloss.NewStyle().
 		Foreground(t.TextMuted()).
-		Render("  Tab: next field | Ctrl+S: send | Esc: cancel"))
+		Render(hint))
 
 	content := strings.Join(lines, "\n")
 
@@ -262,6 +300,8 @@ func (m Model) Show() Model {
 	m.inputs[fieldTo].Focus()
 	m.editor = newEditor("")
 	m.editorMode = vimtea.ModeNormal
+	m.aiPending = false
+	m.registerAICommand()
 	m = m.updateFieldStyles()
 	return m
 }
@@ -277,6 +317,8 @@ func (m Model) ShowDraft(id, to, subject, body string) Model {
 	m.inputs[fieldSubject].SetValue(subject)
 	m.editor = newEditor(body)
 	m.editorMode = vimtea.ModeNormal
+	m.aiPending = false
+	m.registerAICommand()
 	m = m.updateFieldStyles()
 	return m
 }
@@ -291,6 +333,8 @@ func (m Model) ShowReply(to, subject, quotedBody string) Model {
 	m.inputs[fieldSubject].SetValue(subject)
 	m.editor = newEditor(quotedBody)
 	m.editorMode = vimtea.ModeNormal
+	m.aiPending = false
+	m.registerAICommand()
 	m = m.updateFieldStyles()
 	return m
 }
@@ -370,6 +414,19 @@ func (m Model) saveDraftCmd() tea.Cmd {
 
 func (m Model) DraftID() string {
 	return m.draftID
+}
+
+func (m *Model) registerAICommand() {
+	m.editor.AddCommand("ai", func(buf vimtea.Buffer, args []string) tea.Cmd {
+		body := buf.Text()
+		var agent string
+		if len(args) > 0 {
+			agent = args[0]
+		}
+		return func() tea.Msg {
+			return util.AIRequestMsg{Agent: agent, Body: body}
+		}
+	})
 }
 
 func vimteaModeToKeys(m vimtea.EditorMode) keys.Mode {

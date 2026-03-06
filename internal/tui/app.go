@@ -74,7 +74,7 @@ func New(cfg config.Config, store email.Store) Model {
 		msglist:     msglist.New(store).Focus(),
 		preview:     preview.New(),
 		status:      status.New(),
-		compose:     compose.New(),
+		compose:     compose.New(cfg.AI),
 		cmdInput:    cmdInput,
 	}
 	return m

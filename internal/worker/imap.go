@@ -190,7 +190,9 @@ func (w *IMAPWorker) ListMailboxes() ([]string, error) {
 
 // SyncFolder performs an incremental sync of a folder.
 // Returns the number of new messages fetched.
-func (w *IMAPWorker) SyncFolder(folder string) (int, error) {
+// SyncFolder syncs a single folder via IMAP FETCH.
+// If onProgress is non-nil, it is called periodically with the number of new messages fetched so far.
+func (w *IMAPWorker) SyncFolder(folder string, onProgress ...func(fetched int)) (int, error) {
 	w.opMu.Lock()
 	defer w.opMu.Unlock()
 
@@ -258,6 +260,9 @@ func (w *IMAPWorker) SyncFolder(folder string) (int, error) {
 			continue
 		}
 		newCount++
+		if len(onProgress) > 0 && onProgress[0] != nil && newCount%100 == 0 {
+			onProgress[0](newCount)
+		}
 	}
 
 	if err := fetchCmd.Close(); err != nil {

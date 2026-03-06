@@ -287,6 +287,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(cmds...)
 
+	case worker.SyncProgressMsg:
+		label := fmt.Sprintf("⟳ %s %d/%d %s", msg.Account, msg.Done, msg.Total, msg.Folder)
+		if msg.Messages > 0 {
+			label = fmt.Sprintf("⟳ %s %d/%d %s (%d msgs)", msg.Account, msg.Done, msg.Total, msg.Folder, msg.Messages)
+		}
+		var cmd tea.Cmd
+		m.status, cmd = m.status.Update(util.ProcessStartMsg{
+			ID:    "sync:" + msg.Account,
+			Label: label,
+		})
+		cmds = append(cmds, cmd)
+		return m, tea.Batch(cmds...)
+
 	case worker.SyncAccountCompleteMsg:
 		m.syncPending--
 		m.mailbox = m.mailbox.SetAccountSyncing(msg.Account, false)
@@ -1008,7 +1021,12 @@ func (m Model) processesView() string {
 
 	content := strings.Join(rows, "\n")
 
-	w := 44
+	// Size to content: find widest row + padding (4) + border (2).
+	contentWidth := lipgloss.Width(content)
+	w := contentWidth + 6
+	if w < 30 {
+		w = 30
+	}
 	if m.width > 0 && w > m.width-4 {
 		w = m.width - 4
 	}

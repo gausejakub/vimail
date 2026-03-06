@@ -48,6 +48,15 @@ type FetchBodyResult struct {
 	Err         error
 }
 
+// SyncProgressMsg reports per-folder progress during account sync.
+type SyncProgressMsg struct {
+	Account  string
+	Folder   string
+	Done     int // folders completed so far
+	Total    int // total folders
+	Messages int // messages fetched in current folder (0 = just started)
+}
+
 // SyncAccountCompleteMsg signals that a single account finished syncing.
 type SyncAccountCompleteMsg struct {
 	Account string

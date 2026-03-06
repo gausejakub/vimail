@@ -332,9 +332,33 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig) error {
 		return fmt.Errorf("list mailboxes: %w", err)
 	}
 
-	// Sync each folder.
-	for _, folder := range folders {
-		if _, err := w.SyncFolder(folder); err != nil {
+	// Sync each folder with progress reporting.
+	for i, folder := range folders {
+		if c.program != nil {
+			c.program.Send(SyncProgressMsg{
+				Account:  acct.Email,
+				Folder:   folder,
+				Done:     i,
+				Total:    len(folders),
+				Messages: 0,
+			})
+		}
+		var onProgress func(fetched int)
+		if c.program != nil {
+			folderCopy := folder
+			idx := i
+			total := len(folders)
+			onProgress = func(fetched int) {
+				c.program.Send(SyncProgressMsg{
+					Account:  acct.Email,
+					Folder:   folderCopy,
+					Done:     idx,
+					Total:    total,
+					Messages: fetched,
+				})
+			}
+		}
+		if _, err := w.SyncFolder(folder, onProgress); err != nil {
 			log.Printf("sync %s/%s: %v", acct.Email, folder, err)
 		}
 	}

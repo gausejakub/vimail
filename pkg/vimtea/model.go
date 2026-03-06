@@ -62,6 +62,9 @@ type Editor interface {
 	// SetStatusMessage sets the status message displayed in the status bar
 	SetStatusMessage(msg string) tea.Cmd
 
+	// GetStatusText returns the current status line text (command buffer, search, mode info)
+	GetStatusText() string
+
 	// SetSize updates the editor's dimensions when the terminal window is resized
 	SetSize(width, height int) (tea.Model, tea.Cmd)
 }
@@ -548,6 +551,11 @@ func (m *editorModel) SetStatusMessage(msg string) tea.Cmd {
 		m.statusMessage = msg
 		return nil
 	}
+}
+
+// GetStatusText returns the current status line text.
+func (m *editorModel) GetStatusText() string {
+	return m.getStatusText()
 }
 
 // SetStatusMsg creates a command that sets the status message

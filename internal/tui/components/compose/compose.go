@@ -270,9 +270,14 @@ func (m Model) View() string {
 	}
 
 	lines = append(lines, editorView)
-	hint := "  Tab: next field | :ai: assist | Ctrl+S: send | Esc: cancel"
-	if m.aiPending {
+	var hint string
+	switch {
+	case m.aiPending:
 		hint = "  Thinking..."
+	case m.focused == fieldEditor && m.editor.GetMode() == vimtea.ModeCommand:
+		hint = "  " + m.editor.GetStatusText()
+	default:
+		hint = "  Tab: next field | :ai: assist | Ctrl+S: send | Esc: cancel"
 	}
 	lines = append(lines, lipgloss.NewStyle().
 		Foreground(t.TextMuted()).

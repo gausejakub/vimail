@@ -8,7 +8,7 @@ vimail brings the speed of Vim navigation to your inbox with a 3-pane layout, mo
 
 - **Vim-style modal editing** — Normal, Insert, Visual, and Command modes
 - **3-pane layout** — Mailbox sidebar, message list, and preview pane
-- **8 color themes** — vmail, tokyonight, catppuccin, kanagawa, gruvbox, nord, matrix, system
+- **8 color themes** — vimail, tokyonight, catppuccin, kanagawa, gruvbox, nord, matrix, system
 - **Hot-swappable themes** — Switch with `:theme <name>` at any time
 - **Compose with Vim** — Full Vim keybindings in the message body editor
 - **Multiple accounts** — Manage several email accounts in one view
@@ -186,7 +186,7 @@ After adding accounts, run `vimail setup` to store credentials.
 
 ### Available themes
 
-`vmail` `tokyonight` `catppuccin` `kanagawa` `gruvbox` `nord` `matrix` `system`
+`vimail` `tokyonight` `catppuccin` `kanagawa` `gruvbox` `nord` `matrix` `system`
 
 ## Project structure
 

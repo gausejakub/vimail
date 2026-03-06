@@ -1,8 +1,8 @@
-# vmail
+# vimail
 
 A terminal-based email client with Vim-style modal keybindings, written in Go.
 
-vmail brings the speed of Vim navigation to your inbox with a 3-pane layout, modal editing, and multiple color themes.
+vimail brings the speed of Vim navigation to your inbox with a 3-pane layout, modal editing, and multiple color themes.
 
 ## Features
 
@@ -34,14 +34,14 @@ Grab the latest release from [GitHub Releases](https://github.com/gausejakub/vim
 
 ```sh
 git clone https://github.com/gausejakub/vimail.git
-cd vmail
-go build -o vmail .
+cd vimail
+go build -o vimail .
 ```
 
 Move the binary somewhere on your `$PATH`:
 
 ```sh
-mv vmail ~/.local/bin/
+mv vimail ~/.local/bin/
 ```
 
 ### Go install
@@ -180,7 +180,7 @@ After adding accounts, run `vimail setup` to store credentials.
 
 | Command | Action |
 |---------|--------|
-| `:quit` / `:q` | Quit vmail |
+| `:quit` / `:q` | Quit vimail |
 | `:theme <name>` | Switch theme |
 | `:sync` | Sync mail |
 

@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // Regular expression for matching ANSI escape sequences
@@ -105,6 +106,9 @@ func (m *editorModel) renderContent() string {
 
 	visibleContent := m.getVisibleContent()
 
+	lineNumWidth := 4
+	contentWidth := m.width - lineNumWidth
+
 	for i, line := range visibleContent {
 		lineNum := i + m.viewport.YOffset + 1
 		rowIdx := lineNum - 1
@@ -117,7 +121,11 @@ func (m *editorModel) renderContent() string {
 		}
 
 		inVisualSelection := m.mode == ModeVisual && rowIdx >= selStart.Row && rowIdx <= selEnd.Row
-		sb.WriteString(m.renderLine(line, rowIdx, inVisualSelection, selStart, selEnd))
+		rendered := m.renderLine(line, rowIdx, inVisualSelection, selStart, selEnd)
+		if contentWidth > 0 {
+			rendered = ansi.Truncate(rendered, contentWidth, "")
+		}
+		sb.WriteString(rendered)
 		sb.WriteString("\n")
 	}
 

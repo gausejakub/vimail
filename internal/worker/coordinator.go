@@ -24,6 +24,8 @@ type Coordinator struct {
 	imap    map[string]*IMAPWorker // keyed by email
 	smtp    map[string]*SMTPWorker // keyed by email
 	creds   map[string]*auth.Credentials
+
+	program *tea.Program // set after bubbletea starts, for async progress messages
 }
 
 // NewCoordinator creates a coordinator for the given config and store.
@@ -35,6 +37,11 @@ func NewCoordinator(cfg config.Config, store *cache.SQLiteStore) *Coordinator {
 		smtp:  make(map[string]*SMTPWorker),
 		creds: make(map[string]*auth.Credentials),
 	}
+}
+
+// SetProgram sets the bubbletea program reference for sending async progress messages.
+func (c *Coordinator) SetProgram(p *tea.Program) {
+	c.program = p
 }
 
 // ResolveCredentials resolves and caches credentials for all accounts.
@@ -235,7 +242,18 @@ func (c *Coordinator) DeleteMessages(acctEmail, folder string, uids []uint32) te
 			}
 		}
 
-		err := w.MoveToTrashBatch(folder, uids)
+		var onProgress func(done, total int)
+		if c.program != nil && len(uids) > 500 {
+			onProgress = func(done, total int) {
+				c.program.Send(DeleteProgressMsg{
+					Account: acctEmail,
+					Folder:  folder,
+					Done:    done,
+					Total:   total,
+				})
+			}
+		}
+		err := w.MoveToTrashBatch(folder, uids, onProgress)
 		if err == nil {
 			c.store.ClearPendingDeletes(acctEmail, folder, uids)
 		}
@@ -256,7 +274,7 @@ func (c *Coordinator) RetryPendingDeletes() tea.Cmd {
 			if w == nil {
 				continue
 			}
-			if err := w.MoveToTrashBatch(pd.Folder, pd.UIDs); err != nil {
+			if err := w.MoveToTrashBatch(pd.Folder, pd.UIDs, nil); err != nil {
 				log.Printf("retry delete %s/%s: %v", pd.Account, pd.Folder, err)
 				continue
 			}
@@ -301,7 +319,7 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig) error {
 		if pd.Account != acct.Email {
 			continue
 		}
-		if err := w.MoveToTrashBatch(pd.Folder, pd.UIDs); err != nil {
+		if err := w.MoveToTrashBatch(pd.Folder, pd.UIDs, nil); err != nil {
 			log.Printf("retry delete %s/%s: %v", pd.Account, pd.Folder, err)
 		} else {
 			c.store.ClearPendingDeletes(pd.Account, pd.Folder, pd.UIDs)

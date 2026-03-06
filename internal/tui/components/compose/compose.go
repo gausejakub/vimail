@@ -92,23 +92,30 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		to := m.inputs[fieldTo].Value()
 		subject := m.inputs[fieldSubject].Value()
 		body := msg.Body
-		return m, func() tea.Msg {
-			result, err := ai.Generate(aiCfg, agent, to, subject, body)
-			return util.AIResponseMsg{Text: result, Err: err}
-		}
+		return m, tea.Batch(
+			func() tea.Msg {
+				return util.ProcessStartMsg{ID: "ai", Label: "◐ AI thinking…"}
+			},
+			func() tea.Msg {
+				result, err := ai.Generate(aiCfg, agent, to, subject, body)
+				return util.AIResponseMsg{Text: result, Err: err}
+			},
+		)
 
 	case util.AIResponseMsg:
 		m.aiPending = false
 		if msg.Err != nil {
-			return m, func() tea.Msg {
-				return util.InfoMsg{Text: msg.Err.Error(), IsError: true}
-			}
+			return m, tea.Batch(
+				func() tea.Msg { return util.ProcessEndMsg{ID: "ai"} },
+				func() tea.Msg { return util.InfoMsg{Text: msg.Err.Error(), IsError: true} },
+			)
 		}
 		m.editor = newEditor(msg.Text)
 		m.registerAICommand()
-		return m, func() tea.Msg {
-			return util.InfoMsg{Text: "AI draft ready"}
-		}
+		return m, tea.Batch(
+			func() tea.Msg { return util.ProcessEndMsg{ID: "ai"} },
+			func() tea.Msg { return util.InfoMsg{Text: "AI draft ready"} },
+		)
 
 	case tea.KeyMsg:
 		switch msg.String() {

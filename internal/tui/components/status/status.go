@@ -1,6 +1,8 @@
 package status
 
 import (
+	"fmt"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -21,7 +23,10 @@ type Model struct {
 	infoText    string
 	infoIsError bool
 	connected   bool
-	syncing     bool
+
+	// Running background processes (insertion-ordered).
+	processes map[string]string
+	order     []string
 }
 
 func New() Model {
@@ -30,6 +35,7 @@ func New() Model {
 		account:    "Personal",
 		folder:     "Inbox",
 		syncStatus: "just now",
+		processes:  make(map[string]string),
 	}
 }
 
@@ -56,10 +62,20 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	case util.FolderSelectedMsg:
 		m.account = msg.Account
 		m.folder = msg.Folder
-	case util.SyncStartMsg:
-		m.syncing = true
+	case util.ProcessStartMsg:
+		if _, exists := m.processes[msg.ID]; !exists {
+			m.order = append(m.order, msg.ID)
+		}
+		m.processes[msg.ID] = msg.Label
+	case util.ProcessEndMsg:
+		delete(m.processes, msg.ID)
+		for i, id := range m.order {
+			if id == msg.ID {
+				m.order = append(m.order[:i], m.order[i+1:]...)
+				break
+			}
+		}
 	case util.SyncAllCompleteMsg:
-		m.syncing = false
 		m.syncStatus = "just now"
 		m.connected = true
 	case util.ConnectionStatusMsg:
@@ -109,24 +125,40 @@ func (m Model) View() string {
 			Render(m.infoText)
 	}
 
-	var syncText string
-	if m.syncing {
-		syncText = "⟳ syncing…"
-	} else if m.connected {
-		syncText = "● ↻ " + m.syncStatus
+	var sync string
+	if len(m.processes) > 0 {
+		// Collect all labels in order.
+		var allLabels []string
+		for _, id := range m.order {
+			if label, ok := m.processes[id]; ok {
+				allLabels = append(allLabels, label)
+			}
+		}
+		// Calculate available width for the process area.
+		leftWidth := lipgloss.Width(badge + location + info)
+		helpWidth := lipgloss.Width("?:help") + 4 // 2 padding + 2 gap
+		availWidth := m.width - leftWidth - helpWidth
+
+		// Fit as many labels as possible, then show "+N more".
+		processText := fitLabels(allLabels, availWidth)
+		sync = lipgloss.NewStyle().
+			Foreground(t.Info()).
+			Background(bg).
+			Render(processText)
 	} else {
-		syncText = "↻ " + m.syncStatus
+		var syncText string
+		syncFg := t.TextMuted()
+		if m.connected {
+			syncText = "● ↻ " + m.syncStatus
+			syncFg = t.Success()
+		} else {
+			syncText = "↻ " + m.syncStatus
+		}
+		sync = lipgloss.NewStyle().
+			Foreground(syncFg).
+			Background(bg).
+			Render(syncText)
 	}
-	syncFg := t.TextMuted()
-	if m.syncing {
-		syncFg = t.Info()
-	} else if m.connected {
-		syncFg = t.Success()
-	}
-	sync := lipgloss.NewStyle().
-		Foreground(syncFg).
-		Background(bg).
-		Render(syncText)
 
 	help := lipgloss.NewStyle().
 		Foreground(t.TextMuted()).
@@ -154,4 +186,44 @@ func (m Model) View() string {
 func (m Model) SetWidth(w int) Model {
 	m.width = w
 	return m
+}
+
+// Processes returns the ordered list of active process labels.
+func (m Model) Processes() []string {
+	var labels []string
+	for _, id := range m.order {
+		if label, ok := m.processes[id]; ok {
+			labels = append(labels, label)
+		}
+	}
+	return labels
+}
+
+// ProcessCount returns the number of active processes.
+func (m Model) ProcessCount() int {
+	return len(m.processes)
+}
+
+// fitLabels joins as many labels as fit within maxWidth, appending "+N more" if truncated.
+func fitLabels(labels []string, maxWidth int) string {
+	if len(labels) == 0 {
+		return ""
+	}
+	sep := " │ "
+	// Try all labels first.
+	full := strings.Join(labels, sep)
+	if lipgloss.Width(full) <= maxWidth {
+		return full
+	}
+	// Fit progressively fewer labels.
+	for i := len(labels) - 1; i >= 1; i-- {
+		remaining := len(labels) - i
+		suffix := fmt.Sprintf(" +%d more", remaining)
+		partial := strings.Join(labels[:i], sep) + suffix
+		if lipgloss.Width(partial) <= maxWidth {
+			return partial
+		}
+	}
+	// Just show count if even one label doesn't fit.
+	return fmt.Sprintf("⟳ %d processes", len(labels))
 }

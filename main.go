@@ -124,6 +124,10 @@ func runTUI() {
 
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 
+	if coord != nil {
+		coord.SetProgram(p)
+	}
+
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "vimail: %v\n", err)
 		os.Exit(1)

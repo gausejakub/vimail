@@ -526,7 +526,8 @@ func (w *IMAPWorker) MoveToTrash(folder string, uid uint32) error {
 
 // MoveToTrashBatch moves multiple messages to the Trash folder via IMAP.
 // Processes UIDs in chunks to avoid server-side limits and timeouts.
-func (w *IMAPWorker) MoveToTrashBatch(folder string, uids []uint32) error {
+// If onProgress is non-nil, it is called after each chunk with (done, total).
+func (w *IMAPWorker) MoveToTrashBatch(folder string, uids []uint32, onProgress func(done, total int)) error {
 	w.opMu.Lock()
 	defer w.opMu.Unlock()
 
@@ -560,6 +561,9 @@ func (w *IMAPWorker) MoveToTrashBatch(folder string, uids []uint32) error {
 			return fmt.Errorf("chunk %d-%d: %w", i, end-1, err)
 		}
 		log.Printf("IMAP delete: processed %d/%d UIDs", end, len(uids))
+		if onProgress != nil {
+			onProgress(end, len(uids))
+		}
 	}
 
 	// Single EXPUNGE after all chunks.

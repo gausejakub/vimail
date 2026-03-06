@@ -165,3 +165,14 @@ type AIResponseMsg struct {
 	Text string
 	Err  error
 }
+
+// ProcessStartMsg registers a running background process in the status bar.
+type ProcessStartMsg struct {
+	ID    string // e.g. "sync:jakub@gause.cz", "delete", "send", "ai"
+	Label string // e.g. "⟳ sync jakub@gause.cz", "⊘ deleting 3 msgs"
+}
+
+// ProcessEndMsg removes a running background process from the status bar.
+type ProcessEndMsg struct {
+	ID string
+}

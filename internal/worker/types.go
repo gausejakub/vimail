@@ -79,6 +79,14 @@ type FolderListResult struct {
 	Folders []email.Folder
 }
 
+// DeleteProgressMsg reports incremental progress during batch deletion.
+type DeleteProgressMsg struct {
+	Account string
+	Folder  string
+	Done    int
+	Total   int
+}
+
 // DeleteResult is the result of deleting a message via IMAP.
 type DeleteResult struct {
 	Account string

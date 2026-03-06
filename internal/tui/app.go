@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/gausejakub/vimail/internal/config"
 	"github.com/gausejakub/vimail/internal/email"
 	"github.com/gausejakub/vimail/internal/theme"
@@ -31,10 +32,11 @@ type Model struct {
 	width  int
 	height int
 
-	mode        keys.Mode
-	focusedPane layout.Pane
-	showHelp    bool
-	layout      layout.SplitPaneLayout
+	mode           keys.Mode
+	focusedPane    layout.Pane
+	showHelp       bool
+	showProcesses  bool
+	layout         layout.SplitPaneLayout
 
 	mailbox mailbox.Model
 	msglist msglist.Model
@@ -50,6 +52,9 @@ type Model struct {
 
 // syncTickMsg triggers periodic sync refresh.
 type syncTickMsg struct{}
+
+// showProcessesMsg opens the processes overlay.
+type showProcessesMsg struct{}
 
 // WithCoordinator sets the coordinator for real email connectivity.
 func WithCoordinator(m Model, c *worker.Coordinator) Model {
@@ -160,6 +165,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Lazy-fetch body if coordinator is available and body is empty.
 		if m.coordinator != nil && msg.Message.Body == "" && msg.Message.UID > 0 {
 			cmds = append(cmds, m.coordinator.FetchBody(acct, folder, msg.Message.UID))
+			var cmd tea.Cmd
+			m.status, cmd = m.status.Update(util.ProcessStartMsg{ID: "fetch-body", Label: "⟳ fetching…"})
+			cmds = append(cmds, cmd)
 		}
 		// Mark as read when focused.
 		if msg.Message.Unread {
@@ -236,9 +244,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				Subject: msg.Subject,
 				Body:    msg.Body,
 			}))
-			cmds = append(cmds, func() tea.Msg {
-				return util.InfoMsg{Text: "Sending…", IsError: false}
-			})
+			var cmd tea.Cmd
+			m.status, cmd = m.status.Update(util.ProcessStartMsg{ID: "send", Label: "↑ sending…"})
+			cmds = append(cmds, cmd)
 		} else {
 			// Mock send.
 			m.mailbox = m.mailbox.SelectFolder(currentEmail, "Sent")
@@ -265,19 +273,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case util.SyncStartMsg:
-		var cmd tea.Cmd
-		m.status, cmd = m.status.Update(msg)
-		cmds = append(cmds, cmd)
 		m.syncPending = len(m.cfg.Accounts)
 		m.msglist = m.msglist.SetSyncing(true)
 		for _, acct := range m.cfg.Accounts {
 			m.mailbox = m.mailbox.SetAccountSyncing(acct.Email, true)
+			email := acct.Email
+			var cmd tea.Cmd
+			m.status, cmd = m.status.Update(util.ProcessStartMsg{
+				ID:    "sync:" + email,
+				Label: "⟳ " + email,
+			})
+			cmds = append(cmds, cmd)
 		}
 		return m, tea.Batch(cmds...)
 
 	case worker.SyncAccountCompleteMsg:
 		m.syncPending--
 		m.mailbox = m.mailbox.SetAccountSyncing(msg.Account, false)
+		var cmd tea.Cmd
+		m.status, cmd = m.status.Update(util.ProcessEndMsg{ID: "sync:" + msg.Account})
+		cmds = append(cmds, cmd)
 		// Reload mailbox sidebar with newly discovered folders.
 		m.mailbox = m.mailbox.Reload()
 		// Refresh current view if it belongs to this account.
@@ -350,6 +365,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case worker.FetchBodyResult:
+		var cmd tea.Cmd
+		m.status, cmd = m.status.Update(util.ProcessEndMsg{ID: "fetch-body"})
+		cmds = append(cmds, cmd)
 		if msg.Err == nil {
 			bodyMsg := util.FetchBodyCompleteMsg{
 				Account:     msg.Account,
@@ -372,6 +390,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case util.SaveAttachmentsResultMsg:
+		var cmd tea.Cmd
+		m.status, cmd = m.status.Update(util.ProcessEndMsg{ID: "save-attachments"})
+		cmds = append(cmds, cmd)
 		if msg.Err != nil {
 			cmds = append(cmds, func() tea.Msg {
 				return util.InfoMsg{Text: "Save failed: " + msg.Err.Error(), IsError: true}
@@ -386,6 +407,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case worker.SendResult:
+		var cmd tea.Cmd
+		m.status, cmd = m.status.Update(util.ProcessEndMsg{ID: "send"})
+		cmds = append(cmds, cmd)
 		if msg.Err != nil {
 			cmds = append(cmds, func() tea.Msg {
 				return util.InfoMsg{Text: "Send failed: " + msg.Err.Error(), IsError: true}
@@ -414,9 +438,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.store.DeleteMessage(acct, folder, msg.Message.ID)
 			if m.coordinator != nil && msg.Message.UID > 0 {
 				cmds = append(cmds, m.coordinator.DeleteMessage(acct, folder, msg.Message.UID))
-				cmds = append(cmds, func() tea.Msg {
-					return util.InfoMsg{Text: "Deleting…", IsError: false}
-				})
+				var cmd tea.Cmd
+				m.status, cmd = m.status.Update(util.ProcessStartMsg{ID: "delete", Label: "⊘ deleting…"})
+				cmds = append(cmds, cmd)
 			} else {
 				cmds = append(cmds, func() tea.Msg {
 					return util.InfoMsg{Text: "Message deleted", IsError: false}
@@ -455,9 +479,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return util.InfoMsg{Text: fmt.Sprintf("%d drafts deleted", n), IsError: false}
 			})
 		} else if m.coordinator != nil {
-			cmds = append(cmds, func() tea.Msg {
-				return util.InfoMsg{Text: fmt.Sprintf("Deleting %d messages…", n), IsError: false}
+			var cmd tea.Cmd
+			m.status, cmd = m.status.Update(util.ProcessStartMsg{
+				ID:    "delete",
+				Label: fmt.Sprintf("⊘ deleting %d msgs", n),
 			})
+			cmds = append(cmds, cmd)
 		} else {
 			cmds = append(cmds, func() tea.Msg {
 				return util.InfoMsg{Text: fmt.Sprintf("%d messages deleted", n), IsError: false}
@@ -490,7 +517,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		})
 		return m, tea.Batch(cmds...)
 
+	case worker.DeleteProgressMsg:
+		var cmd tea.Cmd
+		m.status, cmd = m.status.Update(util.ProcessStartMsg{
+			ID:    "delete",
+			Label: fmt.Sprintf("⊘ deleting %d/%d", msg.Done, msg.Total),
+		})
+		cmds = append(cmds, cmd)
+		return m, tea.Batch(cmds...)
+
 	case worker.DeleteResult:
+		var cmd tea.Cmd
+		m.status, cmd = m.status.Update(util.ProcessEndMsg{ID: "delete"})
+		cmds = append(cmds, cmd)
 		if msg.Err != nil {
 			errText := "IMAP delete failed: " + msg.Err.Error()
 			cmds = append(cmds, func() tea.Msg {
@@ -514,6 +553,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(cmds...)
 
+	case showProcessesMsg:
+		m.showProcesses = true
+		return m, nil
+
 	case tea.KeyMsg:
 		// Compose overlay eats all keys when visible
 		if m.compose.Visible() {
@@ -527,6 +570,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.showHelp {
 			if msg.String() == "?" || msg.String() == "esc" {
 				m.showHelp = false
+			}
+			return m, nil
+		}
+
+		// Processes overlay
+		if m.showProcesses {
+			if msg.String() == "esc" || msg.String() == "q" {
+				m.showProcesses = false
 			}
 			return m, nil
 		}
@@ -657,9 +708,12 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				acct := m.mailbox.SelectedEmail()
 				folder := m.msglist.CurrentFolder()
 				if m.coordinator != nil {
-					cmds = append(cmds, func() tea.Msg {
-						return util.InfoMsg{Text: fmt.Sprintf("Saving %d attachments…", len(sel.Attachments)), IsError: false}
+					var cmd tea.Cmd
+					m.status, cmd = m.status.Update(util.ProcessStartMsg{
+						ID:    "save-attachments",
+						Label: fmt.Sprintf("⇣ saving %d attachments", len(sel.Attachments)),
 					})
+					cmds = append(cmds, cmd)
 					cmds = append(cmds, m.coordinator.SaveAttachments(acct, folder, sel.UID, sel.Attachments))
 				}
 			} else {
@@ -815,6 +869,9 @@ func (m Model) executeCommand(input string) tea.Cmd {
 			return util.InfoMsg{Text: "Sync not available (using mock data)", IsError: false}
 		}
 
+	case "processes", "ps":
+		return func() tea.Msg { return showProcessesMsg{} }
+
 	default:
 		return func() tea.Msg {
 			return util.InfoMsg{Text: "Unknown command: " + parts[0], IsError: true}
@@ -907,10 +964,59 @@ func (m Model) View() string {
 		screen = layout.PlaceOverlayCentered(helpView, screen, m.width, m.height)
 	}
 
+	if m.showProcesses {
+		screen = layout.PlaceOverlayCentered(m.processesView(), screen, m.width, m.height)
+	}
+
 	if m.compose.Visible() {
 		composeView := m.compose.View()
 		screen = layout.PlaceOverlayCentered(composeView, screen, m.width, m.height)
 	}
 
 	return screen
+}
+
+func (m Model) processesView() string {
+	t := theme.Current()
+
+	title := lipgloss.NewStyle().
+		Foreground(t.Primary()).
+		Bold(true).
+		Render("  Running Processes")
+
+	var rows []string
+	rows = append(rows, title)
+	rows = append(rows, "")
+
+	procs := m.status.Processes()
+	if len(procs) == 0 {
+		rows = append(rows, lipgloss.NewStyle().
+			Foreground(t.TextMuted()).
+			Render("  No active processes"))
+	} else {
+		for _, label := range procs {
+			rows = append(rows, lipgloss.NewStyle().
+				Foreground(t.Info()).
+				Render("  "+label))
+		}
+	}
+
+	rows = append(rows, "")
+	rows = append(rows, lipgloss.NewStyle().
+		Foreground(t.TextMuted()).
+		Render("  Press Esc or q to close"))
+
+	content := strings.Join(rows, "\n")
+
+	w := 44
+	if m.width > 0 && w > m.width-4 {
+		w = m.width - 4
+	}
+
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(t.BorderFocused()).
+		Padding(1, 2).
+		Width(w).
+		Render(content)
 }

@@ -85,13 +85,14 @@ func ParseBody(data []byte) (BodyResult, error) {
 	var attachments []email.Attachment
 	collectParts(mr, &textBody, &htmlBody, &attachments, "")
 
-	// Build display text: prefer text/plain if it's meaningful.
+	// Build display text: prefer HTML conversion (cleaner output) when available,
+	// fall back to text/plain only when there is no HTML part.
 	var display string
 	switch {
-	case textBody != "" && !looksLikeHTML(textBody) && len(textBody) > 20:
-		display = textBody
 	case htmlBody != "":
 		display = stripHTML(htmlBody)
+	case textBody != "" && !looksLikeHTML(textBody):
+		display = textBody
 	case textBody != "":
 		display = stripHTML(textBody)
 	default:
@@ -264,7 +265,7 @@ func looksLikeHTML(s string) bool {
 func stripHTML(raw string) string {
 	text, err := html2text.FromString(raw, html2text.Options{
 		PrettyTables: false,
-		OmitLinks:    false,
+		OmitLinks:    true,
 	})
 	if err != nil {
 		return raw

@@ -1,6 +1,7 @@
 package preview
 
 import (
+	"encoding/json"
 	"fmt"
 	"html"
 	"os"
@@ -190,7 +191,7 @@ func (m Model) View() string {
 	)
 
 	// Body with word wrapping
-	bodyText := sanitizeBody(msg.Body)
+	bodyText := prettyJSON(sanitizeBody(msg.Body))
 	if bodyText == "" {
 		bodyText = "(loading...)"
 	}
@@ -326,6 +327,30 @@ func sanitizeBody(s string) string {
 	return strings.Join(out, "\n")
 }
 
+// prettyJSON finds JSON objects/arrays in text and pretty-prints them in place.
+func prettyJSON(s string) string {
+	var result strings.Builder
+	i := 0
+	data := []byte(s)
+	for i < len(data) {
+		if data[i] == '{' || data[i] == '[' {
+			dec := json.NewDecoder(strings.NewReader(s[i:]))
+			var raw json.RawMessage
+			if err := dec.Decode(&raw); err == nil && len(raw) > 10 {
+				pretty, err := json.MarshalIndent(raw, "", "  ")
+				if err == nil {
+					result.Write(pretty)
+					i += int(dec.InputOffset())
+					continue
+				}
+			}
+		}
+		result.WriteByte(data[i])
+		i++
+	}
+	return result.String()
+}
+
 func formatSize(b int) string {
 	switch {
 	case b >= 1024*1024:
@@ -344,7 +369,8 @@ func (m Model) contentHeight() int {
 		return 0
 	}
 	bodyWidth := max(10, m.width-1)
-	wrapped := wordwrap.String(m.message.Body, bodyWidth)
+	bodyText := prettyJSON(sanitizeBody(m.message.Body))
+	wrapped := wordwrap.String(bodyText, bodyWidth)
 	h := 5 + strings.Count(wrapped, "\n") + 1
 	if len(m.message.Attachments) > 0 {
 		h += 3 + len(m.message.Attachments) // separator + header + files + save hint

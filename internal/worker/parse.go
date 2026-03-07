@@ -287,26 +287,32 @@ func FolderName(mailboxName string) string {
 	case lower == "inbox":
 		return "Inbox"
 	// Sent
-	case lower == "[gmail]/sent mail" || base == "sent" || lower == "sent items" || lower == "sent messages" || base == "odeslane" || base == "odeslaná pošta":
+	case lower == "[gmail]/sent mail" || lower == "[gmail]/odeslaná pošta" ||
+		base == "sent" || lower == "sent items" || lower == "sent messages" ||
+		base == "odeslane" || base == "odeslaná pošta":
 		return "Sent"
 	// Drafts
-	case lower == "[gmail]/drafts" || base == "drafts" || base == "koncepty" || base == "rozepsane":
+	case lower == "[gmail]/drafts" || lower == "[gmail]/koncepty" ||
+		base == "drafts" || base == "koncepty" || base == "rozepsane":
 		return "Drafts"
 	// Trash
-	case lower == "[gmail]/trash" || base == "trash" || lower == "deleted items" || lower == "deleted messages" || base == "koš" || base == "kos":
+	case lower == "[gmail]/trash" || lower == "[gmail]/bin" || lower == "[gmail]/koš" ||
+		base == "trash" || base == "bin" || base == "koš" || base == "kos" ||
+		lower == "deleted items" || lower == "deleted messages":
 		return "Trash"
 	// Spam
-	case lower == "[gmail]/spam" || base == "junk" || lower == "junk email" || base == "spam":
+	case lower == "[gmail]/spam" || lower == "[gmail]/nevyžádaná pošta" ||
+		base == "junk" || lower == "junk email" || base == "spam":
 		return "Spam"
 	// Archive
 	case base == "archive" || base == "archiv":
 		return "Archive"
 	// Gmail-specific
-	case lower == "[gmail]/all mail":
+	case lower == "[gmail]/all mail" || lower == "[gmail]/všechny zprávy" || lower == "[gmail]/všechna pošta":
 		return "All Mail"
-	case lower == "[gmail]/starred":
+	case lower == "[gmail]/starred" || lower == "[gmail]/označené hvězdičkou":
 		return "Starred"
-	case lower == "[gmail]/important":
+	case lower == "[gmail]/important" || lower == "[gmail]/důležité":
 		return "Important"
 	default:
 		return mailboxName

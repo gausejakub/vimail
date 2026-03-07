@@ -39,6 +39,7 @@ type Model struct {
 	showHelp       bool
 	showProcesses  bool
 	showOps        bool
+	attPicker      attachmentPicker
 	layout         layout.SplitPaneLayout
 
 	mailbox mailbox.Model
@@ -61,6 +62,17 @@ type showProcessesMsg struct{}
 
 // showOpsMsg opens the operation log overlay.
 type showOpsMsg struct{}
+
+// attachmentPicker is the state for the attachment selection overlay.
+type attachmentPicker struct {
+	visible     bool
+	attachments []email.Attachment
+	selected    []bool
+	cursor      int
+	account     string
+	folder      string
+	uid         uint32
+}
 
 // WithCoordinator sets the coordinator for real email connectivity.
 func WithCoordinator(m Model, c *worker.Coordinator) Model {
@@ -606,6 +618,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Attachment picker overlay
+		if m.attPicker.visible {
+			return m.handleAttachmentPickerKey(msg)
+		}
+
 		// Processes overlay
 		if m.showProcesses {
 			if msg.String() == "esc" || msg.String() == "q" {
@@ -752,13 +769,28 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				acct := m.mailbox.SelectedEmail()
 				folder := m.msglist.CurrentFolder()
 				if m.coordinator != nil {
-					var cmd tea.Cmd
-					m.status, cmd = m.status.Update(util.ProcessStartMsg{
-						ID:    "save-attachments",
-						Label: fmt.Sprintf("⇣ %s/%s: saving %d attachments", acct, folder, len(sel.Attachments)),
-					})
-					cmds = append(cmds, cmd)
-					cmds = append(cmds, m.coordinator.SaveAttachments(acct, folder, sel.UID, sel.Attachments))
+					if len(sel.Attachments) == 1 {
+						// Single attachment — save directly.
+						var cmd tea.Cmd
+						m.status, cmd = m.status.Update(util.ProcessStartMsg{
+							ID:    "save-attachments",
+							Label: fmt.Sprintf("⇣ %s/%s: saving %s", acct, folder, sel.Attachments[0].Filename),
+						})
+						cmds = append(cmds, cmd)
+						cmds = append(cmds, m.coordinator.SaveAttachments(acct, folder, sel.UID, sel.Attachments))
+					} else {
+						// Multiple — show picker.
+						selected := make([]bool, len(sel.Attachments))
+						m.attPicker = attachmentPicker{
+							visible:     true,
+							attachments: sel.Attachments,
+							selected:    selected,
+							cursor:      0,
+							account:     acct,
+							folder:      folder,
+							uid:         sel.UID,
+						}
+					}
 				}
 			} else {
 				cmds = append(cmds, func() tea.Msg {
@@ -1019,6 +1051,10 @@ func (m Model) View() string {
 		screen = layout.PlaceOverlayCentered(m.opsView(), screen, m.width, m.height)
 	}
 
+	if m.attPicker.visible {
+		screen = layout.PlaceOverlayCentered(m.attachmentPickerView(), screen, m.width, m.height)
+	}
+
 	if m.compose.Visible() {
 		composeView := m.compose.View()
 		screen = layout.PlaceOverlayCentered(composeView, screen, m.width, m.height)
@@ -1179,6 +1215,141 @@ func opDescription(op cache.QueuedOp) string {
 		return fmt.Sprintf("mark read %d msgs  %s/%s", len(p.UIDs), op.Account, op.Folder)
 	default:
 		return string(op.Type)
+	}
+}
+
+func (m Model) handleAttachmentPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+	k := msg.String()
+
+	switch k {
+	case "esc", "q":
+		m.attPicker.visible = false
+
+	case "j", "down":
+		if m.attPicker.cursor < len(m.attPicker.attachments)-1 {
+			m.attPicker.cursor++
+		}
+
+	case "k", "up":
+		if m.attPicker.cursor > 0 {
+			m.attPicker.cursor--
+		}
+
+	case " ":
+		// Toggle selection
+		m.attPicker.selected[m.attPicker.cursor] = !m.attPicker.selected[m.attPicker.cursor]
+		// Move down after toggle
+		if m.attPicker.cursor < len(m.attPicker.attachments)-1 {
+			m.attPicker.cursor++
+		}
+
+	case "a":
+		// Select all / deselect all
+		allSelected := true
+		for _, s := range m.attPicker.selected {
+			if !s {
+				allSelected = false
+				break
+			}
+		}
+		for i := range m.attPicker.selected {
+			m.attPicker.selected[i] = !allSelected
+		}
+
+	case "enter":
+		// Save selected attachments
+		var chosen []email.Attachment
+		for i, att := range m.attPicker.attachments {
+			if m.attPicker.selected[i] {
+				chosen = append(chosen, att)
+			}
+		}
+		if len(chosen) == 0 {
+			cmds = append(cmds, func() tea.Msg {
+				return util.InfoMsg{Text: "No attachments selected", IsError: false}
+			})
+		} else if m.coordinator != nil {
+			var cmd tea.Cmd
+			m.status, cmd = m.status.Update(util.ProcessStartMsg{
+				ID:    "save-attachments",
+				Label: fmt.Sprintf("⇣ %s/%s: saving %d attachments", m.attPicker.account, m.attPicker.folder, len(chosen)),
+			})
+			cmds = append(cmds, cmd)
+			cmds = append(cmds, m.coordinator.SaveAttachments(
+				m.attPicker.account, m.attPicker.folder, m.attPicker.uid, chosen))
+		}
+		m.attPicker.visible = false
+	}
+
+	return m, tea.Batch(cmds...)
+}
+
+func (m Model) attachmentPickerView() string {
+	t := theme.Current()
+
+	title := lipgloss.NewStyle().
+		Foreground(t.Primary()).
+		Bold(true).
+		Render("  Save Attachments")
+
+	var rows []string
+	rows = append(rows, title)
+	rows = append(rows, "")
+
+	for i, att := range m.attPicker.attachments {
+		check := "[ ]"
+		if m.attPicker.selected[i] {
+			check = "[x]"
+		}
+		cursor := "  "
+		color := t.Text()
+		if i == m.attPicker.cursor {
+			cursor = "> "
+			color = t.Primary()
+		}
+
+		size := formatSize(att.Size)
+		line := fmt.Sprintf("%s%s %s  %s", cursor, check, att.Filename, size)
+		rows = append(rows, lipgloss.NewStyle().Foreground(color).Render(line))
+	}
+
+	rows = append(rows, "")
+	rows = append(rows, lipgloss.NewStyle().
+		Foreground(t.TextMuted()).
+		Render("  Space: toggle  a: all  Enter: save  Esc: cancel"))
+
+	content := strings.Join(rows, "\n")
+
+	contentWidth := lipgloss.Width(content)
+	w := contentWidth + 6
+	if w < 40 {
+		w = 40
+	}
+	maxW := m.width - 4
+	if maxW < 40 {
+		maxW = 40
+	}
+	if w > maxW {
+		w = maxW
+	}
+
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(t.BorderFocused()).
+		Padding(1, 2).
+		Width(w).
+		Render(content)
+}
+
+func formatSize(bytes int) string {
+	switch {
+	case bytes >= 1024*1024:
+		return fmt.Sprintf("%.1f MB", float64(bytes)/(1024*1024))
+	case bytes >= 1024:
+		return fmt.Sprintf("%.1f KB", float64(bytes)/1024)
+	default:
+		return fmt.Sprintf("%d B", bytes)
 	}
 }
 

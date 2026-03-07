@@ -152,7 +152,8 @@ func (c *Coordinator) MarkRead(acctEmail, folder string, uid uint32) tea.Cmd {
 	}
 }
 
-// SaveAttachments fetches the raw message and saves all attachments to ~/Downloads.
+// SaveAttachments fetches the raw message and saves the specified attachments to ~/Downloads.
+// Only attachments whose filename matches one in the provided list are saved.
 func (c *Coordinator) SaveAttachments(acctEmail, folder string, uid uint32, attachments []email.Attachment) tea.Cmd {
 	return func() tea.Msg {
 		w := c.getIMAPWorker(acctEmail)
@@ -170,12 +171,21 @@ func (c *Coordinator) SaveAttachments(acctEmail, folder string, uid uint32, atta
 			return util.SaveAttachmentsResultMsg{Err: fmt.Errorf("parse attachments: %w", err)}
 		}
 
+		// Build a set of wanted filenames to filter by.
+		wanted := make(map[string]bool, len(attachments))
+		for _, a := range attachments {
+			wanted[a.Filename] = true
+		}
+
 		home, _ := os.UserHomeDir()
 		dir := filepath.Join(home, "Downloads")
 		os.MkdirAll(dir, 0755)
 
 		saved := 0
 		for _, att := range parts {
+			if !wanted[att.Filename] {
+				continue
+			}
 			path := filepath.Join(dir, att.Filename)
 			// Avoid overwriting: append (1), (2), etc.
 			path = uniquePath(path)

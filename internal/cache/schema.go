@@ -2,6 +2,8 @@ package cache
 
 import (
 	"database/sql"
+	"encoding/json"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -72,6 +74,19 @@ CREATE TABLE IF NOT EXISTS attachments (
 );
 CREATE INDEX IF NOT EXISTS idx_attachments_msg ON attachments(folder_id, uid);
 
+CREATE TABLE IF NOT EXISTS pending_ops (
+	id         INTEGER PRIMARY KEY AUTOINCREMENT,
+	type       TEXT NOT NULL,
+	status     TEXT NOT NULL DEFAULT 'pending',
+	account    TEXT NOT NULL,
+	folder     TEXT NOT NULL DEFAULT '',
+	payload    TEXT NOT NULL DEFAULT '{}',
+	error      TEXT NOT NULL DEFAULT '',
+	created_at DATETIME NOT NULL,
+	updated_at DATETIME NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pending_ops_status ON pending_ops(status);
+
 CREATE TABLE IF NOT EXISTS schema_version (
 	version INTEGER NOT NULL
 );
@@ -123,5 +138,75 @@ func Open(path string) (*sql.DB, error) {
 	// Track whether attachment metadata has been cached for a message.
 	db.Exec(`ALTER TABLE messages ADD COLUMN attachments_cached BOOLEAN NOT NULL DEFAULT 0`)
 
+	// Add operation queue table (migration for existing databases).
+	db.Exec(`CREATE TABLE IF NOT EXISTS pending_ops (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		type       TEXT NOT NULL,
+		status     TEXT NOT NULL DEFAULT 'pending',
+		account    TEXT NOT NULL,
+		folder     TEXT NOT NULL DEFAULT '',
+		payload    TEXT NOT NULL DEFAULT '{}',
+		error      TEXT NOT NULL DEFAULT '',
+		created_at DATETIME NOT NULL,
+		updated_at DATETIME NOT NULL
+	)`)
+	db.Exec(`CREATE INDEX IF NOT EXISTS idx_pending_ops_status ON pending_ops(status)`)
+
+	// Migrate existing pending_deletes into pending_ops.
+	migratePendingDeletes(db)
+
 	return db, nil
 }
+
+// migratePendingDeletes moves rows from the old pending_deletes table into pending_ops.
+func migratePendingDeletes(db *sql.DB) {
+	rows, err := db.Query(`SELECT account, folder, uid FROM pending_deletes`)
+	if err != nil {
+		return // table may not exist
+	}
+
+	grouped := make(map[string][]uint32) // "account\x00folder" -> UIDs
+	var keys []string
+	for rows.Next() {
+		var acct, folder string
+		var uid uint32
+		if err := rows.Scan(&acct, &folder, &uid); err != nil {
+			continue
+		}
+		key := acct + "\x00" + folder
+		if _, ok := grouped[key]; !ok {
+			keys = append(keys, key)
+		}
+		grouped[key] = append(grouped[key], uid)
+	}
+	rows.Close()
+
+	if len(grouped) == 0 {
+		return
+	}
+
+	now := time.Now().Format(time.RFC3339)
+	for _, key := range keys {
+		uids := grouped[key]
+		parts := splitNull(key)
+		if len(parts) != 2 {
+			continue
+		}
+		payload, _ := json.Marshal(DeletePayload{UIDs: uids})
+		db.Exec(`INSERT INTO pending_ops (type, status, account, folder, payload, error, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, '', ?, ?)`,
+			string(OpDelete), string(OpPending), parts[0], parts[1], string(payload), now, now)
+	}
+
+	db.Exec(`DELETE FROM pending_deletes`)
+}
+
+func splitNull(s string) []string {
+	for i, c := range s {
+		if c == 0 {
+			return []string{s[:i], s[i+1:]}
+		}
+	}
+	return []string{s}
+}
+

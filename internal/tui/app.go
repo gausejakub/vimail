@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -37,6 +38,7 @@ type Model struct {
 	focusedPane    layout.Pane
 	showHelp       bool
 	showProcesses  bool
+	showOps        bool
 	layout         layout.SplitPaneLayout
 
 	mailbox mailbox.Model
@@ -56,6 +58,9 @@ type syncTickMsg struct{}
 
 // showProcessesMsg opens the processes overlay.
 type showProcessesMsg struct{}
+
+// showOpsMsg opens the operation log overlay.
+type showOpsMsg struct{}
 
 // WithCoordinator sets the coordinator for real email connectivity.
 func WithCoordinator(m Model, c *worker.Coordinator) Model {
@@ -98,6 +103,11 @@ func (m Model) Init() tea.Cmd {
 				return util.MessageSelectedMsg{Message: msgs[0]}
 			})
 		}
+	}
+
+	// Clean up old completed/failed ops (older than 7 days).
+	if sqlStore, ok := m.store.(*cache.SQLiteStore); ok {
+		sqlStore.CleanupOldOps(7 * 24 * time.Hour)
 	}
 
 	// Trigger initial sync if coordinator is available.
@@ -575,6 +585,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.showProcesses = true
 		return m, nil
 
+	case showOpsMsg:
+		m.showOps = true
+		return m, nil
+
 	case tea.KeyMsg:
 		// Compose overlay eats all keys when visible
 		if m.compose.Visible() {
@@ -596,6 +610,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.showProcesses {
 			if msg.String() == "esc" || msg.String() == "q" {
 				m.showProcesses = false
+			}
+			return m, nil
+		}
+
+		// Ops log overlay
+		if m.showOps {
+			if msg.String() == "esc" || msg.String() == "q" {
+				m.showOps = false
 			}
 			return m, nil
 		}
@@ -894,6 +916,9 @@ func (m Model) executeCommand(input string) tea.Cmd {
 	case "processes", "ps":
 		return func() tea.Msg { return showProcessesMsg{} }
 
+	case "ops", "operations", "queue":
+		return func() tea.Msg { return showOpsMsg{} }
+
 	default:
 		return func() tea.Msg {
 			return util.InfoMsg{Text: "Unknown command: " + parts[0], IsError: true}
@@ -990,6 +1015,10 @@ func (m Model) View() string {
 		screen = layout.PlaceOverlayCentered(m.processesView(), screen, m.width, m.height)
 	}
 
+	if m.showOps {
+		screen = layout.PlaceOverlayCentered(m.opsView(), screen, m.width, m.height)
+	}
+
 	if m.compose.Visible() {
 		composeView := m.compose.View()
 		screen = layout.PlaceOverlayCentered(composeView, screen, m.width, m.height)
@@ -1046,4 +1075,123 @@ func (m Model) processesView() string {
 		Padding(1, 2).
 		Width(w).
 		Render(content)
+}
+
+func (m Model) opsView() string {
+	t := theme.Current()
+
+	title := lipgloss.NewStyle().
+		Foreground(t.Primary()).
+		Bold(true).
+		Render("  Operation Queue")
+
+	var rows []string
+	rows = append(rows, title)
+	rows = append(rows, "")
+
+	var ops []cache.QueuedOp
+	if sqlStore, ok := m.store.(*cache.SQLiteStore); ok {
+		ops = sqlStore.RecentOps(20)
+	}
+
+	if len(ops) == 0 {
+		rows = append(rows, lipgloss.NewStyle().
+			Foreground(t.TextMuted()).
+			Render("  No operations"))
+	} else {
+		for _, op := range ops {
+			icon := "  "
+			var color lipgloss.Color
+			switch op.Status {
+			case cache.OpPending:
+				icon = "◯"
+				color = t.TextMuted()
+			case cache.OpRunning:
+				icon = "◐"
+				color = t.Info()
+			case cache.OpCompleted:
+				icon = "✓"
+				color = t.Success()
+			case cache.OpFailed:
+				icon = "✗"
+				color = t.Error()
+			}
+
+			desc := opDescription(op)
+			age := formatAge(op.CreatedAt)
+			line := fmt.Sprintf("  %s %s  %s", icon, desc, age)
+			if op.Error != "" {
+				errText := op.Error
+				if len(errText) > 40 {
+					errText = errText[:40] + "…"
+				}
+				line += "\n      " + errText
+			}
+			rows = append(rows, lipgloss.NewStyle().Foreground(color).Render(line))
+		}
+	}
+
+	rows = append(rows, "")
+	rows = append(rows, lipgloss.NewStyle().
+		Foreground(t.TextMuted()).
+		Render("  Press Esc or q to close"))
+
+	content := strings.Join(rows, "\n")
+
+	contentWidth := lipgloss.Width(content)
+	w := contentWidth + 6
+	if w < 40 {
+		w = 40
+	}
+	maxW := m.width - 4
+	if maxW < 40 {
+		maxW = 40
+	}
+	if w > maxW {
+		w = maxW
+	}
+
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(t.BorderFocused()).
+		Padding(1, 2).
+		Width(w).
+		Render(content)
+}
+
+func opDescription(op cache.QueuedOp) string {
+	switch op.Type {
+	case cache.OpDelete:
+		var p cache.DeletePayload
+		json.Unmarshal(op.Payload, &p)
+		return fmt.Sprintf("delete %d msgs  %s/%s", len(p.UIDs), op.Account, op.Folder)
+	case cache.OpSend:
+		var p cache.SendPayload
+		json.Unmarshal(op.Payload, &p)
+		subj := p.Subject
+		if len([]rune(subj)) > 25 {
+			subj = string([]rune(subj)[:25]) + "…"
+		}
+		return fmt.Sprintf("send to %s: %s", p.To, subj)
+	case cache.OpMarkRead:
+		var p cache.MarkReadPayload
+		json.Unmarshal(op.Payload, &p)
+		return fmt.Sprintf("mark read %d msgs  %s/%s", len(p.UIDs), op.Account, op.Folder)
+	default:
+		return string(op.Type)
+	}
+}
+
+func formatAge(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds ago", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	}
 }

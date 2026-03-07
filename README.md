@@ -18,6 +18,7 @@ vimail brings the speed of Vim navigation to your inbox with a 3-pane layout, mo
 - **HTML email rendering** — Clean text conversion via html2text, open raw HTML in browser with `o`
 - **JSON auto-format** — Pretty-prints JSON bodies in the preview pane
 - **Incremental sync** — Per-account IMAP sync with loading indicators
+- **Offline operation queue** — Deletes, sends, and mark-read ops are queued in SQLite and retried on reconnect
 - **Pure Go** — No CGO required, single static binary
 
 ## Requirements
@@ -186,6 +187,8 @@ After adding accounts, run `vimail setup` to store credentials.
 | `:sync` | Sync mail |
 | `:ai` | AI-assisted compose (default agent) |
 | `:ai <name>` | AI-assisted compose with a specific agent |
+| `:ops` / `:queue` | Show operation queue log |
+| `:ps` / `:processes` | Show running background processes |
 
 ### Available themes
 
@@ -311,7 +314,7 @@ go test ./...
 
 ## Status
 
-vimail is functional with real IMAP/SMTP connectivity, app-password auth, SQLite message caching, and incremental sync. Falls back to mock data when no accounts are configured.
+vimail is functional with real IMAP/SMTP connectivity, app-password auth, SQLite message caching, incremental sync, and an offline operation queue. Falls back to mock data when no accounts are configured.
 
 ## License
 

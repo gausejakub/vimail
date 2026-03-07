@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -134,13 +135,19 @@ func (c *Coordinator) FetchBody(acctEmail, folder string, uid uint32) tea.Cmd {
 }
 
 // MarkRead returns a tea.Cmd that marks a message as read on the IMAP server.
+// The operation is queued so it can be retried if the connection is lost.
 func (c *Coordinator) MarkRead(acctEmail, folder string, uid uint32) tea.Cmd {
 	return func() tea.Msg {
+		opID, _ := c.store.QueueOp(cache.OpMarkRead, acctEmail, folder, cache.MarkReadPayload{UIDs: []uint32{uid}})
+		c.store.StartOp(opID)
+
 		w := c.getIMAPWorker(acctEmail)
 		if w == nil {
+			c.store.FailOp(opID, "no IMAP worker")
 			return nil
 		}
 		w.MarkRead(folder, uid)
+		c.store.CompleteOp(opID)
 		return nil
 	}
 }
@@ -200,15 +207,23 @@ func uniquePath(path string) string {
 
 // SendAndArchive returns a tea.Cmd that sends an email via SMTP and
 // appends it to the Sent folder via IMAP.
+// The operation is queued so it can be retried on reconnect.
 func (c *Coordinator) SendAndArchive(acctEmail string, req SendRequest) tea.Cmd {
 	return func() tea.Msg {
+		opID, _ := c.store.QueueOp(cache.OpSend, acctEmail, "", cache.SendPayload{
+			From: req.From, To: req.To, Subject: req.Subject, Body: req.Body,
+		})
+		c.store.StartOp(opID)
+
 		smtpW := c.getSMTPWorker(acctEmail)
 		if smtpW == nil {
+			c.store.FailOp(opID, fmt.Sprintf("no SMTP worker for %s", acctEmail))
 			return SendResult{Err: fmt.Errorf("no SMTP worker for %s", acctEmail)}
 		}
 
 		msgID, sentMsg, err := smtpW.Send(req)
 		if err != nil {
+			c.store.FailOp(opID, err.Error())
 			return SendResult{Err: err}
 		}
 
@@ -220,6 +235,7 @@ func (c *Coordinator) SendAndArchive(acctEmail string, req SendRequest) tea.Cmd 
 			}
 		}
 
+		c.store.CompleteOp(opID)
 		return SendResult{MessageID: msgID}
 	}
 }
@@ -230,11 +246,15 @@ func (c *Coordinator) DeleteMessage(acctEmail, folder string, uid uint32) tea.Cm
 }
 
 // DeleteMessages returns a tea.Cmd that moves multiple messages to Trash via IMAP in a single batch.
-// Clears pending deletes on success so future syncs don't block them.
+// The operation is queued so it can be retried on reconnect.
 func (c *Coordinator) DeleteMessages(acctEmail, folder string, uids []uint32) tea.Cmd {
 	return func() tea.Msg {
+		opID, _ := c.store.QueueOp(cache.OpDelete, acctEmail, folder, cache.DeletePayload{UIDs: uids})
+		c.store.StartOp(opID)
+
 		w := c.getIMAPWorker(acctEmail)
 		if w == nil {
+			c.store.FailOp(opID, fmt.Sprintf("no IMAP worker for %s", acctEmail))
 			return DeleteResult{
 				Account: acctEmail,
 				Folder:  folder,
@@ -254,7 +274,10 @@ func (c *Coordinator) DeleteMessages(acctEmail, folder string, uids []uint32) te
 			}
 		}
 		err := w.MoveToTrashBatch(folder, uids, onProgress)
-		if err == nil {
+		if err != nil {
+			c.store.FailOp(opID, err.Error())
+		} else {
+			c.store.CompleteOp(opID)
 			c.store.ClearPendingDeletes(acctEmail, folder, uids)
 		}
 		return DeleteResult{
@@ -265,20 +288,76 @@ func (c *Coordinator) DeleteMessages(acctEmail, folder string, uids []uint32) te
 	}
 }
 
-// RetryPendingDeletes retries any pending deletions that failed previously.
-func (c *Coordinator) RetryPendingDeletes() tea.Cmd {
+// RetryPendingOps retries any pending or failed operations from the queue.
+func (c *Coordinator) RetryPendingOps() tea.Cmd {
 	return func() tea.Msg {
-		pending := c.store.PendingDeletes()
-		for _, pd := range pending {
-			w := c.getIMAPWorker(pd.Account)
-			if w == nil {
-				continue
+		ops := c.store.PendingOps()
+		for _, op := range ops {
+			c.store.StartOp(op.ID)
+			var err error
+			switch op.Type {
+			case cache.OpDelete:
+				var payload cache.DeletePayload
+				if e := json.Unmarshal(op.Payload, &payload); e != nil {
+					c.store.FailOp(op.ID, "bad payload: "+e.Error())
+					continue
+				}
+				w := c.getIMAPWorker(op.Account)
+				if w == nil {
+					c.store.FailOp(op.ID, "no IMAP worker")
+					continue
+				}
+				err = w.MoveToTrashBatch(op.Folder, payload.UIDs, nil)
+				if err == nil {
+					c.store.ClearPendingDeletes(op.Account, op.Folder, payload.UIDs)
+				}
+
+			case cache.OpSend:
+				var payload cache.SendPayload
+				if e := json.Unmarshal(op.Payload, &payload); e != nil {
+					c.store.FailOp(op.ID, "bad payload: "+e.Error())
+					continue
+				}
+				smtpW := c.getSMTPWorker(op.Account)
+				if smtpW == nil {
+					c.store.FailOp(op.ID, "no SMTP worker")
+					continue
+				}
+				_, sentMsg, sendErr := smtpW.Send(SendRequest{
+					From: payload.From, To: payload.To,
+					Subject: payload.Subject, Body: payload.Body,
+				})
+				if sendErr != nil {
+					err = sendErr
+				} else {
+					imapW := c.getIMAPWorker(op.Account)
+					if imapW != nil && sentMsg != nil {
+						imapW.AppendToFolder("Sent", sentMsg, nil)
+					}
+				}
+
+			case cache.OpMarkRead:
+				var payload cache.MarkReadPayload
+				if e := json.Unmarshal(op.Payload, &payload); e != nil {
+					c.store.FailOp(op.ID, "bad payload: "+e.Error())
+					continue
+				}
+				w := c.getIMAPWorker(op.Account)
+				if w == nil {
+					c.store.FailOp(op.ID, "no IMAP worker")
+					continue
+				}
+				for _, uid := range payload.UIDs {
+					w.MarkRead(op.Folder, uid)
+				}
 			}
-			if err := w.MoveToTrashBatch(pd.Folder, pd.UIDs, nil); err != nil {
-				log.Printf("retry delete %s/%s: %v", pd.Account, pd.Folder, err)
-				continue
+
+			if err != nil {
+				log.Printf("retry op %d (%s): %v", op.ID, op.Type, err)
+				c.store.FailOp(op.ID, err.Error())
+			} else {
+				c.store.CompleteOp(op.ID)
 			}
-			c.store.ClearPendingDeletes(pd.Account, pd.Folder, pd.UIDs)
 		}
 		return nil
 	}
@@ -313,16 +392,39 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig) error {
 	c.imap[acct.Email] = w
 	c.mu.Unlock()
 
-	// Retry any pending deletions before syncing folders.
-	pending := c.store.PendingDeletes()
-	for _, pd := range pending {
-		if pd.Account != acct.Email {
+	// Retry any pending operations for this account before syncing folders.
+	ops := c.store.PendingOps()
+	for _, op := range ops {
+		if op.Account != acct.Email {
 			continue
 		}
-		if err := w.MoveToTrashBatch(pd.Folder, pd.UIDs, nil); err != nil {
-			log.Printf("retry delete %s/%s: %v", pd.Account, pd.Folder, err)
-		} else {
-			c.store.ClearPendingDeletes(pd.Account, pd.Folder, pd.UIDs)
+		c.store.StartOp(op.ID)
+		switch op.Type {
+		case cache.OpDelete:
+			var payload cache.DeletePayload
+			if err := json.Unmarshal(op.Payload, &payload); err != nil {
+				c.store.FailOp(op.ID, "bad payload: "+err.Error())
+				continue
+			}
+			if err := w.MoveToTrashBatch(op.Folder, payload.UIDs, nil); err != nil {
+				log.Printf("retry delete %s/%s: %v", op.Account, op.Folder, err)
+				c.store.FailOp(op.ID, err.Error())
+			} else {
+				c.store.CompleteOp(op.ID)
+				c.store.ClearPendingDeletes(op.Account, op.Folder, payload.UIDs)
+			}
+		case cache.OpMarkRead:
+			var payload cache.MarkReadPayload
+			if err := json.Unmarshal(op.Payload, &payload); err != nil {
+				c.store.FailOp(op.ID, "bad payload: "+err.Error())
+				continue
+			}
+			for _, uid := range payload.UIDs {
+				w.MarkRead(op.Folder, uid)
+			}
+			c.store.CompleteOp(op.ID)
+		default:
+			// Send ops are retried separately.
 		}
 	}
 

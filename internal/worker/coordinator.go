@@ -243,7 +243,7 @@ func (c *Coordinator) DeleteMessages(acctEmail, folder string, uids []uint32) te
 		}
 
 		var onProgress func(done, total int)
-		if c.program != nil && len(uids) > 500 {
+		if c.program != nil && len(uids) > 1 {
 			onProgress = func(done, total int) {
 				c.program.Send(DeleteProgressMsg{
 					Account: acctEmail,

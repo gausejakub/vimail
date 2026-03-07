@@ -513,7 +513,7 @@ func (w *IMAPWorker) MoveToTrash(folder string, uid uint32) error {
 	}
 
 	imapName := w.imapMailboxName(folder)
-	trashName := w.imapMailboxName("Trash")
+	trashName := w.trashMailboxName()
 
 	// SELECT source folder.
 	selCmd := w.client.Select(imapName, nil)
@@ -563,7 +563,7 @@ func (w *IMAPWorker) MoveToTrashBatch(folder string, uids []uint32, onProgress f
 	}
 
 	imapName := w.imapMailboxName(folder)
-	trashName := w.imapMailboxName("Trash")
+	trashName := w.trashMailboxName()
 
 	log.Printf("IMAP delete: %d UIDs from %s (%s) → %s", len(uids), folder, imapName, trashName)
 
@@ -586,6 +586,7 @@ func (w *IMAPWorker) MoveToTrashBatch(folder string, uids []uint32, onProgress f
 		}
 		log.Printf("IMAP delete: processed %d/%d UIDs", end, len(uids))
 		if onProgress != nil {
+			log.Printf("IMAP delete: sending progress %d/%d", end, len(uids))
 			onProgress(end, len(uids))
 		}
 	}
@@ -629,6 +630,23 @@ func (w *IMAPWorker) imapMailboxName(folder string) string {
 		return name
 	}
 	return folder
+}
+
+// trashMailboxName returns the IMAP name of the trash folder.
+// Falls back to "Trash" if no trash folder was discovered.
+func (w *IMAPWorker) trashMailboxName() string {
+	if name, ok := w.folderMap["Trash"]; ok {
+		return name
+	}
+	// Search folderMap values for common trash names.
+	for _, imapName := range w.folderMap {
+		lower := strings.ToLower(imapName)
+		if lower == "[gmail]/trash" || lower == "[gmail]/bin" ||
+			lower == "trash" || lower == "deleted items" || lower == "deleted messages" {
+			return imapName
+		}
+	}
+	return "Trash"
 }
 
 // reconnect attempts to re-establish the IMAP connection.

@@ -48,7 +48,7 @@ func (w *SMTPWorker) Send(req SendRequest) (string, []byte, error) {
 
 	switch tlsMode {
 	case "tls":
-		conn, err = tls.Dial("tcp", addr, &tls.Config{ServerName: host})
+		conn, err = tls.Dial("tcp", addr, &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12})
 	default:
 		conn, err = net.Dial("tcp", addr)
 	}
@@ -65,7 +65,7 @@ func (w *SMTPWorker) Send(req SendRequest) (string, []byte, error) {
 
 	// STARTTLS if needed.
 	if tlsMode == "starttls" {
-		if err := client.StartTLS(&tls.Config{ServerName: host}); err != nil {
+		if err := client.StartTLS(&tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}); err != nil {
 			return "", nil, fmt.Errorf("SMTP STARTTLS: %w", err)
 		}
 	}

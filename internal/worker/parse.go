@@ -102,9 +102,18 @@ func ParseBody(data []byte) (BodyResult, error) {
 	return BodyResult{Text: display, HTML: htmlBody, Attachments: attachments}, nil
 }
 
+const (
+	maxPartSize  = 25 * 1024 * 1024 // 25 MB per MIME part
+	maxMIMEDepth = 20               // maximum nesting depth for multipart
+)
+
 // collectParts recursively walks MIME parts to find text/plain, text/html, and attachments.
 // partPrefix tracks the MIME part numbering (e.g. "1", "1.2") for IMAP BODY[part] fetching.
 func collectParts(mr *mail.Reader, text, html *string, attachments *[]email.Attachment, partPrefix string) {
+	collectPartsDepth(mr, text, html, attachments, partPrefix, 0)
+}
+
+func collectPartsDepth(mr *mail.Reader, text, html *string, attachments *[]email.Attachment, partPrefix string, depth int) {
 	partIdx := 0
 	for {
 		p, err := mr.NextPart()
@@ -122,9 +131,12 @@ func collectParts(mr *mail.Reader, text, html *string, attachments *[]email.Atta
 
 		// Recurse into nested multipart (multipart/alternative, multipart/mixed, etc.).
 		if strings.HasPrefix(ct, "multipart/") {
+			if depth >= maxMIMEDepth {
+				continue
+			}
 			nested, err := mail.CreateReader(p.Body)
 			if err == nil {
-				collectParts(nested, text, html, attachments, partNum)
+				collectPartsDepth(nested, text, html, attachments, partNum, depth+1)
 			}
 			continue
 		}
@@ -139,7 +151,7 @@ func collectParts(mr *mail.Reader, text, html *string, attachments *[]email.Atta
 
 		if isAttachment {
 			// Read to measure size, but don't store the data.
-			partData, err := io.ReadAll(p.Body)
+			partData, err := io.ReadAll(io.LimitReader(p.Body, maxPartSize))
 			size := 0
 			if err == nil {
 				size = len(partData)
@@ -160,7 +172,7 @@ func collectParts(mr *mail.Reader, text, html *string, attachments *[]email.Atta
 			continue
 		}
 
-		partData, err := io.ReadAll(p.Body)
+		partData, err := io.ReadAll(io.LimitReader(p.Body, maxPartSize))
 		if err != nil {
 			continue
 		}
@@ -216,6 +228,10 @@ func ExtractAttachmentData(data []byte) ([]AttachmentData, error) {
 }
 
 func extractAttachmentParts(mr *mail.Reader, result *[]AttachmentData) {
+	extractAttachmentPartsDepth(mr, result, 0)
+}
+
+func extractAttachmentPartsDepth(mr *mail.Reader, result *[]AttachmentData, depth int) {
 	for {
 		p, err := mr.NextPart()
 		if err != nil {
@@ -226,9 +242,12 @@ func extractAttachmentParts(mr *mail.Reader, result *[]AttachmentData) {
 		disp := p.Header.Get("Content-Disposition")
 
 		if strings.HasPrefix(ct, "multipart/") {
+			if depth >= maxMIMEDepth {
+				continue
+			}
 			nested, err := mail.CreateReader(p.Body)
 			if err == nil {
-				extractAttachmentParts(nested, result)
+				extractAttachmentPartsDepth(nested, result, depth+1)
 			}
 			continue
 		}
@@ -240,7 +259,7 @@ func extractAttachmentParts(mr *mail.Reader, result *[]AttachmentData) {
 		}
 
 		if isAttachment {
-			partData, err := io.ReadAll(p.Body)
+			partData, err := io.ReadAll(io.LimitReader(p.Body, maxPartSize))
 			if err != nil {
 				continue
 			}

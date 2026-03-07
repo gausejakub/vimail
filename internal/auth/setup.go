@@ -57,6 +57,10 @@ func RunSetup(cfg config.Config) error {
 				return fmt.Errorf("reading password: %w", err)
 			}
 			password := strings.TrimSpace(string(raw))
+			// Clear password bytes from memory.
+			for i := range raw {
+				raw[i] = 0
+			}
 			if password == "" {
 				fmt.Println("  Skipped (empty password).")
 				continue

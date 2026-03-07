@@ -186,10 +186,15 @@ func (c *Coordinator) SaveAttachments(acctEmail, folder string, uid uint32, atta
 			if !wanted[att.Filename] {
 				continue
 			}
-			path := filepath.Join(dir, att.Filename)
+			// Sanitize filename to prevent path traversal.
+			safeName := filepath.Base(att.Filename)
+			if safeName == "." || safeName == "/" || safeName == "" {
+				safeName = "attachment"
+			}
+			path := filepath.Join(dir, safeName)
 			// Avoid overwriting: append (1), (2), etc.
 			path = uniquePath(path)
-			if err := os.WriteFile(path, att.Data, 0644); err != nil {
+			if err := os.WriteFile(path, att.Data, 0600); err != nil {
 				log.Printf("save attachment %s: %v", att.Filename, err)
 				continue
 			}

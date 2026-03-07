@@ -63,7 +63,7 @@ func (w *IMAPWorker) Connect() error {
 	}
 
 	opts := &imapclient.Options{
-		TLSConfig: &tls.Config{ServerName: host},
+		TLSConfig: &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12},
 		UnilateralDataHandler: &imapclient.UnilateralDataHandler{
 			Mailbox: func(data *imapclient.UnilateralDataMailbox) {
 				if data.NumMessages != nil {

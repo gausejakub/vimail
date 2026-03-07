@@ -3,6 +3,7 @@ package cache
 import (
 	"database/sql"
 	"encoding/json"
+	"os"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -98,6 +99,9 @@ func Open(path string) (*sql.DB, error) {
 		return nil, err
 	}
 
+	// Restrict DB file permissions to owner-only.
+	os.Chmod(path, 0600)
+
 	// Single connection avoids SQLITE_BUSY when multiple goroutines write.
 	// WAL mode still allows concurrent reads within the same connection.
 	db.SetMaxOpenConns(1)
@@ -107,6 +111,10 @@ func Open(path string) (*sql.DB, error) {
 		return nil, err
 	}
 	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if _, err := db.Exec("PRAGMA foreign_keys=ON"); err != nil {
 		db.Close()
 		return nil, err
 	}

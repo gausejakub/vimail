@@ -335,27 +335,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Reload mailbox sidebar with newly discovered folders.
 		m.mailbox = m.mailbox.Reload()
 		// Refresh current view if it belongs to this account.
-		acctEmail := m.mailbox.SelectedEmail()
-		folder := m.msglist.CurrentFolder()
-		if msg.Account == acctEmail || m.msglist.CurrentAccount() == msg.Account {
+		currentAcct := m.msglist.CurrentAccount()
+		currentFolder := m.msglist.CurrentFolder()
+		if msg.Account == currentAcct {
 			cmds = append(cmds, func() tea.Msg {
-				return util.FolderSelectedMsg{Account: acctEmail, Folder: folder}
+				return util.FolderRefreshMsg{Account: currentAcct, Folder: currentFolder}
 			})
-		}
-		// If current folder is still empty, try to find one with messages.
-		currentMsgs := m.store.MessagesFor(acctEmail, folder)
-		if len(currentMsgs) == 0 {
-			for _, acct := range m.store.Accounts() {
-				if am := m.store.MessagesFor(acct.Email, "Inbox"); len(am) > 0 {
-					acctEmail = acct.Email
-					folder = "Inbox"
-					m.mailbox = m.mailbox.SelectFolder(acctEmail, folder)
-					cmds = append(cmds, func() tea.Msg {
-						return util.FolderSelectedMsg{Account: acctEmail, Folder: folder}
-					})
-					break
-				}
-			}
 		}
 		if msg.Err != nil {
 			errText := msg.Err.Error()
@@ -988,6 +973,7 @@ func (m Model) executeCommand(input string) tea.Cmd {
 
 	case "ops", "operations", "queue":
 		return func() tea.Msg { return showOpsMsg{} }
+
 
 	default:
 		return func() tea.Msg {

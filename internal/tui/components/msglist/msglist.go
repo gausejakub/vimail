@@ -168,13 +168,16 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			return m, m.selectCurrent()
 		}
 	case util.FolderRefreshMsg:
-		m.totalCount = m.store.MessageCount(msg.Account, msg.Folder)
-		// Reload the current window.
-		m.messages = m.store.MessagesForPage(msg.Account, msg.Folder, m.loadOffset, pageSize)
-		if m.cursor >= len(m.messages) && len(m.messages) > 0 {
-			m.cursor = len(m.messages) - 1
+		if msg.Account == m.account && msg.Folder == m.folder {
+			m.totalCount = m.store.MessageCount(msg.Account, msg.Folder)
+			// Reload the current window.
+			m.messages = m.store.MessagesForPage(msg.Account, msg.Folder, m.loadOffset, pageSize)
+			if m.cursor >= len(m.messages) && len(m.messages) > 0 {
+				m.cursor = len(m.messages) - 1
+			}
+			m.ensureVisible()
+			return m, m.selectCurrent()
 		}
-		m.ensureVisible()
 	}
 	return m, nil
 }

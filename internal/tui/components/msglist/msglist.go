@@ -20,10 +20,11 @@ type Model struct {
 	focused    bool
 	store      email.Store
 	messages   []email.Message
+	loadOffset int  // absolute index of messages[0] in the full folder
 	totalCount int  // total messages in folder (for pagination)
 	loading    bool // true while async folder load is in progress
-	cursor     int
-	offset     int // viewport scroll offset
+	cursor     int  // index into messages slice (local)
+	offset     int  // viewport scroll offset (local)
 	folder     string
 	account    string
 	pendingKey string // for multi-key sequences (dd, gg)
@@ -41,6 +42,15 @@ type folderLoadedMsg struct {
 	Folder     string
 	Messages   []email.Message
 	TotalCount int
+}
+
+// jumpLoadedMsg carries the result of an async window load for G/gg jumps.
+type jumpLoadedMsg struct {
+	Account    string
+	Folder     string
+	Messages   []email.Message
+	LoadOffset int // absolute index of Messages[0]
+	Cursor     int // desired local cursor position within Messages
 }
 
 // SetSyncing sets syncing state for all or no accounts.
@@ -107,6 +117,11 @@ func (m Model) Init() tea.Cmd {
 	return nil
 }
 
+// absPos returns the absolute position of the cursor in the full folder.
+func (m Model) absPos() int {
+	return m.loadOffset + m.cursor
+}
+
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -116,6 +131,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		m.folder = msg.Folder
 		m.messages = nil
 		m.totalCount = 0
+		m.loadOffset = 0
 		m.cursor = 0
 		m.offset = 0
 		m.loading = true
@@ -130,14 +146,31 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		if msg.Account == m.account && msg.Folder == m.folder {
 			m.messages = msg.Messages
 			m.totalCount = msg.TotalCount
+			m.loadOffset = 0
 			m.loading = false
 			if len(m.messages) > 0 {
 				return m, m.selectCurrent()
 			}
 		}
+	case jumpLoadedMsg:
+		if msg.Account == m.account && msg.Folder == m.folder {
+			m.messages = msg.Messages
+			m.loadOffset = msg.LoadOffset
+			m.loading = false
+			m.cursor = msg.Cursor
+			if m.cursor >= len(m.messages) {
+				m.cursor = len(m.messages) - 1
+			}
+			if m.cursor < 0 {
+				m.cursor = 0
+			}
+			m.ensureVisible()
+			return m, m.selectCurrent()
+		}
 	case util.FolderRefreshMsg:
 		m.totalCount = m.store.MessageCount(msg.Account, msg.Folder)
-		m.messages = m.store.MessagesForPage(msg.Account, msg.Folder, 0, len(m.messages))
+		// Reload the current window.
+		m.messages = m.store.MessagesForPage(msg.Account, msg.Folder, m.loadOffset, pageSize)
 		if m.cursor >= len(m.messages) && len(m.messages) > 0 {
 			m.cursor = len(m.messages) - 1
 		}
@@ -169,26 +202,11 @@ func (m Model) HandleKey(key string) (Model, tea.Cmd) {
 		case pending == "g" && key == "g":
 			count := m.consumeCount()
 			if count > 0 {
-				target := count - 1
-				for target >= len(m.messages) && len(m.messages) < m.totalCount {
-					more := m.store.MessagesForPage(m.account, m.folder, len(m.messages), pageSize)
-					if len(more) == 0 {
-						break
-					}
-					m.messages = append(m.messages, more...)
-				}
-				m.cursor = target
-			} else {
-				m.cursor = 0
+				absTarget := count - 1
+				return m, m.jumpToAbs(absTarget)
 			}
-			if m.cursor >= len(m.messages) {
-				m.cursor = len(m.messages) - 1
-			}
-			if m.cursor < 0 {
-				m.cursor = 0
-			}
-			m.ensureVisible()
-			return m, m.selectCurrent()
+			// gg without count — jump to top.
+			return m, m.jumpToAbs(0)
 		}
 		m.countBuf = ""
 		// Pending cancelled; fall through to process this key normally.
@@ -237,6 +255,7 @@ func (m Model) HandleKey(key string) (Model, tea.Cmd) {
 		if m.cursor < 0 {
 			m.cursor = 0
 		}
+		m.loadPreviousIfNeeded()
 		m.ensureVisible()
 	case "d":
 		m.pendingKey = "d"
@@ -247,28 +266,61 @@ func (m Model) HandleKey(key string) (Model, tea.Cmd) {
 	case "G":
 		count := m.consumeCount()
 		if count > 0 {
-			target := count - 1
-			// Load enough pages to reach the target.
-			for target >= len(m.messages) && len(m.messages) < m.totalCount {
-				more := m.store.MessagesForPage(m.account, m.folder, len(m.messages), pageSize)
-				if len(more) == 0 {
-					break
-				}
-				m.messages = append(m.messages, more...)
-			}
-			m.cursor = target
-			if m.cursor >= len(m.messages) {
-				m.cursor = len(m.messages) - 1
-			}
-		} else {
-			m.cursor = len(m.messages) - 1
+			return m, m.jumpToAbs(count - 1)
 		}
-		m.loadMoreIfNeeded()
-		m.ensureVisible()
+		// G without count — jump to bottom.
+		return m, m.jumpToAbs(m.totalCount - 1)
 	default:
 		m.countBuf = ""
 	}
 	return m, m.selectCurrent()
+}
+
+// jumpToAbs jumps to an absolute position. If it's within the current window,
+// moves the cursor directly. Otherwise loads a new window async.
+func (m *Model) jumpToAbs(absTarget int) tea.Cmd {
+	if absTarget < 0 {
+		absTarget = 0
+	}
+	if absTarget >= m.totalCount {
+		absTarget = m.totalCount - 1
+	}
+
+	// Check if target is within the loaded window.
+	localTarget := absTarget - m.loadOffset
+	if localTarget >= 0 && localTarget < len(m.messages) {
+		m.cursor = localTarget
+		m.ensureVisible()
+		return m.selectCurrent()
+	}
+
+	// Need to load a new window — do it async.
+	m.loading = true
+	store := m.store
+	acct, folder := m.account, m.folder
+	total := m.totalCount
+	return func() tea.Msg {
+		// Center the window around the target, biased so target is visible.
+		windowStart := absTarget - pageSize/2
+		if windowStart < 0 {
+			windowStart = 0
+		}
+		if windowStart+pageSize > total {
+			windowStart = total - pageSize
+			if windowStart < 0 {
+				windowStart = 0
+			}
+		}
+		msgs := store.MessagesForPage(acct, folder, windowStart, pageSize)
+		cursor := absTarget - windowStart
+		return jumpLoadedMsg{
+			Account:    acct,
+			Folder:     folder,
+			Messages:   msgs,
+			LoadOffset: windowStart,
+			Cursor:     cursor,
+		}
+	}
 }
 
 // consumeCount reads and resets the accumulated numeric count. Returns 0 if none.
@@ -308,15 +360,56 @@ func (m Model) UpdateBody(uid uint32, body, htmlBody string, attachments []email
 	return m
 }
 
-// loadMoreIfNeeded loads additional messages when the cursor approaches the end.
+// loadMoreIfNeeded loads additional messages when the cursor approaches the end of the window.
 func (m *Model) loadMoreIfNeeded() {
-	if len(m.messages) >= m.totalCount {
-		return // all loaded
+	windowEnd := m.loadOffset + len(m.messages)
+	if windowEnd >= m.totalCount {
+		return // at the end of the folder
 	}
-	// Load more when within 50 messages of the end.
+	// Load more when within 50 messages of the window end.
 	if m.cursor >= len(m.messages)-50 {
-		more := m.store.MessagesForPage(m.account, m.folder, len(m.messages), pageSize)
+		more := m.store.MessagesForPage(m.account, m.folder, windowEnd, pageSize)
 		m.messages = append(m.messages, more...)
+		// Trim the front if the window gets too large (keep ~3 pages max).
+		maxWindow := pageSize * 3
+		if len(m.messages) > maxWindow {
+			trim := len(m.messages) - maxWindow
+			m.messages = m.messages[trim:]
+			m.loadOffset += trim
+			m.cursor -= trim
+			m.offset -= trim
+			if m.offset < 0 {
+				m.offset = 0
+			}
+		}
+	}
+}
+
+// loadPreviousIfNeeded loads previous messages when the cursor approaches the start of the window.
+func (m *Model) loadPreviousIfNeeded() {
+	if m.loadOffset == 0 {
+		return // already at the beginning
+	}
+	if m.cursor < 50 {
+		// Load a page before the current window.
+		prevStart := m.loadOffset - pageSize
+		if prevStart < 0 {
+			prevStart = 0
+		}
+		count := m.loadOffset - prevStart
+		if count <= 0 {
+			return
+		}
+		prev := m.store.MessagesForPage(m.account, m.folder, prevStart, count)
+		m.messages = append(prev, m.messages...)
+		m.loadOffset = prevStart
+		m.cursor += len(prev)
+		m.offset += len(prev)
+		// Trim the back if the window gets too large.
+		maxWindow := pageSize * 3
+		if len(m.messages) > maxWindow {
+			m.messages = m.messages[:maxWindow]
+		}
 	}
 }
 
@@ -352,10 +445,10 @@ func (m Model) View() string {
 	posText := ""
 	if len(m.messages) > 0 {
 		total := m.totalCount
-		if total < len(m.messages) {
-			total = len(m.messages)
+		if total < m.loadOffset+len(m.messages) {
+			total = m.loadOffset + len(m.messages)
 		}
-		posText = fmt.Sprintf(" %d/%d", m.cursor+1, total)
+		posText = fmt.Sprintf(" %d/%d", m.absPos()+1, total)
 	}
 	// Pad plain text to full width, then apply colors to segments.
 	plainHeader := folderText + posText

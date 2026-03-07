@@ -18,15 +18,27 @@ type item struct {
 }
 
 type Model struct {
-	width    int
-	height   int
-	focused  bool
-	store    email.Store
-	accounts []email.Account
-	folders  map[string][]email.Folder // keyed by email
-	items    []item
-	cursor   int
-	syncing  map[string]bool // accounts currently syncing
+	width      int
+	height     int
+	focused    bool
+	store      email.Store
+	accounts   []email.Account
+	folders    map[string][]email.Folder // keyed by email
+	items      []item
+	cursor     int
+	pendingKey string // for multi-key sequences (dd)
+	syncing    map[string]bool // accounts currently syncing
+
+	// Confirmation state for folder deletion.
+	confirmDelete       bool   // true when waiting for y/n
+	confirmDeleteAcct   string
+	confirmDeleteFolder string
+}
+
+// standardFolders are protected from deletion.
+var standardFolders = map[string]bool{
+	"Inbox": true, "Sent": true, "Drafts": true, "Trash": true, "Spam": true,
+	"Archive": true, "All Mail": true, "Starred": true, "Important": true,
 }
 
 func New(store email.Store) Model {
@@ -85,6 +97,32 @@ func (m Model) Reload() Model {
 
 // HandleKey processes a key press and returns the updated model + any command.
 func (m Model) HandleKey(key string) (Model, tea.Cmd) {
+	// Handle delete confirmation (y/n).
+	if m.confirmDelete {
+		m.confirmDelete = false
+		if key == "y" || key == "Y" {
+			acct := m.confirmDeleteAcct
+			folder := m.confirmDeleteFolder
+			return m, func() tea.Msg {
+				return util.DeleteFolderRequestMsg{Account: acct, Folder: folder}
+			}
+		}
+		return m, func() tea.Msg {
+			return util.InfoMsg{Text: "Delete cancelled", IsError: false}
+		}
+	}
+
+	// Handle pending key sequences (dd).
+	if m.pendingKey != "" {
+		pending := m.pendingKey
+		m.pendingKey = ""
+		if pending == "d" && key == "d" {
+			cmd := m.emitDeleteFolder()
+			return m, cmd
+		}
+		// Pending cancelled; fall through.
+	}
+
 	switch key {
 	case "j", "down":
 		if m.cursor < len(m.items)-1 {
@@ -104,8 +142,43 @@ func (m Model) HandleKey(key string) (Model, tea.Cmd) {
 			m.cursor = len(m.items) - 1
 			return m, m.emitIfFolder()
 		}
+	case "d":
+		m.pendingKey = "d"
+		return m, nil
 	}
 	return m, nil
+}
+
+// emitDeleteFolder prompts for confirmation if the cursor is on a deletable folder.
+// Called from HandleKey (value receiver) — mutates m directly since HandleKey returns it.
+func (m *Model) emitDeleteFolder() tea.Cmd {
+	if m.cursor >= len(m.items) {
+		return nil
+	}
+	it := m.items[m.cursor]
+	if it.isAccount {
+		return func() tea.Msg {
+			return util.InfoMsg{Text: "Cannot delete an account", IsError: true}
+		}
+	}
+	acct := m.accounts[it.accountIdx]
+	folders := m.folders[acct.Email]
+	if it.folderIdx < 0 || it.folderIdx >= len(folders) {
+		return nil
+	}
+	folder := folders[it.folderIdx]
+	if standardFolders[folder.Name] {
+		return func() tea.Msg {
+			return util.InfoMsg{Text: fmt.Sprintf("Cannot delete standard folder %q", folder.Name), IsError: true}
+		}
+	}
+	m.confirmDelete = true
+	m.confirmDeleteAcct = acct.Email
+	m.confirmDeleteFolder = folder.Name
+	folderName := folder.Name
+	return func() tea.Msg {
+		return util.InfoMsg{Text: fmt.Sprintf("Delete folder %q? (y/n)", folderName), IsError: false}
+	}
 }
 
 // emitIfFolder returns a FolderSelectedMsg command if the cursor is on a folder row.

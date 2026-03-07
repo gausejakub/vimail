@@ -255,6 +255,23 @@ func (c *Coordinator) SendAndArchive(acctEmail string, req SendRequest) tea.Cmd 
 	}
 }
 
+// DeleteFolder returns a tea.Cmd that deletes a mailbox on the IMAP server and removes it from cache.
+func (c *Coordinator) DeleteFolder(acctEmail, folder string) tea.Cmd {
+	return func() tea.Msg {
+		w := c.getIMAPWorker(acctEmail)
+		if w == nil {
+			return util.DeleteFolderCompleteMsg{Account: acctEmail, Folder: folder, Err: fmt.Errorf("no IMAP worker for %s", acctEmail)}
+		}
+
+		if err := w.DeleteMailbox(folder); err != nil {
+			return util.DeleteFolderCompleteMsg{Account: acctEmail, Folder: folder, Err: err}
+		}
+
+		c.store.DeleteFolder(acctEmail, folder)
+		return util.DeleteFolderCompleteMsg{Account: acctEmail, Folder: folder}
+	}
+}
+
 // DeleteMessage returns a tea.Cmd that moves a message to Trash via IMAP.
 func (c *Coordinator) DeleteMessage(acctEmail, folder string, uid uint32) tea.Cmd {
 	return c.DeleteMessages(acctEmail, folder, []uint32{uid})

@@ -582,6 +582,44 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(cmds...)
 
+	case util.DeleteFolderRequestMsg:
+		acct := msg.Account
+		folder := msg.Folder
+		if m.coordinator != nil {
+			cmds = append(cmds, m.coordinator.DeleteFolder(acct, folder))
+			var cmd tea.Cmd
+			m.status, cmd = m.status.Update(util.ProcessStartMsg{
+				ID:    "delfolder",
+				Label: fmt.Sprintf("⊘ %s: deleting folder %s", acct, folder),
+			})
+			cmds = append(cmds, cmd)
+		}
+		return m, tea.Batch(cmds...)
+
+	case util.DeleteFolderCompleteMsg:
+		var cmd tea.Cmd
+		m.status, cmd = m.status.Update(util.ProcessEndMsg{ID: "delfolder"})
+		cmds = append(cmds, cmd)
+		if msg.Err != nil {
+			errText := "Delete folder failed: " + msg.Err.Error()
+			cmds = append(cmds, func() tea.Msg {
+				return util.InfoMsg{Text: errText, IsError: true}
+			})
+		} else {
+			m.mailbox = m.mailbox.Reload()
+			// Switch to Inbox if we were viewing the deleted folder.
+			if m.msglist.CurrentFolder() == msg.Folder && m.msglist.CurrentAccount() == msg.Account {
+				cmds = append(cmds, func() tea.Msg {
+					return util.FolderSelectedMsg{Account: msg.Account, Folder: "Inbox"}
+				})
+			}
+			folder := msg.Folder
+			cmds = append(cmds, func() tea.Msg {
+				return util.InfoMsg{Text: fmt.Sprintf("Folder %q deleted", folder), IsError: false}
+			})
+		}
+		return m, tea.Batch(cmds...)
+
 	case util.ConnectionStatusMsg:
 		var cmd tea.Cmd
 		m.status, cmd = m.status.Update(msg)

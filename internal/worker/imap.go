@@ -624,6 +624,24 @@ func (w *IMAPWorker) moveChunkToTrash(trashName string, uids []uint32) error {
 	return nil
 }
 
+// DeleteMailbox deletes a mailbox on the IMAP server.
+func (w *IMAPWorker) DeleteMailbox(folder string) error {
+	w.opMu.Lock()
+	defer w.opMu.Unlock()
+
+	if w.client == nil {
+		return fmt.Errorf("not connected")
+	}
+
+	imapName := w.imapMailboxName(folder)
+	if err := w.client.Delete(imapName).Wait(); err != nil {
+		return fmt.Errorf("DELETE %s: %w", imapName, err)
+	}
+
+	delete(w.folderMap, folder)
+	return nil
+}
+
 // imapMailboxName maps a display folder name back to an IMAP mailbox name.
 func (w *IMAPWorker) imapMailboxName(folder string) string {
 	if name, ok := w.folderMap[folder]; ok {

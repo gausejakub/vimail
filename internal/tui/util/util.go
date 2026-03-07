@@ -166,6 +166,19 @@ type AIResponseMsg struct {
 	Err  error
 }
 
+// DeleteFolderRequestMsg is emitted when the user requests to delete a folder.
+type DeleteFolderRequestMsg struct {
+	Account string
+	Folder  string
+}
+
+// DeleteFolderCompleteMsg signals that a folder delete completed.
+type DeleteFolderCompleteMsg struct {
+	Account string
+	Folder  string
+	Err     error
+}
+
 // ProcessStartMsg registers a running background process in the status bar.
 type ProcessStartMsg struct {
 	ID    string // e.g. "sync:jakub@gause.cz", "delete", "send", "ai"

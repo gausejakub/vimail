@@ -346,6 +346,20 @@ func (s *SQLiteStore) SetUIDValidity(acctEmail, folder string, val uint32) error
 	return err
 }
 
+// DeleteFolder removes a folder and all its messages from the cache.
+func (s *SQLiteStore) DeleteFolder(acctEmail, folder string) error {
+	var folderID int
+	err := s.db.QueryRow(`SELECT id FROM folders WHERE account = ? AND name = ?`, acctEmail, folder).Scan(&folderID)
+	if err != nil {
+		return err
+	}
+	s.db.Exec(`DELETE FROM attachments WHERE folder_id = ?`, folderID)
+	s.db.Exec(`DELETE FROM messages WHERE folder_id = ?`, folderID)
+	s.db.Exec(`DELETE FROM pending_deletes WHERE account = ? AND folder = ?`, acctEmail, folder)
+	_, err = s.db.Exec(`DELETE FROM folders WHERE id = ?`, folderID)
+	return err
+}
+
 // PurgeFolder deletes all messages in a folder (used when UIDVALIDITY changes).
 func (s *SQLiteStore) PurgeFolder(acctEmail, folder string) error {
 	var folderID int

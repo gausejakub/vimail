@@ -349,8 +349,8 @@ func (w *IMAPWorker) FetchBody(folder string, uid uint32) (BodyResult, error) {
 		return result, fmt.Errorf("FETCH body: %w", err)
 	}
 
-	// Cache text + HTML body.
-	w.store.UpdateMessageBody(w.acct.Email, folder, uid, result.Text, result.HTML)
+	// Cache text + HTML body + attachment metadata.
+	w.store.UpdateMessageBody(w.acct.Email, folder, uid, result.Text, result.HTML, result.Attachments)
 
 	return result, nil
 }

@@ -61,6 +61,17 @@ CREATE TABLE IF NOT EXISTS pending_deletes (
 	PRIMARY KEY (folder_id, uid)
 );
 
+CREATE TABLE IF NOT EXISTS attachments (
+	folder_id    INTEGER NOT NULL,
+	uid          INTEGER NOT NULL,
+	filename     TEXT NOT NULL,
+	content_type TEXT NOT NULL DEFAULT '',
+	size         INTEGER NOT NULL DEFAULT 0,
+	part_num     TEXT NOT NULL DEFAULT '',
+	FOREIGN KEY (folder_id, uid) REFERENCES messages(folder_id, uid) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_attachments_msg ON attachments(folder_id, uid);
+
 CREATE TABLE IF NOT EXISTS schema_version (
 	version INTEGER NOT NULL
 );
@@ -96,6 +107,21 @@ func Open(path string) (*sql.DB, error) {
 	// Re-fetch bodies that were cached without HTML support (body_fetched=0
 	// but body is non-empty means an older code path stored the body).
 	db.Exec(`UPDATE messages SET body = '' WHERE body_fetched = 0 AND body != ''`)
+
+	// Add attachments table if missing (migration for existing databases).
+	db.Exec(`CREATE TABLE IF NOT EXISTS attachments (
+		folder_id    INTEGER NOT NULL,
+		uid          INTEGER NOT NULL,
+		filename     TEXT NOT NULL,
+		content_type TEXT NOT NULL DEFAULT '',
+		size         INTEGER NOT NULL DEFAULT 0,
+		part_num     TEXT NOT NULL DEFAULT '',
+		FOREIGN KEY (folder_id, uid) REFERENCES messages(folder_id, uid) ON DELETE CASCADE
+	)`)
+	db.Exec(`CREATE INDEX IF NOT EXISTS idx_attachments_msg ON attachments(folder_id, uid)`)
+
+	// Track whether attachment metadata has been cached for a message.
+	db.Exec(`ALTER TABLE messages ADD COLUMN attachments_cached BOOLEAN NOT NULL DEFAULT 0`)
 
 	return db, nil
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/gausejakub/vimail/internal/cache"
 	"github.com/gausejakub/vimail/internal/config"
 	"github.com/gausejakub/vimail/internal/email"
 	"github.com/gausejakub/vimail/internal/theme"
@@ -162,8 +163,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, cmd)
 		acct := m.mailbox.SelectedEmail()
 		folder := m.msglist.CurrentFolder()
-		// Lazy-fetch body if coordinator is available and body is empty.
-		if m.coordinator != nil && msg.Message.Body == "" && msg.Message.UID > 0 {
+		// Lazy-fetch body if coordinator is available and body is empty or attachments not cached.
+		needsFetch := msg.Message.Body == ""
+		if !needsFetch {
+			if sqlStore, ok := m.store.(*cache.SQLiteStore); ok {
+				needsFetch = sqlStore.NeedsBodyRefetch(acct, folder, msg.Message.UID)
+			}
+		}
+		if m.coordinator != nil && needsFetch && msg.Message.UID > 0 {
 			cmds = append(cmds, m.coordinator.FetchBody(acct, folder, msg.Message.UID))
 			var cmd tea.Cmd
 			m.status, cmd = m.status.Update(util.ProcessStartMsg{ID: "fetch-body", Label: "⟳ fetching…"})

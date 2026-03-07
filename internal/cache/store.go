@@ -132,6 +132,24 @@ func (s *SQLiteStore) MessagesFor(acctEmail, folder string) []email.Message {
 		m.Flagged = flagged != 0
 		msgs = append(msgs, m)
 	}
+	rows.Close()
+
+	// Load attachments for messages that have been body-fetched.
+	for i := range msgs {
+		attRows, err := s.db.Query(`SELECT filename, content_type, size, part_num FROM attachments WHERE folder_id = ? AND uid = ?`, folderID, msgs[i].UID)
+		if err != nil {
+			continue
+		}
+		for attRows.Next() {
+			var att email.Attachment
+			if err := attRows.Scan(&att.Filename, &att.ContentType, &att.Size, &att.PartNum); err != nil {
+				continue
+			}
+			msgs[i].Attachments = append(msgs[i].Attachments, att)
+		}
+		attRows.Close()
+	}
+
 	return msgs
 }
 
@@ -353,13 +371,35 @@ func (s *SQLiteStore) ClearPendingDeletes(acctEmail, folder string, uids []uint3
 	}
 }
 
-// UpdateMessageBody updates the text and HTML body of a message.
-func (s *SQLiteStore) UpdateMessageBody(acctEmail, folder string, uid uint32, body, htmlBody string) error {
+// NeedsBodyRefetch returns true if a message body should be re-fetched
+// (e.g. it was cached before attachment support was added).
+func (s *SQLiteStore) NeedsBodyRefetch(acctEmail, folder string, uid uint32) bool {
+	var folderID int
+	if err := s.db.QueryRow(`SELECT id FROM folders WHERE account = ? AND name = ?`, acctEmail, folder).Scan(&folderID); err != nil {
+		return false
+	}
+	var cached int
+	s.db.QueryRow(`SELECT attachments_cached FROM messages WHERE folder_id = ? AND uid = ?`, folderID, uid).Scan(&cached)
+	return cached == 0
+}
+
+// UpdateMessageBody updates the text and HTML body of a message, along with attachment metadata.
+func (s *SQLiteStore) UpdateMessageBody(acctEmail, folder string, uid uint32, body, htmlBody string, attachments []email.Attachment) error {
 	var folderID int
 	err := s.db.QueryRow(`SELECT id FROM folders WHERE account = ? AND name = ?`, acctEmail, folder).Scan(&folderID)
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(`UPDATE messages SET body = ?, html_body = ?, body_fetched = 1 WHERE folder_id = ? AND uid = ?`, body, htmlBody, folderID, uid)
-	return err
+	_, err = s.db.Exec(`UPDATE messages SET body = ?, html_body = ?, body_fetched = 1, attachments_cached = 1 WHERE folder_id = ? AND uid = ?`, body, htmlBody, folderID, uid)
+	if err != nil {
+		return err
+	}
+
+	// Replace attachment metadata.
+	s.db.Exec(`DELETE FROM attachments WHERE folder_id = ? AND uid = ?`, folderID, uid)
+	for _, att := range attachments {
+		s.db.Exec(`INSERT INTO attachments (folder_id, uid, filename, content_type, size, part_num) VALUES (?, ?, ?, ?, ?, ?)`,
+			folderID, uid, att.Filename, att.ContentType, att.Size, att.PartNum)
+	}
+	return nil
 }

@@ -295,7 +295,11 @@ func TestUpdateMessageBody(t *testing.T) {
 	seedWithFolders(t, s, "Test", "a@b.com")
 
 	s.UpsertMessage("a@b.com", "Inbox", email.Message{UID: 1, From: "x", To: "y", Date: time.Now(), Body: ""})
-	s.UpdateMessageBody("a@b.com", "Inbox", 1, "Full body text", "<p>Full body text</p>")
+	atts := []email.Attachment{
+		{Filename: "report.pdf", ContentType: "application/pdf", Size: 1024, PartNum: "2"},
+		{Filename: "image.png", ContentType: "image/png", Size: 512, PartNum: "3"},
+	}
+	s.UpdateMessageBody("a@b.com", "Inbox", 1, "Full body text", "<p>Full body text</p>", atts)
 
 	msgs := s.MessagesFor("a@b.com", "Inbox")
 	if len(msgs) != 1 {
@@ -306,6 +310,15 @@ func TestUpdateMessageBody(t *testing.T) {
 	}
 	if msgs[0].HTMLBody != "<p>Full body text</p>" {
 		t.Fatalf("html_body = %q, want <p>Full body text</p>", msgs[0].HTMLBody)
+	}
+	if len(msgs[0].Attachments) != 2 {
+		t.Fatalf("got %d attachments, want 2", len(msgs[0].Attachments))
+	}
+	if msgs[0].Attachments[0].Filename != "report.pdf" {
+		t.Fatalf("attachment[0] = %q, want report.pdf", msgs[0].Attachments[0].Filename)
+	}
+	if msgs[0].Attachments[1].Size != 512 {
+		t.Fatalf("attachment[1].Size = %d, want 512", msgs[0].Attachments[1].Size)
 	}
 }
 

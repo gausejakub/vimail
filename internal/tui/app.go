@@ -165,7 +165,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.coordinator != nil && needsFetch && msg.Message.UID > 0 {
 			cmds = append(cmds, m.coordinator.FetchBody(acct, folder, msg.Message.UID))
 			var cmd tea.Cmd
-			m.status, cmd = m.status.Update(util.ProcessStartMsg{ID: "fetch-body", Label: "⟳ fetching…"})
+			subject := msg.Message.Subject
+			if len([]rune(subject)) > 30 {
+				subject = string([]rune(subject)[:30]) + "…"
+			}
+			m.status, cmd = m.status.Update(util.ProcessStartMsg{ID: "fetch-body", Label: fmt.Sprintf("⟳ %s/%s: %s", acct, folder, subject)})
 			cmds = append(cmds, cmd)
 		}
 		// Mark as read when focused.
@@ -244,7 +248,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				Body:    msg.Body,
 			}))
 			var cmd tea.Cmd
-			m.status, cmd = m.status.Update(util.ProcessStartMsg{ID: "send", Label: "↑ sending…"})
+			m.status, cmd = m.status.Update(util.ProcessStartMsg{ID: "send", Label: fmt.Sprintf("↑ %s: sending to %s", currentEmail, msg.To)})
 			cmds = append(cmds, cmd)
 		} else {
 			// Mock send.
@@ -453,7 +457,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.coordinator != nil && msg.Message.UID > 0 {
 				cmds = append(cmds, m.coordinator.DeleteMessage(acct, folder, msg.Message.UID))
 				var cmd tea.Cmd
-				m.status, cmd = m.status.Update(util.ProcessStartMsg{ID: "delete", Label: "⊘ deleting…"})
+				m.status, cmd = m.status.Update(util.ProcessStartMsg{ID: "delete", Label: fmt.Sprintf("⊘ %s/%s: deleting…", acct, folder)})
 				cmds = append(cmds, cmd)
 			} else {
 				cmds = append(cmds, func() tea.Msg {
@@ -496,7 +500,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.status, cmd = m.status.Update(util.ProcessStartMsg{
 				ID:    "delete",
-				Label: fmt.Sprintf("⊘ deleting %d msgs", n),
+				Label: fmt.Sprintf("⊘ %s/%s: deleting %d msgs", acct, folder, n),
 			})
 			cmds = append(cmds, cmd)
 		} else {
@@ -535,7 +539,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.status, cmd = m.status.Update(util.ProcessStartMsg{
 			ID:    "delete",
-			Label: fmt.Sprintf("⊘ deleting %d/%d", msg.Done, msg.Total),
+			Label: fmt.Sprintf("⊘ %s/%s: deleting %d/%d", msg.Account, msg.Folder, msg.Done, msg.Total),
 		})
 		cmds = append(cmds, cmd)
 		return m, tea.Batch(cmds...)
@@ -729,7 +733,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					var cmd tea.Cmd
 					m.status, cmd = m.status.Update(util.ProcessStartMsg{
 						ID:    "save-attachments",
-						Label: fmt.Sprintf("⇣ saving %d attachments", len(sel.Attachments)),
+						Label: fmt.Sprintf("⇣ %s/%s: saving %d attachments", acct, folder, len(sel.Attachments)),
 					})
 					cmds = append(cmds, cmd)
 					cmds = append(cmds, m.coordinator.SaveAttachments(acct, folder, sel.UID, sel.Attachments))

@@ -195,6 +195,22 @@ func (s *MockStore) MessagesFor(email, folder string) []Message {
 	return nil
 }
 
+func (s *MockStore) MessagesForPage(email, folder string, offset, limit int) []Message {
+	msgs := s.MessagesFor(email, folder)
+	if offset >= len(msgs) {
+		return nil
+	}
+	end := offset + limit
+	if end > len(msgs) {
+		end = len(msgs)
+	}
+	return msgs[offset:end]
+}
+
+func (s *MockStore) MessageCount(email, folder string) int {
+	return len(s.MessagesFor(email, folder))
+}
+
 func (s *MockStore) SaveDraft(email string, msg Message) {
 	acct, ok := s.messages[email]
 	if !ok {

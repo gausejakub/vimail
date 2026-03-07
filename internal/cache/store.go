@@ -97,6 +97,60 @@ func (s *SQLiteStore) FoldersFor(acctEmail string) []email.Folder {
 	return folders
 }
 
+// MessageCount returns the total number of messages in a folder.
+func (s *SQLiteStore) MessageCount(acctEmail, folder string) int {
+	var folderID int
+	if err := s.db.QueryRow(`SELECT id FROM folders WHERE account = ? AND name = ?`, acctEmail, folder).Scan(&folderID); err != nil {
+		return 0
+	}
+	var count int
+	s.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE folder_id = ?`, folderID).Scan(&count)
+	return count
+}
+
+// MessagesForPage returns a page of messages with offset and limit.
+func (s *SQLiteStore) MessagesForPage(acctEmail, folder string, offset, limit int) []email.Message {
+	if folder == "Drafts" {
+		return s.draftsFor(acctEmail)
+	}
+
+	var folderID int
+	err := s.db.QueryRow(`SELECT id FROM folders WHERE account = ? AND name = ?`, acctEmail, folder).Scan(&folderID)
+	if err != nil {
+		return nil
+	}
+
+	rows, err := s.db.Query(`
+		SELECT uid, from_addr, to_addr, subject, body, html_body, date, unread, flagged
+		FROM messages WHERE folder_id = ?
+		ORDER BY date DESC
+		LIMIT ? OFFSET ?
+	`, folderID, limit, offset)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var msgs []email.Message
+	for rows.Next() {
+		var m email.Message
+		var dateStr string
+		var unread, flagged int
+		if err := rows.Scan(&m.UID, &m.From, &m.To, &m.Subject, &m.Body, &m.HTMLBody, &dateStr, &unread, &flagged); err != nil {
+			continue
+		}
+		m.ID = fmt.Sprintf("%d", m.UID)
+		m.Date, _ = time.Parse(time.RFC3339, dateStr)
+		m.Unread = unread != 0
+		m.Flagged = flagged != 0
+		msgs = append(msgs, m)
+	}
+	rows.Close()
+
+	s.loadAttachments(folderID, msgs)
+	return msgs
+}
+
 func (s *SQLiteStore) MessagesFor(acctEmail, folder string) []email.Message {
 	if folder == "Drafts" {
 		return s.draftsFor(acctEmail)
@@ -112,6 +166,7 @@ func (s *SQLiteStore) MessagesFor(acctEmail, folder string) []email.Message {
 		SELECT uid, from_addr, to_addr, subject, body, html_body, date, unread, flagged
 		FROM messages WHERE folder_id = ?
 		ORDER BY date DESC
+		LIMIT 500
 	`, folderID)
 	if err != nil {
 		return nil
@@ -134,22 +189,7 @@ func (s *SQLiteStore) MessagesFor(acctEmail, folder string) []email.Message {
 	}
 	rows.Close()
 
-	// Load attachments for messages that have been body-fetched.
-	for i := range msgs {
-		attRows, err := s.db.Query(`SELECT filename, content_type, size, part_num FROM attachments WHERE folder_id = ? AND uid = ?`, folderID, msgs[i].UID)
-		if err != nil {
-			continue
-		}
-		for attRows.Next() {
-			var att email.Attachment
-			if err := attRows.Scan(&att.Filename, &att.ContentType, &att.Size, &att.PartNum); err != nil {
-				continue
-			}
-			msgs[i].Attachments = append(msgs[i].Attachments, att)
-		}
-		attRows.Close()
-	}
-
+	s.loadAttachments(folderID, msgs)
 	return msgs
 }
 
@@ -369,6 +409,32 @@ func (s *SQLiteStore) ClearPendingDeletes(acctEmail, folder string, uids []uint3
 	for _, uid := range uids {
 		s.db.Exec(`DELETE FROM pending_deletes WHERE account = ? AND folder = ? AND uid = ?`, acctEmail, folder, uid)
 	}
+}
+
+// loadAttachments populates attachment metadata for a slice of messages from the database.
+func (s *SQLiteStore) loadAttachments(folderID int, msgs []email.Message) {
+	if len(msgs) == 0 {
+		return
+	}
+	uidIndex := make(map[uint32]int, len(msgs))
+	for i, m := range msgs {
+		uidIndex[m.UID] = i
+	}
+	attRows, err := s.db.Query(`SELECT uid, filename, content_type, size, part_num FROM attachments WHERE folder_id = ?`, folderID)
+	if err != nil {
+		return
+	}
+	for attRows.Next() {
+		var uid uint32
+		var att email.Attachment
+		if err := attRows.Scan(&uid, &att.Filename, &att.ContentType, &att.Size, &att.PartNum); err != nil {
+			continue
+		}
+		if idx, ok := uidIndex[uid]; ok {
+			msgs[idx].Attachments = append(msgs[idx].Attachments, att)
+		}
+	}
+	attRows.Close()
 }
 
 // NeedsBodyRefetch returns true if a message body should be re-fetched

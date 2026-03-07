@@ -129,15 +129,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, cmd)
 		m.status, cmd = m.status.Update(msg)
 		cmds = append(cmds, cmd)
-		// Auto-select first message in new folder
-		msgs := m.store.MessagesFor(msg.Account, msg.Folder)
-		if len(msgs) > 0 {
-			cmds = append(cmds, func() tea.Msg {
-				return util.MessageSelectedMsg{Message: msgs[0]}
-			})
-		} else {
-			m.preview = m.preview.ClearMessage()
-		}
+		m.preview = m.preview.ClearMessage()
 		return m, tea.Batch(cmds...)
 
 	case util.FolderRefreshMsg:
@@ -625,8 +617,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, cmd)
 	}
 
-	// Pass through other messages to status bar
+	// Forward to msglist (e.g. async folder load results)
 	var cmd tea.Cmd
+	m.msglist, cmd = m.msglist.Update(msg)
+	cmds = append(cmds, cmd)
+
+	// Pass through other messages to status bar
 	m.status, cmd = m.status.Update(msg)
 	cmds = append(cmds, cmd)
 

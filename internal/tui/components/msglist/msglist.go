@@ -12,12 +12,16 @@ import (
 	"github.com/gausejakub/vimail/internal/tui/util"
 )
 
+const pageSize = 500
+
 type Model struct {
 	width      int
 	height     int
 	focused    bool
 	store      email.Store
 	messages   []email.Message
+	totalCount int  // total messages in folder (for pagination)
+	loading    bool // true while async folder load is in progress
 	cursor     int
 	offset     int // viewport scroll offset
 	folder     string
@@ -29,6 +33,14 @@ type Model struct {
 	visualAnchor int
 
 	syncingAccts []string // accounts currently syncing
+}
+
+// folderLoadedMsg carries the result of an async folder load.
+type folderLoadedMsg struct {
+	Account    string
+	Folder     string
+	Messages   []email.Message
+	TotalCount int
 }
 
 // SetSyncing sets syncing state for all or no accounts.
@@ -76,15 +88,18 @@ func New(store email.Store) Model {
 	accts := store.Accounts()
 	var msgs []email.Message
 	var acctEmail string
+	var total int
 	if len(accts) > 0 {
 		acctEmail = accts[0].Email
-		msgs = store.MessagesFor(acctEmail, "Inbox")
+		msgs = store.MessagesForPage(acctEmail, "Inbox", 0, pageSize)
+		total = store.MessageCount(acctEmail, "Inbox")
 	}
 	return Model{
-		store:    store,
-		messages: msgs,
-		folder:   "Inbox",
-		account:  acctEmail,
+		store:      store,
+		messages:   msgs,
+		totalCount: total,
+		folder:     "Inbox",
+		account:    acctEmail,
 	}
 }
 
@@ -95,16 +110,34 @@ func (m Model) Init() tea.Cmd {
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
+		// Width/height are set via SetSize from the layout, not from WindowSizeMsg.
 	case util.FolderSelectedMsg:
 		m.account = msg.Account
 		m.folder = msg.Folder
-		m.messages = m.store.MessagesFor(msg.Account, msg.Folder)
+		m.messages = nil
+		m.totalCount = 0
 		m.cursor = 0
 		m.offset = 0
+		m.loading = true
+		store := m.store
+		acct, folder := msg.Account, msg.Folder
+		return m, func() tea.Msg {
+			msgs := store.MessagesForPage(acct, folder, 0, pageSize)
+			total := store.MessageCount(acct, folder)
+			return folderLoadedMsg{Account: acct, Folder: folder, Messages: msgs, TotalCount: total}
+		}
+	case folderLoadedMsg:
+		if msg.Account == m.account && msg.Folder == m.folder {
+			m.messages = msg.Messages
+			m.totalCount = msg.TotalCount
+			m.loading = false
+			if len(m.messages) > 0 {
+				return m, m.selectCurrent()
+			}
+		}
 	case util.FolderRefreshMsg:
-		m.messages = m.store.MessagesFor(msg.Account, msg.Folder)
+		m.totalCount = m.store.MessageCount(msg.Account, msg.Folder)
+		m.messages = m.store.MessagesForPage(msg.Account, msg.Folder, 0, len(m.messages))
 		if m.cursor >= len(m.messages) && len(m.messages) > 0 {
 			m.cursor = len(m.messages) - 1
 		}
@@ -136,7 +169,15 @@ func (m Model) HandleKey(key string) (Model, tea.Cmd) {
 		case pending == "g" && key == "g":
 			count := m.consumeCount()
 			if count > 0 {
-				m.cursor = count - 1 // 1-indexed like Vim
+				target := count - 1
+				for target >= len(m.messages) && len(m.messages) < m.totalCount {
+					more := m.store.MessagesForPage(m.account, m.folder, len(m.messages), pageSize)
+					if len(more) == 0 {
+						break
+					}
+					m.messages = append(m.messages, more...)
+				}
+				m.cursor = target
 			} else {
 				m.cursor = 0
 			}
@@ -185,6 +226,7 @@ func (m Model) HandleKey(key string) (Model, tea.Cmd) {
 		if m.cursor >= len(m.messages) {
 			m.cursor = len(m.messages) - 1
 		}
+		m.loadMoreIfNeeded()
 		m.ensureVisible()
 	case "k", "up":
 		n := m.consumeCount()
@@ -205,13 +247,23 @@ func (m Model) HandleKey(key string) (Model, tea.Cmd) {
 	case "G":
 		count := m.consumeCount()
 		if count > 0 {
-			m.cursor = count - 1
+			target := count - 1
+			// Load enough pages to reach the target.
+			for target >= len(m.messages) && len(m.messages) < m.totalCount {
+				more := m.store.MessagesForPage(m.account, m.folder, len(m.messages), pageSize)
+				if len(more) == 0 {
+					break
+				}
+				m.messages = append(m.messages, more...)
+			}
+			m.cursor = target
 			if m.cursor >= len(m.messages) {
 				m.cursor = len(m.messages) - 1
 			}
 		} else {
 			m.cursor = len(m.messages) - 1
 		}
+		m.loadMoreIfNeeded()
 		m.ensureVisible()
 	default:
 		m.countBuf = ""
@@ -256,6 +308,18 @@ func (m Model) UpdateBody(uid uint32, body, htmlBody string, attachments []email
 	return m
 }
 
+// loadMoreIfNeeded loads additional messages when the cursor approaches the end.
+func (m *Model) loadMoreIfNeeded() {
+	if len(m.messages) >= m.totalCount {
+		return // all loaded
+	}
+	// Load more when within 50 messages of the end.
+	if m.cursor >= len(m.messages)-50 {
+		more := m.store.MessagesForPage(m.account, m.folder, len(m.messages), pageSize)
+		m.messages = append(m.messages, more...)
+	}
+}
+
 func (m *Model) ensureVisible() {
 	visibleRows := m.height - 2 // header + column header
 	if visibleRows < 1 {
@@ -287,7 +351,11 @@ func (m Model) View() string {
 	}
 	posText := ""
 	if len(m.messages) > 0 {
-		posText = fmt.Sprintf(" %d/%d", m.cursor+1, len(m.messages))
+		total := m.totalCount
+		if total < len(m.messages) {
+			total = len(m.messages)
+		}
+		posText = fmt.Sprintf(" %d/%d", m.cursor+1, total)
 	}
 	// Pad plain text to full width, then apply colors to segments.
 	plainHeader := folderText + posText
@@ -315,21 +383,21 @@ func (m Model) View() string {
 			lines = append(lines, m.renderMessage(i, msg))
 		}
 	} else {
-		// Empty folder state
+		// Empty folder state — center text vertically and horizontally.
 		emptyLine := fmt.Sprintf("%*s", m.width, "")
-		topPad := max(0, (m.height-3)/3)
+		availRows := m.height - 2 // subtract header line
+		msg := "No messages"
+		if m.loading {
+			msg = "Loading…"
+		} else if m.isSyncing() {
+			msg = "Syncing…"
+		}
+		topPad := max(0, availRows/2)
 		for i := 0; i < topPad; i++ {
 			lines = append(lines, emptyLine)
 		}
-		// Center status text
-		msg := "No messages"
-		if m.isSyncing() {
-			msg = "Syncing…"
-		}
-		pad := (m.width - len(msg)) / 2
-		if pad < 0 {
-			pad = 0
-		}
+		msgWidth := len([]rune(msg))
+		pad := max(0, (m.width-msgWidth)/2)
 		centered := fmt.Sprintf("%*s", pad, "") + msg
 		centered = padRight(centered, m.width)
 		lines = append(lines, lipgloss.NewStyle().Foreground(t.TextMuted()).Render(centered))

@@ -188,8 +188,27 @@ func (w *IMAPWorker) ListMailboxes() ([]string, error) {
 	return names, nil
 }
 
-// SyncFolder performs an incremental sync of a folder.
-// Returns the number of new messages fetched.
+// FolderStatus returns UIDNEXT and UIDVALIDITY for a folder via STATUS (no SELECT needed).
+func (w *IMAPWorker) FolderStatus(folder string) (uidNext uint32, uidValidity uint32, err error) {
+	w.opMu.Lock()
+	defer w.opMu.Unlock()
+
+	if w.client == nil {
+		return 0, 0, fmt.Errorf("not connected")
+	}
+
+	imapName := w.imapMailboxName(folder)
+	statusCmd := w.client.Status(imapName, &imap.StatusOptions{
+		UIDNext:     true,
+		UIDValidity: true,
+	})
+	data, err := statusCmd.Wait()
+	if err != nil {
+		return 0, 0, fmt.Errorf("STATUS %s: %w", imapName, err)
+	}
+	return uint32(data.UIDNext), data.UIDValidity, nil
+}
+
 // SyncFolder syncs a single folder via IMAP FETCH.
 // If onProgress is non-nil, it is called periodically with the number of new messages fetched so far.
 func (w *IMAPWorker) SyncFolder(folder string, onProgress ...func(fetched int)) (int, error) {

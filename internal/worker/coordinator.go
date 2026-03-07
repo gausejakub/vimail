@@ -333,6 +333,8 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig) error {
 	}
 
 	// Sync each folder with progress reporting.
+	// Use STATUS pre-check to skip folders with no new messages.
+	synced := 0
 	for i, folder := range folders {
 		if c.program != nil {
 			c.program.Send(SyncProgressMsg{
@@ -343,6 +345,21 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig) error {
 				Messages: 0,
 			})
 		}
+
+		// Quick STATUS check: skip folder if UIDNEXT hasn't changed.
+		uidNext, uidValidity, err := w.FolderStatus(folder)
+		if err != nil {
+			log.Printf("status %s/%s: %v", acct.Email, folder, err)
+			continue
+		}
+		storedUV, _ := c.store.GetUIDValidity(acct.Email, folder)
+		highUID, _ := c.store.HighestUID(acct.Email, folder)
+		if storedUV == uidValidity && highUID > 0 && uidNext <= highUID+1 {
+			log.Printf("skip %s/%s: no new messages (UIDNEXT=%d, highUID=%d)", acct.Email, folder, uidNext, highUID)
+			continue
+		}
+
+		synced++
 		var onProgress func(fetched int)
 		if c.program != nil {
 			folderCopy := folder
@@ -362,6 +379,7 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig) error {
 			log.Printf("sync %s/%s: %v", acct.Email, folder, err)
 		}
 	}
+	log.Printf("sync %s: %d/%d folders needed sync", acct.Email, synced, len(folders))
 
 	// Also set up SMTP worker if configured.
 	if acct.SMTPHost != "" {

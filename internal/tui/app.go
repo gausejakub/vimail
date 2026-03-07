@@ -274,8 +274,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case util.SyncStartMsg:
 		m.syncPending = len(m.cfg.Accounts)
-		m.msglist = m.msglist.SetSyncing(true)
 		for _, acct := range m.cfg.Accounts {
+			m.msglist = m.msglist.SetAccountSyncing(acct.Email, true)
 			m.mailbox = m.mailbox.SetAccountSyncing(acct.Email, true)
 			email := acct.Email
 			var cmd tea.Cmd
@@ -303,6 +303,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case worker.SyncAccountCompleteMsg:
 		m.syncPending--
 		m.mailbox = m.mailbox.SetAccountSyncing(msg.Account, false)
+		m.msglist = m.msglist.SetAccountSyncing(msg.Account, false)
 		var cmd tea.Cmd
 		m.status, cmd = m.status.Update(util.ProcessEndMsg{ID: "sync:" + msg.Account})
 		cmds = append(cmds, cmd)
@@ -358,6 +359,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.syncPending = len(m.cfg.Accounts)
 			for _, acct := range m.cfg.Accounts {
 				m.mailbox = m.mailbox.SetAccountSyncing(acct.Email, true)
+				m.msglist = m.msglist.SetAccountSyncing(acct.Email, true)
 			}
 			cmds = append(cmds, m.coordinator.SyncAll())
 		}

@@ -27,13 +27,49 @@ type Model struct {
 
 	visualMode   bool
 	visualAnchor int
-	syncing      bool
+
+	syncingAccts []string // accounts currently syncing
 }
 
-// SetSyncing updates the syncing state indicator.
+// SetSyncing sets syncing state for all or no accounts.
 func (m Model) SetSyncing(s bool) Model {
-	m.syncing = s
+	if !s {
+		m.syncingAccts = nil
+	}
 	return m
+}
+
+// SetAccountSyncing sets syncing state for a specific account.
+func (m Model) SetAccountSyncing(email string, syncing bool) Model {
+	if syncing {
+		// Add if not already present.
+		for _, e := range m.syncingAccts {
+			if e == email {
+				return m
+			}
+		}
+		m.syncingAccts = append(append([]string{}, m.syncingAccts...), email)
+	} else {
+		// Remove by building a new slice (safe for value receiver).
+		var filtered []string
+		for _, e := range m.syncingAccts {
+			if e != email {
+				filtered = append(filtered, e)
+			}
+		}
+		m.syncingAccts = filtered
+	}
+	return m
+}
+
+// isSyncing returns true if the current account is still syncing.
+func (m Model) isSyncing() bool {
+	for _, e := range m.syncingAccts {
+		if e == m.account {
+			return true
+		}
+	}
+	return false
 }
 
 func New(store email.Store) Model {
@@ -287,7 +323,7 @@ func (m Model) View() string {
 		}
 		// Center status text
 		msg := "No messages"
-		if m.syncing {
+		if m.isSyncing() {
 			msg = "Syncing…"
 		}
 		pad := (m.width - len(msg)) / 2

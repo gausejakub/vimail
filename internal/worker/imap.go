@@ -404,11 +404,19 @@ func (w *IMAPWorker) FetchRawMessage(folder string, uid uint32) ([]byte, error) 
 
 // MarkRead sets the \Seen flag on a message by UID.
 func (w *IMAPWorker) MarkRead(folder string, uid uint32) error {
+	return w.MarkReadBatch(folder, []uint32{uid})
+}
+
+// MarkReadBatch marks multiple messages as read in a single IMAP operation.
+func (w *IMAPWorker) MarkReadBatch(folder string, uids []uint32) error {
 	w.opMu.Lock()
 	defer w.opMu.Unlock()
 
 	if w.client == nil {
 		return fmt.Errorf("not connected")
+	}
+	if len(uids) == 0 {
+		return nil
 	}
 
 	imapName := w.imapMailboxName(folder)
@@ -418,14 +426,16 @@ func (w *IMAPWorker) MarkRead(folder string, uid uint32) error {
 	}
 
 	var seqSet imap.UIDSet
-	seqSet.AddNum(imap.UID(uid))
+	for _, uid := range uids {
+		seqSet.AddNum(imap.UID(uid))
+	}
 
 	storeCmd := w.client.Store(seqSet, &imap.StoreFlags{
 		Op:    imap.StoreFlagsAdd,
 		Flags: []imap.Flag{imap.FlagSeen},
 	}, nil)
 	if err := storeCmd.Close(); err != nil {
-		return fmt.Errorf("STORE +FLAGS \\Seen uid=%d: %w", uid, err)
+		return fmt.Errorf("STORE +FLAGS \\Seen %d uids: %w", len(uids), err)
 	}
 	return nil
 }

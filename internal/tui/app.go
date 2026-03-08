@@ -487,10 +487,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			var ids []string
 			var uids []uint32
-			for _, message := range msg.Messages {
-				ids = append(ids, message.ID)
-				if message.UID > 0 {
-					uids = append(uids, message.UID)
+			// If selection covers the entire folder, get all UIDs from cache.
+			if msg.SelectAll {
+				if cs, ok := m.store.(*cache.SQLiteStore); ok {
+					uids = cs.AllUIDs(acct, folder)
+					for _, uid := range uids {
+						ids = append(ids, fmt.Sprintf("%d", uid))
+					}
+				}
+			}
+			if len(ids) == 0 {
+				for _, message := range msg.Messages {
+					ids = append(ids, message.ID)
+					if message.UID > 0 {
+						uids = append(uids, message.UID)
+					}
 				}
 			}
 			m.store.DeleteMessages(acct, folder, ids)
@@ -499,6 +510,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		n := len(msg.Messages)
+		if msg.SelectAll {
+			n = m.msglist.TotalCount()
+		}
 		if folder == "Drafts" {
 			cmds = append(cmds, func() tea.Msg {
 				return util.InfoMsg{Text: fmt.Sprintf("%d drafts deleted", n), IsError: false}
@@ -845,6 +859,7 @@ func (m Model) handleVisualKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch k {
 	case "d":
 		selected := m.msglist.SelectedMessages()
+		selectAll := m.msglist.VisualCoversAll()
 		lo, _ := m.msglist.VisualRange()
 		m.msglist = m.msglist.ExitVisual()
 		m.msglist = m.msglist.SetCursor(lo)
@@ -857,9 +872,10 @@ func (m Model) handleVisualKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			folder := m.msglist.CurrentFolder()
 			cmds = append(cmds, func() tea.Msg {
 				return util.BatchDeleteRequestMsg{
-					Account:  acct,
-					Folder:   folder,
-					Messages: selected,
+					Account:   acct,
+					Folder:    folder,
+					Messages:  selected,
+					SelectAll: selectAll,
 				}
 			})
 		}

@@ -119,9 +119,10 @@ type DeleteRequestMsg struct {
 
 // BatchDeleteRequestMsg is emitted by the message list in visual mode when the user presses d.
 type BatchDeleteRequestMsg struct {
-	Account  string
-	Folder   string
-	Messages []email.Message
+	Account    string
+	Folder     string
+	Messages   []email.Message
+	SelectAll  bool // true when user selected the entire folder (may exceed loaded window)
 }
 
 // BatchMarkReadRequestMsg is emitted in visual mode when the user marks selected messages as read.

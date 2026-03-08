@@ -360,6 +360,27 @@ func (s *SQLiteStore) DeleteFolder(acctEmail, folder string) error {
 	return err
 }
 
+// AllUIDs returns all UIDs for a folder, ordered by date descending (matching message list order).
+func (s *SQLiteStore) AllUIDs(acctEmail, folder string) []uint32 {
+	var folderID int
+	if err := s.db.QueryRow(`SELECT id FROM folders WHERE account = ? AND name = ?`, acctEmail, folder).Scan(&folderID); err != nil {
+		return nil
+	}
+	rows, err := s.db.Query(`SELECT uid FROM messages WHERE folder_id = ? ORDER BY date DESC`, folderID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var uids []uint32
+	for rows.Next() {
+		var uid uint32
+		if rows.Scan(&uid) == nil {
+			uids = append(uids, uid)
+		}
+	}
+	return uids
+}
+
 // PurgeFolder deletes all messages in a folder (used when UIDVALIDITY changes).
 func (s *SQLiteStore) PurgeFolder(acctEmail, folder string) error {
 	var folderID int

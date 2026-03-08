@@ -758,6 +758,26 @@ func (m Model) VisualRange() (int, int) {
 	return lo, hi
 }
 
+// VisualCoversAll returns true if the visual selection covers the entire loaded
+// window and there are more messages in the folder beyond what's loaded.
+// This detects the common "select all" pattern (ggVGd) even with a sliding window.
+func (m Model) VisualCoversAll() bool {
+	if !m.visualMode || m.totalCount == 0 {
+		return false
+	}
+	lo, hi := m.visualAnchor, m.cursor
+	if lo > hi {
+		lo, hi = hi, lo
+	}
+	// Selection covers the full loaded window.
+	return lo == 0 && hi >= len(m.messages)-1
+}
+
+// TotalCount returns the total number of messages in the current folder.
+func (m Model) TotalCount() int {
+	return m.totalCount
+}
+
 // SetCursor moves the cursor to the given position, clamped to valid bounds.
 func (m Model) SetCursor(pos int) Model {
 	if pos < 0 {

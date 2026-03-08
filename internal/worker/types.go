@@ -103,3 +103,11 @@ type DeleteResult struct {
 	UID     uint32
 	Err     error
 }
+
+// RestoreResult is the result of restoring messages from Trash via IMAP.
+type RestoreResult struct {
+	Account   string
+	DstFolder string
+	Count     int
+	Err       error
+}

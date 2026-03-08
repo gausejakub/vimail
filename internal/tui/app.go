@@ -599,6 +599,94 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		})
 		return m, tea.Batch(cmds...)
 
+	case util.RestoreRequestMsg:
+		logging.Info("restore", "single restore requested", logging.Acct(msg.Account), logging.MsgUID(msg.Message.UID))
+		acct := msg.Account
+		// Remove from local Trash cache.
+		m.store.DeleteMessage(acct, "Trash", msg.Message.ID)
+		if m.coordinator != nil && msg.Message.UID > 0 {
+			cmds = append(cmds, m.coordinator.RestoreFromTrash(acct, []uint32{msg.Message.UID}, "INBOX"))
+			var cmd tea.Cmd
+			m.status, cmd = m.status.Update(util.ProcessStartMsg{ID: "restore", Label: fmt.Sprintf("↩ %s: restoring…", acct)})
+			cmds = append(cmds, cmd)
+		} else {
+			cmds = append(cmds, func() tea.Msg {
+				return util.InfoMsg{Text: "Message restored", IsError: false}
+			})
+		}
+		cmds = append(cmds, func() tea.Msg {
+			return util.FolderRefreshMsg{Account: acct, Folder: "Trash"}
+		})
+		return m, tea.Batch(cmds...)
+
+	case util.BatchRestoreRequestMsg:
+		logging.Info("restore", "batch restore requested", logging.Acct(msg.Account), logging.KV("count", len(msg.Messages)), logging.KV("select_all", msg.SelectAll))
+		acct := msg.Account
+		var ids []string
+		var uids []uint32
+		if msg.SelectAll {
+			if cs, ok := m.store.(*cache.SQLiteStore); ok {
+				uids = cs.AllUIDs(acct, "Trash")
+				for _, uid := range uids {
+					ids = append(ids, fmt.Sprintf("%d", uid))
+				}
+			}
+		}
+		if len(ids) == 0 {
+			for _, message := range msg.Messages {
+				ids = append(ids, message.ID)
+				if message.UID > 0 {
+					uids = append(uids, message.UID)
+				}
+			}
+		}
+		m.store.DeleteMessages(acct, "Trash", ids)
+		n := len(msg.Messages)
+		if msg.SelectAll {
+			n = m.msglist.TotalCount()
+		}
+		if m.coordinator != nil && len(uids) > 0 {
+			cmds = append(cmds, m.coordinator.RestoreFromTrash(acct, uids, "INBOX"))
+			var cmd tea.Cmd
+			m.status, cmd = m.status.Update(util.ProcessStartMsg{
+				ID:    "restore",
+				Label: fmt.Sprintf("↩ %s: restoring %d msgs", acct, n),
+			})
+			cmds = append(cmds, cmd)
+		} else {
+			cmds = append(cmds, func() tea.Msg {
+				return util.InfoMsg{Text: fmt.Sprintf("%d messages restored", n), IsError: false}
+			})
+		}
+		cmds = append(cmds, func() tea.Msg {
+			return util.FolderRefreshMsg{Account: acct, Folder: "Trash"}
+		})
+		return m, tea.Batch(cmds...)
+
+	case worker.RestoreResult:
+		logging.Info("restore", "restore result", logging.Acct(msg.Account), logging.Fld(msg.DstFolder), logging.Err(msg.Err))
+		var cmd tea.Cmd
+		m.status, cmd = m.status.Update(util.ProcessEndMsg{ID: "restore"})
+		cmds = append(cmds, cmd)
+		if msg.Err != nil {
+			errText := "Restore failed: " + msg.Err.Error()
+			cmds = append(cmds, func() tea.Msg {
+				return util.InfoMsg{Text: errText, IsError: true}
+			})
+		} else {
+			n := msg.Count
+			dst := msg.DstFolder
+			cmds = append(cmds, func() tea.Msg {
+				return util.InfoMsg{Text: fmt.Sprintf("%d message(s) restored to %s", n, dst), IsError: false}
+			})
+			// Sync destination folder so restored messages appear.
+			acct := msg.Account
+			if m.coordinator != nil {
+				cmds = append(cmds, m.coordinator.SyncFolder(acct, msg.DstFolder))
+			}
+		}
+		return m, tea.Batch(cmds...)
+
 	case worker.DeleteProgressMsg:
 		var cmd tea.Cmd
 		m.status, cmd = m.status.Update(util.ProcessStartMsg{
@@ -886,6 +974,24 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.preview, cmd = m.preview.HandleKey(k)
 			cmds = append(cmds, cmd)
+		} else if k == "u" {
+			// Restore from Trash
+			if m.msglist.CurrentFolder() == "Trash" {
+				if sel := m.msglist.SelectedMessage(); sel != nil {
+					acct := m.mailbox.SelectedEmail()
+					msg := *sel
+					cmds = append(cmds, func() tea.Msg {
+						return util.RestoreRequestMsg{
+							Account: acct,
+							Message: msg,
+						}
+					})
+				}
+			} else {
+				cmds = append(cmds, func() tea.Msg {
+					return util.InfoMsg{Text: "Restore only works in Trash", IsError: true}
+				})
+			}
 		} else if k == "S" {
 			// Save attachments for current message
 			if sel := m.msglist.SelectedMessage(); sel != nil && len(sel.Attachments) > 0 {
@@ -987,6 +1093,30 @@ func (m Model) handleVisualKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					SelectAll: selectAll,
 				}
 			})
+		}
+
+	case "u":
+		// Restore from Trash in visual mode.
+		if m.msglist.CurrentFolder() == "Trash" {
+			selected := m.msglist.SelectedMessages()
+			selectAll := m.msglist.VisualCoversAll()
+			lo, _ := m.msglist.VisualRange()
+			m.msglist = m.msglist.ExitVisual()
+			m.msglist = m.msglist.SetCursor(lo)
+			m.mode = keys.ModeNormal
+			cmds = append(cmds, func() tea.Msg {
+				return keys.ModeChangedMsg{Mode: keys.ModeNormal}
+			})
+			if len(selected) > 0 {
+				acct := m.msglist.CurrentAccount()
+				cmds = append(cmds, func() tea.Msg {
+					return util.BatchRestoreRequestMsg{
+						Account:   acct,
+						Messages:  selected,
+						SelectAll: selectAll,
+					}
+				})
+			}
 		}
 
 	case "esc", "v", "V":

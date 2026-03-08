@@ -125,6 +125,19 @@ type BatchDeleteRequestMsg struct {
 	SelectAll  bool // true when user selected the entire folder (may exceed loaded window)
 }
 
+// RestoreRequestMsg is emitted when the user presses u in Trash to restore a message.
+type RestoreRequestMsg struct {
+	Account  string
+	Message  email.Message
+}
+
+// BatchRestoreRequestMsg is emitted in visual mode when the user restores selected messages from Trash.
+type BatchRestoreRequestMsg struct {
+	Account   string
+	Messages  []email.Message
+	SelectAll bool
+}
+
 // BatchMarkReadRequestMsg is emitted in visual mode when the user marks selected messages as read.
 type BatchMarkReadRequestMsg struct {
 	Account   string

@@ -403,6 +403,37 @@ func (c *Coordinator) DeleteMessages(acctEmail, folder string, uids []uint32) te
 	}
 }
 
+// RestoreFromTrash moves messages from Trash back to the destination folder via IMAP.
+func (c *Coordinator) RestoreFromTrash(acctEmail string, uids []uint32, dstFolder string) tea.Cmd {
+	return func() tea.Msg {
+		logging.Info("restore", "restoring from trash", logging.Acct(acctEmail), logging.Fld(dstFolder), logging.KV("count", len(uids)))
+		start := time.Now()
+
+		w := c.getIMAPWorker(acctEmail)
+		if w == nil {
+			return RestoreResult{
+				Account:   acctEmail,
+				DstFolder: dstFolder,
+				Count:     len(uids),
+				Err:       fmt.Errorf("no IMAP worker for %s", acctEmail),
+			}
+		}
+
+		err := w.MoveToFolderBatch("Trash", uids, dstFolder)
+		if err != nil {
+			logging.Error("restore", "restore failed", logging.Acct(acctEmail), logging.Fld(dstFolder), logging.KV("count", len(uids)), logging.Dur(time.Since(start)), logging.Err(err))
+		} else {
+			logging.Info("restore", "messages restored", logging.Acct(acctEmail), logging.Fld(dstFolder), logging.KV("count", len(uids)), logging.Dur(time.Since(start)))
+		}
+		return RestoreResult{
+			Account:   acctEmail,
+			DstFolder: dstFolder,
+			Count:     len(uids),
+			Err:       err,
+		}
+	}
+}
+
 // RetryPendingOps retries any pending or failed operations from the queue.
 func (c *Coordinator) RetryPendingOps() tea.Cmd {
 	return func() tea.Msg {

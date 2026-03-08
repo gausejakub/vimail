@@ -634,6 +634,101 @@ func (w *IMAPWorker) moveChunkToTrash(trashName string, uids []uint32) error {
 	return nil
 }
 
+// MoveToFolder moves a message from one folder to another via IMAP (COPY + STORE \Deleted + EXPUNGE).
+func (w *IMAPWorker) MoveToFolder(srcFolder string, uid uint32, dstFolder string) error {
+	w.opMu.Lock()
+	defer w.opMu.Unlock()
+
+	if w.client == nil {
+		return fmt.Errorf("not connected")
+	}
+
+	srcName := w.imapMailboxName(srcFolder)
+	dstName := w.imapMailboxName(dstFolder)
+
+	selCmd := w.client.Select(srcName, nil)
+	if _, err := selCmd.Wait(); err != nil {
+		return fmt.Errorf("SELECT %s: %w", srcName, err)
+	}
+
+	var seqSet imap.UIDSet
+	seqSet.AddNum(imap.UID(uid))
+
+	copyCmd := w.client.Copy(seqSet, dstName)
+	if _, err := copyCmd.Wait(); err != nil {
+		return fmt.Errorf("COPY to %s: %w", dstName, err)
+	}
+
+	storeCmd := w.client.Store(seqSet, &imap.StoreFlags{
+		Op:    imap.StoreFlagsAdd,
+		Flags: []imap.Flag{imap.FlagDeleted},
+	}, nil)
+	if err := storeCmd.Close(); err != nil {
+		return fmt.Errorf("STORE +FLAGS \\Deleted uid=%d: %w", uid, err)
+	}
+
+	expungeCmd := w.client.Expunge()
+	if err := expungeCmd.Close(); err != nil {
+		return fmt.Errorf("EXPUNGE: %w", err)
+	}
+
+	return nil
+}
+
+// MoveToFolderBatch moves multiple messages from one folder to another via IMAP.
+func (w *IMAPWorker) MoveToFolderBatch(srcFolder string, uids []uint32, dstFolder string) error {
+	w.opMu.Lock()
+	defer w.opMu.Unlock()
+
+	if w.client == nil {
+		return fmt.Errorf("not connected")
+	}
+	if len(uids) == 0 {
+		return nil
+	}
+
+	srcName := w.imapMailboxName(srcFolder)
+	dstName := w.imapMailboxName(dstFolder)
+
+	selCmd := w.client.Select(srcName, nil)
+	if _, err := selCmd.Wait(); err != nil {
+		return fmt.Errorf("SELECT %s: %w", srcName, err)
+	}
+
+	const chunkSize = 500
+	for i := 0; i < len(uids); i += chunkSize {
+		end := i + chunkSize
+		if end > len(uids) {
+			end = len(uids)
+		}
+
+		var seqSet imap.UIDSet
+		for _, uid := range uids[i:end] {
+			seqSet.AddNum(imap.UID(uid))
+		}
+
+		copyCmd := w.client.Copy(seqSet, dstName)
+		if _, err := copyCmd.Wait(); err != nil {
+			return fmt.Errorf("COPY to %s: %w", dstName, err)
+		}
+
+		storeCmd := w.client.Store(seqSet, &imap.StoreFlags{
+			Op:    imap.StoreFlagsAdd,
+			Flags: []imap.Flag{imap.FlagDeleted},
+		}, nil)
+		if err := storeCmd.Close(); err != nil {
+			return fmt.Errorf("STORE +FLAGS \\Deleted: %w", err)
+		}
+	}
+
+	expungeCmd := w.client.Expunge()
+	if err := expungeCmd.Close(); err != nil {
+		return fmt.Errorf("EXPUNGE: %w", err)
+	}
+
+	return nil
+}
+
 // DeleteMailbox deletes a mailbox on the IMAP server.
 func (w *IMAPWorker) DeleteMailbox(folder string) error {
 	w.opMu.Lock()

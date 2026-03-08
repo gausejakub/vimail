@@ -14,4 +14,5 @@ type Store interface {
 	MarkRead(email, folder, id string)
 	DeleteMessage(email, folder, id string)
 	DeleteMessages(email, folder string, ids []string)
+	SearchMessages(acctEmail, query string, limit int) []Message
 }

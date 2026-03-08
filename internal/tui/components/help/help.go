@@ -33,12 +33,14 @@ var bindings = []binding{
 	{"", ""},
 	{"Modes", sectionMarker},
 	{":", "Command mode"},
+	{"/", "Search messages"},
 	{"v", "Visual select (d to delete)"},
 	{"?", "Toggle help"},
 	{"q", "Quit"},
 	{"", ""},
 	{"Commands", sectionMarker},
 	{":theme <name>", "Switch theme"},
+	{":search <query>", "Search messages"},
 	{":quit", "Quit vimail"},
 }
 

@@ -52,6 +52,7 @@ type NormalKeyMap struct {
 	Escape   key.Binding
 	GoTop    key.Binding
 	GoBottom key.Binding
+	Search   key.Binding
 }
 
 // CommandKeyMap defines keybindings in command mode.
@@ -86,6 +87,7 @@ var Normal = NormalKeyMap{
 	Escape:   key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "escape")),
 	GoTop:    key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "go to top")),
 	GoBottom: key.NewBinding(key.WithKeys("G"), key.WithHelp("G", "go to bottom")),
+	Search:   key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "search")),
 }
 
 var Command = CommandKeyMap{

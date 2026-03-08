@@ -27,6 +27,8 @@ type Message struct {
 	Unread      bool
 	Flagged     bool
 	Attachments []Attachment
+	Folder      string // populated by search results for context
+	Account     string // populated by search results for context
 }
 
 // Attachment represents a file attached to a message.

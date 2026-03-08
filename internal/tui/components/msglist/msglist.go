@@ -34,6 +34,9 @@ type Model struct {
 	visualAnchor int
 
 	syncingAccts []string // accounts currently syncing
+
+	searchActive bool
+	searchQuery  string
 }
 
 // folderLoadedMsg carries the result of an async folder load.
@@ -441,9 +444,14 @@ func (m Model) View() string {
 		}
 	}
 	// Folder header with position indicator
-	folderText := m.folder
-	if unreadCount > 0 {
-		folderText = fmt.Sprintf("* %s (%d)", m.folder, unreadCount)
+	var folderText string
+	if m.searchActive {
+		folderText = fmt.Sprintf("Search: %q (%d results)", m.searchQuery, len(m.messages))
+	} else {
+		folderText = m.folder
+		if unreadCount > 0 {
+			folderText = fmt.Sprintf("* %s (%d)", m.folder, unreadCount)
+		}
 	}
 	posText := ""
 	if len(m.messages) > 0 {
@@ -561,6 +569,14 @@ func (m Model) renderMessage(idx int, msg email.Message) string {
 	timeStr := relativeTime(msg.Date)
 	fromName := sanitize(displayName(msg.From))
 	subject := sanitize(msg.Subject)
+	// In search mode, prepend folder context to subject.
+	if m.searchActive && msg.Folder != "" {
+		prefix := msg.Folder
+		if msg.Account != "" {
+			prefix = msg.Account + "/" + prefix
+		}
+		subject = "[" + prefix + "] " + subject
+	}
 
 	return formatRow(indicator, fromName, subject, timeStr, m.width, indFg, fromFg, subjFg, timeFg, bg, msg.Unread)
 }
@@ -776,6 +792,46 @@ func (m Model) VisualCoversAll() bool {
 // TotalCount returns the total number of messages in the current folder.
 func (m Model) TotalCount() int {
 	return m.totalCount
+}
+
+// SetSearchResults replaces the message list with search results.
+func (m Model) SetSearchResults(query string, results []email.Message) Model {
+	m.searchActive = true
+	m.searchQuery = query
+	m.messages = results
+	m.totalCount = len(results)
+	m.loadOffset = 0
+	m.cursor = 0
+	m.offset = 0
+	m.loading = false
+	return m
+}
+
+// ClearSearch exits search mode and reloads the current folder.
+func (m Model) ClearSearch() (Model, tea.Cmd) {
+	if !m.searchActive {
+		return m, nil
+	}
+	m.searchActive = false
+	m.searchQuery = ""
+	m.loading = true
+	store := m.store
+	acct, folder := m.account, m.folder
+	return m, func() tea.Msg {
+		msgs := store.MessagesForPage(acct, folder, 0, pageSize)
+		total := store.MessageCount(acct, folder)
+		return folderLoadedMsg{Account: acct, Folder: folder, Messages: msgs, TotalCount: total}
+	}
+}
+
+// IsSearchActive returns true if search results are being displayed.
+func (m Model) IsSearchActive() bool {
+	return m.searchActive
+}
+
+// SearchQuery returns the current search query.
+func (m Model) SearchQuery() string {
+	return m.searchQuery
 }
 
 // SetCursor moves the cursor to the given position, clamped to valid bounds.

@@ -685,6 +685,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.showOps = true
 		return m, nil
 
+	case util.SearchResultsMsg:
+		logging.Info("search", "results received", logging.KV("query", msg.Query), logging.KV("count", len(msg.Results)))
+		m.msglist = m.msglist.SetSearchResults(msg.Query, msg.Results)
+		if len(msg.Results) > 0 {
+			sel := msg.Results[0]
+			cmds = append(cmds, func() tea.Msg {
+				return util.MessageSelectedMsg{Message: sel}
+			})
+		} else {
+			m.preview = m.preview.ClearMessage()
+		}
+		q := msg.Query
+		n := len(msg.Results)
+		cmds = append(cmds, func() tea.Msg {
+			return util.InfoMsg{Text: fmt.Sprintf("Search %q: %d results", q, n), IsError: false}
+		})
+		return m, tea.Batch(cmds...)
+
 	case tea.KeyMsg:
 		// Compose overlay eats all keys when visible
 		if m.compose.Visible() {
@@ -766,8 +784,29 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, keys.Normal.Help):
 		m.showHelp = true
 
+	case key.Matches(msg, keys.Normal.Escape):
+		if m.msglist.IsSearchActive() {
+			var cmd tea.Cmd
+			m.msglist, cmd = m.msglist.ClearSearch()
+			cmds = append(cmds, cmd)
+			cmds = append(cmds, func() tea.Msg {
+				return util.InfoMsg{Text: "Search cleared", IsError: false}
+			})
+		}
+
+	case key.Matches(msg, keys.Normal.Search):
+		m.cmdActive = true
+		m.cmdInput.Prompt = "/"
+		m.cmdInput.SetValue("")
+		m.cmdInput.Focus()
+		m.mode = keys.ModeCommand
+		cmds = append(cmds, func() tea.Msg {
+			return keys.ModeChangedMsg{Mode: keys.ModeCommand}
+		})
+
 	case key.Matches(msg, keys.Normal.Command):
 		m.cmdActive = true
+		m.cmdInput.Prompt = ":"
 		m.cmdInput.SetValue("")
 		m.cmdInput.Focus()
 		m.mode = keys.ModeCommand
@@ -974,15 +1013,22 @@ func (m Model) handleCommandKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, keys.Command.Cancel):
 		m.cmdActive = false
 		m.cmdInput.Blur()
+		m.cmdInput.Prompt = ":"
 		m.mode = keys.ModeNormal
 		cmds = append(cmds, func() tea.Msg {
 			return keys.ModeChangedMsg{Mode: keys.ModeNormal}
 		})
 
 	case key.Matches(msg, keys.Command.Submit):
-		cmd := m.executeCommand(m.cmdInput.Value())
+		var cmd tea.Cmd
+		if m.cmdInput.Prompt == "/" {
+			cmd = m.executeSearch(m.cmdInput.Value())
+		} else {
+			cmd = m.executeCommand(m.cmdInput.Value())
+		}
 		m.cmdActive = false
 		m.cmdInput.Blur()
+		m.cmdInput.Prompt = ":"
 		m.mode = keys.ModeNormal
 		cmds = append(cmds, func() tea.Msg {
 			return keys.ModeChangedMsg{Mode: keys.ModeNormal}
@@ -1034,16 +1080,41 @@ func (m Model) executeCommand(input string) tea.Cmd {
 			return util.InfoMsg{Text: "Sync not available (using mock data)", IsError: false}
 		}
 
+	case "search", "s":
+		if len(parts) < 2 {
+			return func() tea.Msg {
+				return util.InfoMsg{Text: "Usage: :search <query>", IsError: true}
+			}
+		}
+		query := strings.Join(parts[1:], " ")
+		return m.executeSearch(query)
+
 	case "processes", "ps":
 		return func() tea.Msg { return showProcessesMsg{} }
 
 	case "ops", "operations", "queue":
 		return func() tea.Msg { return showOpsMsg{} }
 
-
 	default:
 		return func() tea.Msg {
 			return util.InfoMsg{Text: "Unknown command: " + parts[0], IsError: true}
+		}
+	}
+}
+
+func (m Model) executeSearch(query string) tea.Cmd {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil
+	}
+	logging.Info("search", "executing search", logging.KV("query", query))
+	store := m.store
+	// Search across all accounts (empty string = global).
+	return func() tea.Msg {
+		results := store.SearchMessages("", query, 200)
+		return util.SearchResultsMsg{
+			Query:   query,
+			Results: results,
 		}
 	}
 }

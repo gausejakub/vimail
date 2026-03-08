@@ -3,6 +3,7 @@ package cache
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -254,6 +255,66 @@ func (s *SQLiteStore) MarkAllRead(acctEmail, folder string) {
 		return
 	}
 	s.db.Exec(`UPDATE messages SET unread = 0 WHERE folder_id = ? AND unread = 1`, folderID)
+}
+
+// SearchMessages searches messages across all folders for an account (or all accounts if acctEmail is empty).
+// Matches against subject, from, to, and body using LIKE.
+func (s *SQLiteStore) SearchMessages(acctEmail, query string, limit int) []email.Message {
+	if query == "" {
+		return nil
+	}
+	// Escape LIKE wildcards in user input.
+	escaped := strings.NewReplacer("%", `\%`, "_", `\_`).Replace(query)
+	pattern := "%" + escaped + "%"
+
+	var rows *sql.Rows
+	var err error
+	if acctEmail != "" {
+		rows, err = s.db.Query(`
+			SELECT m.uid, f.name, f.account, m.from_addr, m.to_addr, m.subject, m.body, m.date, m.unread, m.flagged
+			FROM messages m
+			JOIN folders f ON m.folder_id = f.id
+			WHERE f.account = ?
+			  AND (m.subject LIKE ? ESCAPE '\' OR m.from_addr LIKE ? ESCAPE '\' OR m.to_addr LIKE ? ESCAPE '\' OR m.body LIKE ? ESCAPE '\')
+			ORDER BY m.date DESC
+			LIMIT ?
+		`, acctEmail, pattern, pattern, pattern, pattern, limit)
+	} else {
+		rows, err = s.db.Query(`
+			SELECT m.uid, f.name, f.account, m.from_addr, m.to_addr, m.subject, m.body, m.date, m.unread, m.flagged
+			FROM messages m
+			JOIN folders f ON m.folder_id = f.id
+			WHERE (m.subject LIKE ? ESCAPE '\' OR m.from_addr LIKE ? ESCAPE '\' OR m.to_addr LIKE ? ESCAPE '\' OR m.body LIKE ? ESCAPE '\')
+			ORDER BY m.date DESC
+			LIMIT ?
+		`, pattern, pattern, pattern, pattern, limit)
+	}
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var msgs []email.Message
+	for rows.Next() {
+		var m email.Message
+		var folder, account, dateStr string
+		var unread, flagged int
+		if err := rows.Scan(&m.UID, &folder, &account, &m.From, &m.To, &m.Subject, &m.Body, &dateStr, &unread, &flagged); err != nil {
+			continue
+		}
+		m.ID = fmt.Sprintf("%d", m.UID)
+		m.Date, _ = time.Parse(time.RFC3339, dateStr)
+		m.Unread = unread != 0
+		m.Flagged = flagged != 0
+		// Store folder in the From field prefix for display context? No — use a tag approach.
+		// We'll encode folder context into the ID for now: "uid:folder:account".
+		m.ID = fmt.Sprintf("%d", m.UID)
+		// Stash folder/account in message for context when acting on search results.
+		m.Folder = folder
+		m.Account = account
+		msgs = append(msgs, m)
+	}
+	return msgs
 }
 
 func (s *SQLiteStore) DeleteMessage(acctEmail, folder, id string) {

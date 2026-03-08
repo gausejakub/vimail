@@ -191,3 +191,10 @@ type ProcessStartMsg struct {
 type ProcessEndMsg struct {
 	ID string
 }
+
+// SearchResultsMsg carries search results to the message list.
+type SearchResultsMsg struct {
+	Query    string
+	Account  string // empty = all accounts
+	Results  []email.Message
+}

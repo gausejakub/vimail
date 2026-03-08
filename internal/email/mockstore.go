@@ -336,3 +336,7 @@ func (s *MockStore) DeleteMessages(acctEmail, folder string, ids []string) {
 		s.DeleteMessage(acctEmail, folder, id)
 	}
 }
+
+func (s *MockStore) SearchMessages(acctEmail, query string, limit int) []Message {
+	return nil
+}

@@ -277,6 +277,23 @@ Any tool that accepts a prompt as an argument and prints the response to stdout 
 - [aichat](https://github.com/sigoden/aichat) — `aichat -m <model>`
 - [mods](https://github.com/charmbracelet/mods) — `mods`
 
+## Logs
+
+vimail writes structured JSON logs to `~/.local/share/vimail/vimail.log`. Every background operation (sync, fetch, send, delete, mark-read), user action, and error is logged with full context (account, folder, UID, duration).
+
+Logs auto-rotate at 10 MB and are deleted after 3 days.
+
+```sh
+# Tail logs in real time
+tail -f ~/.local/share/vimail/vimail.log | jq .
+
+# Filter errors
+cat ~/.local/share/vimail/vimail.log | jq 'select(.level == "error")'
+
+# Show sync operations for a specific account
+cat ~/.local/share/vimail/vimail.log | jq 'select(.op == "sync" and .account == "you@gmail.com")'
+```
+
 ## Project structure
 
 ```
@@ -286,6 +303,7 @@ internal/
   auth/                          OS keyring, OAuth2 device flow, setup CLI
   email/                         Domain types (Account, Folder, Message), Store interface
   ai/                            AI agent CLI wrapper (claude, ollama, etc.)
+  logging/                       Async structured JSON logger with rotation
   cache/                         SQLite schema + Store implementation
   worker/                        IMAP worker, SMTP worker, Coordinator
   mock/                          Mock data for dev mode

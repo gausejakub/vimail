@@ -14,6 +14,7 @@ vimail brings the speed of Vim navigation to your inbox with a 3-pane layout, mo
 - **Compose with Vim** — Full Vim keybindings in the message body editor
 - **Global search** — Press `/` to search across all accounts and folders
 - **Multiple accounts** — Manage several email accounts in one view
+- **Export to ZIP** — Press `E` to export messages with text, HTML, metadata, and attachments
 - **Attachments** — View metadata in preview, save to disk with `S`
 - **Visual mode batch ops** — Select messages with `v`, then delete (`d`) or mark as read (`r`)
 - **HTML email rendering** — Clean text conversion via html2text, open raw HTML in browser with `o`
@@ -164,6 +165,7 @@ After adding accounts, run `vimail setup` to store credentials.
 | `f` | Forward |
 | `dd` | Delete message |
 | `S` | Save attachments to ~/Downloads |
+| `E` | Export message(s) to ZIP |
 | `o` | Open in browser |
 | `R` | Refresh |
 | `Enter` | Open draft (in Drafts folder) |

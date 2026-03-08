@@ -71,7 +71,16 @@ func (c *Coordinator) SyncAll() tea.Cmd {
 
 	for _, acct := range c.cfg.Accounts {
 		acct := acct
-		cmds = append(cmds, func() tea.Msg {
+		cmds = append(cmds, func() (result tea.Msg) {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("panic syncing %s: %v", acct.Email, r)
+					result = SyncAccountCompleteMsg{
+						Account: acct.Email,
+						Err:     fmt.Errorf("%s: panic: %v", acct.Email, r),
+					}
+				}
+			}()
 			var syncErr error
 			if err := c.syncAccount(acct); err != nil {
 				syncErr = fmt.Errorf("%s: %w", acct.Email, err)
@@ -110,7 +119,18 @@ func (c *Coordinator) SyncFolder(acctEmail, folder string) tea.Cmd {
 
 // FetchBody returns a tea.Cmd that lazily fetches a message body.
 func (c *Coordinator) FetchBody(acctEmail, folder string, uid uint32) tea.Cmd {
-	return func() tea.Msg {
+	return func() (result tea.Msg) {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("panic fetching body %s/%s uid=%d: %v", acctEmail, folder, uid, r)
+				result = FetchBodyResult{
+					Account: acctEmail,
+					Folder:  folder,
+					UID:     uid,
+					Err:     fmt.Errorf("panic: %v", r),
+				}
+			}
+		}()
 		w := c.getIMAPWorker(acctEmail)
 		if w == nil {
 			return FetchBodyResult{
@@ -121,14 +141,14 @@ func (c *Coordinator) FetchBody(acctEmail, folder string, uid uint32) tea.Cmd {
 			}
 		}
 
-		result, err := w.FetchBody(folder, uid)
+		res, err := w.FetchBody(folder, uid)
 		return FetchBodyResult{
 			Account:     acctEmail,
 			Folder:      folder,
 			UID:         uid,
-			Body:        result.Text,
-			HTMLBody:    result.HTML,
-			Attachments: result.Attachments,
+			Body:        res.Text,
+			HTMLBody:    res.HTML,
+			Attachments: res.Attachments,
 			Err:         err,
 		}
 	}

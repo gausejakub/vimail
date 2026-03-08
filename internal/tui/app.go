@@ -370,6 +370,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			for _, acct := range m.cfg.Accounts {
 				m.mailbox = m.mailbox.SetAccountSyncing(acct.Email, true)
 				m.msglist = m.msglist.SetAccountSyncing(acct.Email, true)
+				email := acct.Email
+				var cmd tea.Cmd
+				m.status, cmd = m.status.Update(util.ProcessStartMsg{
+					ID:    "sync:" + email,
+					Label: "⟳ " + email,
+				})
+				cmds = append(cmds, cmd)
 			}
 			cmds = append(cmds, m.coordinator.SyncAll())
 		}
@@ -408,6 +415,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Also update the message list so reply has the body.
 			m.msglist = m.msglist.UpdateBody(msg.UID, msg.Body, msg.HTMLBody, msg.Attachments)
 		} else {
+			// Update preview with error so it doesn't show "(loading...)" forever.
+			errBody := util.FetchBodyCompleteMsg{
+				Account: msg.Account,
+				Folder:  msg.Folder,
+				UID:     msg.UID,
+				Body:    "(failed to load body)",
+			}
+			var cmd tea.Cmd
+			m.preview, cmd = m.preview.Update(errBody)
+			cmds = append(cmds, cmd)
 			cmds = append(cmds, func() tea.Msg {
 				return util.InfoMsg{Text: "Fetch body: " + msg.Err.Error(), IsError: true}
 			})

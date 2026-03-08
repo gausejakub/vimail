@@ -86,12 +86,28 @@ func (c *Coordinator) SyncAll() tea.Cmd {
 				}
 			}()
 			start := time.Now()
+
+			// Run syncAccount with a timeout to prevent indefinite hangs.
+			type syncResult struct {
+				err error
+			}
+			ch := make(chan syncResult, 1)
+			go func() {
+				ch <- syncResult{err: c.syncAccount(acct)}
+			}()
+
 			var syncErr error
-			if err := c.syncAccount(acct); err != nil {
-				syncErr = fmt.Errorf("%s: %w", acct.Email, err)
-				logging.Error("sync", "account sync failed", logging.Acct(acct.Email), logging.Dur(time.Since(start)), logging.Err(err))
-			} else {
-				logging.Info("sync", "account sync complete", logging.Acct(acct.Email), logging.Dur(time.Since(start)))
+			select {
+			case res := <-ch:
+				if res.err != nil {
+					syncErr = fmt.Errorf("%s: %w", acct.Email, res.err)
+					logging.Error("sync", "account sync failed", logging.Acct(acct.Email), logging.Dur(time.Since(start)), logging.Err(res.err))
+				} else {
+					logging.Info("sync", "account sync complete", logging.Acct(acct.Email), logging.Dur(time.Since(start)))
+				}
+			case <-time.After(5 * time.Minute):
+				syncErr = fmt.Errorf("%s: sync timed out after 5 minutes", acct.Email)
+				logging.Error("sync", "account sync timed out", logging.Acct(acct.Email), logging.Dur(time.Since(start)))
 			}
 			return SyncAccountCompleteMsg{
 				Account: acct.Email,

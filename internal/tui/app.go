@@ -312,7 +312,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.status, cmd = m.status.Update(util.ProcessStartMsg{
 				ID:    "sync:" + email,
-				Label: "⟳ " + email,
+				Label: "⟳ " + email + " connecting…",
 			})
 			cmds = append(cmds, cmd)
 		}
@@ -382,7 +382,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				var cmd tea.Cmd
 				m.status, cmd = m.status.Update(util.ProcessStartMsg{
 					ID:    "sync:" + email,
-					Label: "⟳ " + email,
+					Label: "⟳ " + email + " connecting…",
 				})
 				cmds = append(cmds, cmd)
 			}

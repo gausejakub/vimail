@@ -1,10 +1,13 @@
 package worker
 
 import (
+	"archive/zip"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -401,6 +404,129 @@ func (c *Coordinator) DeleteMessages(acctEmail, folder string, uids []uint32) te
 			Err:     err,
 		}
 	}
+}
+
+// ExportMessages exports one or more messages to a ZIP file in ~/Downloads.
+// Each message gets a folder with metadata.txt, message.txt, message.html, and attachments.
+func (c *Coordinator) ExportMessages(acctEmail, folder string, messages []email.Message) tea.Cmd {
+	return func() tea.Msg {
+		logging.Info("export", "exporting messages", logging.Acct(acctEmail), logging.Fld(folder), logging.KV("count", len(messages)))
+		start := time.Now()
+
+		w := c.getIMAPWorker(acctEmail)
+		if w == nil {
+			return util.ExportResultMsg{Err: fmt.Errorf("no IMAP worker for %s", acctEmail)}
+		}
+
+		var buf bytes.Buffer
+		zw := zip.NewWriter(&buf)
+
+		for i, msg := range messages {
+			// Determine folder for this message (may differ in search results).
+			// Folder may contain "+OtherFolder" suffixes from dedup — use only the first.
+			msgFolder := folder
+			if msg.Folder != "" {
+				msgFolder = msg.Folder
+				if idx := strings.Index(msgFolder, " +"); idx > 0 {
+					msgFolder = msgFolder[:idx]
+				}
+			}
+			msgAcct := acctEmail
+			if msg.Account != "" {
+				msgAcct = msg.Account
+			}
+
+			// Use the right IMAP worker for this message's account.
+			mw := c.getIMAPWorker(msgAcct)
+			if mw == nil {
+				continue
+			}
+
+			raw, err := mw.FetchRawMessage(msgFolder, msg.UID)
+			if err != nil {
+				logging.Error("export", "fetch failed", logging.Acct(msgAcct), logging.MsgUID(msg.UID), logging.Err(err))
+				continue
+			}
+
+			body, _ := ParseBody(raw)
+			attachments, _ := ExtractAttachmentData(raw)
+
+			dirName := sanitizeExportName(msg.Subject, msg.UID)
+
+			// metadata.txt
+			meta := fmt.Sprintf("From:    %s\nTo:      %s\nDate:    %s\nSubject: %s\nAccount: %s\nFolder:  %s\n",
+				msg.From, msg.To, msg.Date.Format("2006-01-02 15:04:05 MST"), msg.Subject, msgAcct, msgFolder)
+			if len(attachments) > 0 {
+				meta += "\nAttachments:\n"
+				for _, att := range attachments {
+					meta += fmt.Sprintf("  - %s (%d bytes)\n", att.Filename, len(att.Data))
+				}
+			}
+			writeToZip(zw, dirName+"/metadata.txt", []byte(meta))
+
+			// message.txt
+			if body.Text != "" {
+				writeToZip(zw, dirName+"/message.txt", []byte(body.Text))
+			}
+
+			// message.html
+			if body.HTML != "" {
+				writeToZip(zw, dirName+"/message.html", []byte(body.HTML))
+			}
+
+			// attachments
+			for _, att := range attachments {
+				safeName := filepath.Base(att.Filename)
+				if safeName == "" || safeName == "." || safeName == "/" {
+					safeName = "attachment"
+				}
+				writeToZip(zw, dirName+"/"+safeName, att.Data)
+			}
+
+			if c.program != nil && len(messages) > 1 {
+				c.program.Send(ExportProgressMsg{Done: i + 1, Total: len(messages)})
+			}
+		}
+
+		if err := zw.Close(); err != nil {
+			return util.ExportResultMsg{Err: fmt.Errorf("close zip: %w", err)}
+		}
+
+		home, _ := os.UserHomeDir()
+		dir := filepath.Join(home, "Downloads")
+		os.MkdirAll(dir, 0755)
+
+		zipName := fmt.Sprintf("vimail-export-%s.zip", time.Now().Format("20060102-150405"))
+		zipPath := uniquePath(filepath.Join(dir, zipName))
+		if err := os.WriteFile(zipPath, buf.Bytes(), 0600); err != nil {
+			return util.ExportResultMsg{Err: fmt.Errorf("write zip: %w", err)}
+		}
+
+		logging.Info("export", "export complete", logging.KV("path", zipPath), logging.KV("count", len(messages)), logging.Dur(time.Since(start)))
+		return util.ExportResultMsg{Path: zipPath, Count: len(messages)}
+	}
+}
+
+func sanitizeExportName(subject string, uid uint32) string {
+	replacer := strings.NewReplacer("/", "_", "\\", "_", ":", "_", "*", "_", "?", "_", "\"", "_", "<", "_", ">", "_", "|", "_")
+	safe := replacer.Replace(subject)
+	safe = strings.TrimSpace(safe)
+	if safe == "" {
+		safe = "no-subject"
+	}
+	runes := []rune(safe)
+	if len(runes) > 80 {
+		safe = string(runes[:80])
+	}
+	return fmt.Sprintf("%s_%d", safe, uid)
+}
+
+func writeToZip(zw *zip.Writer, name string, data []byte) {
+	w, err := zw.Create(name)
+	if err != nil {
+		return
+	}
+	w.Write(data)
 }
 
 // RestoreFromTrash moves messages from Trash back to the destination folder via IMAP.

@@ -104,6 +104,12 @@ type DeleteResult struct {
 	Err     error
 }
 
+// ExportProgressMsg reports incremental progress during batch export.
+type ExportProgressMsg struct {
+	Done  int
+	Total int
+}
+
 // RestoreResult is the result of restoring messages from Trash via IMAP.
 type RestoreResult struct {
 	Account   string

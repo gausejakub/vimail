@@ -194,6 +194,13 @@ type DeleteFolderCompleteMsg struct {
 	Err     error
 }
 
+// ExportResultMsg reports the result of exporting messages to a ZIP file.
+type ExportResultMsg struct {
+	Path  string
+	Count int
+	Err   error
+}
+
 // ProcessStartMsg registers a running background process in the status bar.
 type ProcessStartMsg struct {
 	ID    string // e.g. "sync:jakub@gause.cz", "delete", "send", "ai"

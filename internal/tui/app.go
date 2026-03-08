@@ -457,6 +457,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(cmds...)
 
+	case util.ExportResultMsg:
+		var cmd tea.Cmd
+		m.status, cmd = m.status.Update(util.ProcessEndMsg{ID: "export"})
+		cmds = append(cmds, cmd)
+		if msg.Err != nil {
+			cmds = append(cmds, func() tea.Msg {
+				return util.InfoMsg{Text: "Export failed: " + msg.Err.Error(), IsError: true}
+			})
+		} else {
+			path := msg.Path
+			n := msg.Count
+			cmds = append(cmds, func() tea.Msg {
+				return util.InfoMsg{Text: fmt.Sprintf("Exported %d message(s) to %s", n, path), IsError: false}
+			})
+		}
+		return m, tea.Batch(cmds...)
+
+	case worker.ExportProgressMsg:
+		var cmd tea.Cmd
+		m.status, cmd = m.status.Update(util.ProcessStartMsg{
+			ID:    "export",
+			Label: fmt.Sprintf("⇣ exporting %d/%d", msg.Done, msg.Total),
+		})
+		cmds = append(cmds, cmd)
+		return m, tea.Batch(cmds...)
+
 	case worker.SendResult:
 		logging.Info("send", "send result", logging.Err(msg.Err))
 		var cmd tea.Cmd
@@ -983,10 +1009,43 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.preview, cmd = m.preview.HandleKey(k)
 			cmds = append(cmds, cmd)
+		} else if k == "E" {
+			// Export current message to ZIP
+			if sel := m.msglist.SelectedMessage(); sel != nil {
+				if m.coordinator != nil {
+					acct := m.mailbox.SelectedEmail()
+					folder := m.msglist.CurrentFolder()
+					if sel.Account != "" {
+						acct = sel.Account
+					}
+					if sel.Folder != "" {
+						folder = sel.Folder
+					}
+					subject := sel.Subject
+					if len([]rune(subject)) > 30 {
+						subject = string([]rune(subject)[:30]) + "…"
+					}
+					var cmd tea.Cmd
+					m.status, cmd = m.status.Update(util.ProcessStartMsg{
+						ID:    "export",
+						Label: fmt.Sprintf("⇣ exporting: %s", subject),
+					})
+					cmds = append(cmds, cmd)
+					cmds = append(cmds, m.coordinator.ExportMessages(acct, folder, []email.Message{*sel}))
+				} else {
+					cmds = append(cmds, func() tea.Msg {
+						return util.InfoMsg{Text: "Export requires a live connection", IsError: true}
+					})
+				}
+			}
 		} else if k == "u" {
 			// Restore from Trash (works in Trash folder or search results from Trash)
 			if sel := m.msglist.SelectedMessage(); sel != nil {
-				inTrash := m.msglist.CurrentFolder() == "Trash" || sel.Folder == "Trash"
+				primaryFolder := sel.Folder
+				if idx := strings.Index(primaryFolder, " +"); idx > 0 {
+					primaryFolder = primaryFolder[:idx]
+				}
+				inTrash := m.msglist.CurrentFolder() == "Trash" || primaryFolder == "Trash"
 				if inTrash {
 					acct := m.mailbox.SelectedEmail()
 					if sel.Account != "" {
@@ -1108,12 +1167,46 @@ func (m Model) handleVisualKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			})
 		}
 
+	case "E":
+		// Export selected messages to ZIP.
+		selected := m.msglist.SelectedMessages()
+		m.msglist = m.msglist.ExitVisual()
+		m.mode = keys.ModeNormal
+		cmds = append(cmds, func() tea.Msg {
+			return keys.ModeChangedMsg{Mode: keys.ModeNormal}
+		})
+		if len(selected) > 0 && m.coordinator != nil {
+			acct := m.msglist.CurrentAccount()
+			folder := m.msglist.CurrentFolder()
+			// Use first message's account/folder for search results context.
+			if selected[0].Account != "" {
+				acct = selected[0].Account
+			}
+			if selected[0].Folder != "" {
+				folder = selected[0].Folder
+			}
+			var cmd tea.Cmd
+			m.status, cmd = m.status.Update(util.ProcessStartMsg{
+				ID:    "export",
+				Label: fmt.Sprintf("⇣ exporting %d messages", len(selected)),
+			})
+			cmds = append(cmds, cmd)
+			cmds = append(cmds, m.coordinator.ExportMessages(acct, folder, selected))
+		}
+
 	case "u":
 		// Restore from Trash in visual mode.
 		selected := m.msglist.SelectedMessages()
 		// Check if we're in Trash or if selected messages are from Trash (search results).
 		inTrash := m.msglist.CurrentFolder() == "Trash"
-		if !inTrash && len(selected) > 0 && selected[0].Folder == "Trash" {
+		selFolder := ""
+		if len(selected) > 0 {
+			selFolder = selected[0].Folder
+			if idx := strings.Index(selFolder, " +"); idx > 0 {
+				selFolder = selFolder[:idx]
+			}
+		}
+		if !inTrash && selFolder == "Trash" {
 			inTrash = true
 		}
 		if inTrash {

@@ -294,6 +294,14 @@ func (s *SQLiteStore) SearchMessages(acctEmail, query string, limit int) []email
 	}
 	defer rows.Close()
 
+	// Collect all results then deduplicate across Gmail labels (same message in Inbox, All Mail, Important, etc.).
+	type dedupKey struct {
+		Account string
+		Subject string
+		From    string
+		Date    string
+	}
+	seen := make(map[dedupKey]int) // key → index in msgs
 	var msgs []email.Message
 	for rows.Next() {
 		var m email.Message
@@ -306,12 +314,19 @@ func (s *SQLiteStore) SearchMessages(acctEmail, query string, limit int) []email
 		m.Date, _ = time.Parse(time.RFC3339, dateStr)
 		m.Unread = unread != 0
 		m.Flagged = flagged != 0
-		// Store folder in the From field prefix for display context? No — use a tag approach.
-		// We'll encode folder context into the ID for now: "uid:folder:account".
-		m.ID = fmt.Sprintf("%d", m.UID)
-		// Stash folder/account in message for context when acting on search results.
-		m.Folder = folder
 		m.Account = account
+
+		key := dedupKey{Account: account, Subject: m.Subject, From: m.From, Date: dateStr}
+		if idx, ok := seen[key]; ok {
+			// Duplicate — append folder name to display tag but keep primary folder for IMAP.
+			existing := msgs[idx].Folder
+			if !strings.Contains(existing, folder) {
+				msgs[idx].Folder = existing + " +" + folder
+			}
+			continue
+		}
+		m.Folder = folder
+		seen[key] = len(msgs)
 		msgs = append(msgs, m)
 	}
 	return msgs

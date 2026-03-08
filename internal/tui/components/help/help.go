@@ -29,6 +29,7 @@ var bindings = []binding{
 	{"f", "Forward"},
 	{"dd", "Delete message"},
 	{"u", "Restore from Trash"},
+	{"E", "Export message(s) to ZIP"},
 	{"R", "Refresh"},
 	{"Ctrl+S", "Send (in compose)"},
 	{"", ""},

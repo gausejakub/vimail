@@ -538,12 +538,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		acct := msg.Account
 		folder := msg.Folder
 		n := 0
-		for _, message := range msg.Messages {
-			if message.Unread {
-				n++
-				m.store.MarkRead(acct, folder, message.ID)
-				if m.coordinator != nil && message.UID > 0 {
-					cmds = append(cmds, m.coordinator.MarkRead(acct, folder, message.UID))
+		if msg.SelectAll {
+			if cs, ok := m.store.(*cache.SQLiteStore); ok {
+				cs.MarkAllRead(acct, folder)
+				uids := cs.AllUIDs(acct, folder)
+				n = len(uids)
+				if m.coordinator != nil {
+					for _, uid := range uids {
+						cmds = append(cmds, m.coordinator.MarkRead(acct, folder, uid))
+					}
+				}
+			}
+		} else {
+			for _, message := range msg.Messages {
+				if message.Unread {
+					n++
+					m.store.MarkRead(acct, folder, message.ID)
+					if m.coordinator != nil && message.UID > 0 {
+						cmds = append(cmds, m.coordinator.MarkRead(acct, folder, message.UID))
+					}
 				}
 			}
 		}
@@ -882,6 +895,7 @@ func (m Model) handleVisualKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "r":
 		selected := m.msglist.SelectedMessages()
+		selectAll := m.msglist.VisualCoversAll()
 		lo, hi := m.msglist.VisualRange()
 		m.msglist = m.msglist.MarkReadRange(lo, hi)
 		m.msglist = m.msglist.ExitVisual()
@@ -894,9 +908,10 @@ func (m Model) handleVisualKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			folder := m.msglist.CurrentFolder()
 			cmds = append(cmds, func() tea.Msg {
 				return util.BatchMarkReadRequestMsg{
-					Account:  acct,
-					Folder:   folder,
-					Messages: selected,
+					Account:   acct,
+					Folder:    folder,
+					Messages:  selected,
+					SelectAll: selectAll,
 				}
 			})
 		}

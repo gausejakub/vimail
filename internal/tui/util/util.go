@@ -127,9 +127,10 @@ type BatchDeleteRequestMsg struct {
 
 // BatchMarkReadRequestMsg is emitted in visual mode when the user marks selected messages as read.
 type BatchMarkReadRequestMsg struct {
-	Account  string
-	Folder   string
-	Messages []email.Message
+	Account   string
+	Folder    string
+	Messages  []email.Message
+	SelectAll bool // true when user selected the entire folder
 }
 
 // SaveAttachmentsRequestMsg requests saving all attachments for the current message.

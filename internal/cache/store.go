@@ -246,6 +246,16 @@ func (s *SQLiteStore) MarkRead(acctEmail, folder, id string) {
 	s.db.Exec(`UPDATE messages SET unread = 0 WHERE folder_id = ? AND uid = ?`, folderID, id)
 }
 
+// MarkAllRead marks all messages in a folder as read.
+func (s *SQLiteStore) MarkAllRead(acctEmail, folder string) {
+	var folderID int
+	err := s.db.QueryRow(`SELECT id FROM folders WHERE account = ? AND name = ?`, acctEmail, folder).Scan(&folderID)
+	if err != nil {
+		return
+	}
+	s.db.Exec(`UPDATE messages SET unread = 0 WHERE folder_id = ? AND unread = 1`, folderID)
+}
+
 func (s *SQLiteStore) DeleteMessage(acctEmail, folder, id string) {
 	var folderID int
 	err := s.db.QueryRow(`SELECT id FROM folders WHERE account = ? AND name = ?`, acctEmail, folder).Scan(&folderID)

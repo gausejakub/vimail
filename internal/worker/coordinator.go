@@ -3,16 +3,17 @@ package worker
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/gausejakub/vimail/internal/auth"
 	"github.com/gausejakub/vimail/internal/cache"
 	"github.com/gausejakub/vimail/internal/config"
 	"github.com/gausejakub/vimail/internal/email"
+	"github.com/gausejakub/vimail/internal/logging"
 	"github.com/gausejakub/vimail/internal/tui/util"
 )
 
@@ -53,9 +54,11 @@ func (c *Coordinator) ResolveCredentials() []error {
 		resolver := auth.NewResolver(acct)
 		creds, err := resolver.Resolve(acct)
 		if err != nil {
+			logging.Error("auth", "credential resolution failed", logging.Acct(acct.Email), logging.Err(err))
 			errs = append(errs, fmt.Errorf("%s: %w", acct.Email, err))
 			continue
 		}
+		logging.Debug("auth", "credentials resolved", logging.Acct(acct.Email))
 		c.mu.Lock()
 		c.creds[acct.Email] = creds
 		c.mu.Unlock()
@@ -67,6 +70,7 @@ func (c *Coordinator) ResolveCredentials() []error {
 // Each account reports its own completion via SyncAccountCompleteMsg,
 // and a final SyncAllCompleteMsg is sent when all are done.
 func (c *Coordinator) SyncAll() tea.Cmd {
+	logging.Info("sync", "starting sync for all accounts", logging.KV("count", len(c.cfg.Accounts)))
 	var cmds []tea.Cmd
 
 	for _, acct := range c.cfg.Accounts {
@@ -74,16 +78,20 @@ func (c *Coordinator) SyncAll() tea.Cmd {
 		cmds = append(cmds, func() (result tea.Msg) {
 			defer func() {
 				if r := recover(); r != nil {
-					log.Printf("panic syncing %s: %v", acct.Email, r)
+					logging.Error("sync", "panic during sync", logging.Acct(acct.Email), logging.KV("panic", fmt.Sprint(r)))
 					result = SyncAccountCompleteMsg{
 						Account: acct.Email,
 						Err:     fmt.Errorf("%s: panic: %v", acct.Email, r),
 					}
 				}
 			}()
+			start := time.Now()
 			var syncErr error
 			if err := c.syncAccount(acct); err != nil {
 				syncErr = fmt.Errorf("%s: %w", acct.Email, err)
+				logging.Error("sync", "account sync failed", logging.Acct(acct.Email), logging.Dur(time.Since(start)), logging.Err(err))
+			} else {
+				logging.Info("sync", "account sync complete", logging.Acct(acct.Email), logging.Dur(time.Since(start)))
 			}
 			return SyncAccountCompleteMsg{
 				Account: acct.Email,
@@ -98,8 +106,11 @@ func (c *Coordinator) SyncAll() tea.Cmd {
 // SyncFolder returns a tea.Cmd that syncs a specific folder.
 func (c *Coordinator) SyncFolder(acctEmail, folder string) tea.Cmd {
 	return func() tea.Msg {
+		logging.Info("sync", "single folder sync starting", logging.Acct(acctEmail), logging.Fld(folder))
+		start := time.Now()
 		w := c.getIMAPWorker(acctEmail)
 		if w == nil {
+			logging.Error("sync", "no IMAP worker", logging.Acct(acctEmail), logging.Fld(folder))
 			return SyncResult{
 				Account: acctEmail,
 				Folder:  folder,
@@ -108,6 +119,11 @@ func (c *Coordinator) SyncFolder(acctEmail, folder string) tea.Cmd {
 		}
 
 		newCount, err := w.SyncFolder(folder)
+		if err != nil {
+			logging.Error("sync", "folder sync failed", logging.Acct(acctEmail), logging.Fld(folder), logging.Dur(time.Since(start)), logging.Err(err))
+		} else {
+			logging.Info("sync", "folder sync complete", logging.Acct(acctEmail), logging.Fld(folder), logging.Dur(time.Since(start)), logging.KV("new_count", newCount))
+		}
 		return SyncResult{
 			Account:  acctEmail,
 			Folder:   folder,
@@ -122,7 +138,7 @@ func (c *Coordinator) FetchBody(acctEmail, folder string, uid uint32) tea.Cmd {
 	return func() (result tea.Msg) {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Printf("panic fetching body %s/%s uid=%d: %v", acctEmail, folder, uid, r)
+				logging.Error("fetch", "panic during body fetch", logging.Acct(acctEmail), logging.Fld(folder), logging.MsgUID(uid), logging.KV("panic", fmt.Sprint(r)))
 				result = FetchBodyResult{
 					Account: acctEmail,
 					Folder:  folder,
@@ -131,8 +147,11 @@ func (c *Coordinator) FetchBody(acctEmail, folder string, uid uint32) tea.Cmd {
 				}
 			}
 		}()
+		logging.Debug("fetch", "fetching body", logging.Acct(acctEmail), logging.Fld(folder), logging.MsgUID(uid))
+		start := time.Now()
 		w := c.getIMAPWorker(acctEmail)
 		if w == nil {
+			logging.Error("fetch", "no IMAP worker", logging.Acct(acctEmail), logging.Fld(folder), logging.MsgUID(uid))
 			return FetchBodyResult{
 				Account: acctEmail,
 				Folder:  folder,
@@ -142,6 +161,11 @@ func (c *Coordinator) FetchBody(acctEmail, folder string, uid uint32) tea.Cmd {
 		}
 
 		res, err := w.FetchBody(folder, uid)
+		if err != nil {
+			logging.Error("fetch", "body fetch failed", logging.Acct(acctEmail), logging.Fld(folder), logging.MsgUID(uid), logging.Dur(time.Since(start)), logging.Err(err))
+		} else {
+			logging.Debug("fetch", "body fetched", logging.Acct(acctEmail), logging.Fld(folder), logging.MsgUID(uid), logging.Dur(time.Since(start)))
+		}
 		return FetchBodyResult{
 			Account:     acctEmail,
 			Folder:      folder,
@@ -158,11 +182,13 @@ func (c *Coordinator) FetchBody(acctEmail, folder string, uid uint32) tea.Cmd {
 // The operation is queued so it can be retried if the connection is lost.
 func (c *Coordinator) MarkRead(acctEmail, folder string, uid uint32) tea.Cmd {
 	return func() tea.Msg {
+		logging.Debug("mark_read", "marking message read", logging.Acct(acctEmail), logging.Fld(folder), logging.MsgUID(uid))
 		opID, _ := c.store.QueueOp(cache.OpMarkRead, acctEmail, folder, cache.MarkReadPayload{UIDs: []uint32{uid}})
 		c.store.StartOp(opID)
 
 		w := c.getIMAPWorker(acctEmail)
 		if w == nil {
+			logging.Warn("mark_read", "no IMAP worker", logging.Acct(acctEmail), logging.Fld(folder), logging.MsgUID(uid))
 			c.store.FailOp(opID, "no IMAP worker")
 			return nil
 		}
@@ -176,18 +202,23 @@ func (c *Coordinator) MarkRead(acctEmail, folder string, uid uint32) tea.Cmd {
 // Only attachments whose filename matches one in the provided list are saved.
 func (c *Coordinator) SaveAttachments(acctEmail, folder string, uid uint32, attachments []email.Attachment) tea.Cmd {
 	return func() tea.Msg {
+		logging.Info("save", "saving attachments", logging.Acct(acctEmail), logging.Fld(folder), logging.MsgUID(uid), logging.KV("count", len(attachments)))
+		start := time.Now()
 		w := c.getIMAPWorker(acctEmail)
 		if w == nil {
+			logging.Error("save", "no IMAP worker", logging.Acct(acctEmail))
 			return util.SaveAttachmentsResultMsg{Err: fmt.Errorf("no IMAP worker for %s", acctEmail)}
 		}
 
 		raw, err := w.FetchRawMessage(folder, uid)
 		if err != nil {
+			logging.Error("save", "fetch raw message failed", logging.Acct(acctEmail), logging.Fld(folder), logging.MsgUID(uid), logging.Err(err))
 			return util.SaveAttachmentsResultMsg{Err: fmt.Errorf("fetch message: %w", err)}
 		}
 
 		parts, err := ExtractAttachmentData(raw)
 		if err != nil {
+			logging.Error("save", "parse attachments failed", logging.Acct(acctEmail), logging.Err(err))
 			return util.SaveAttachmentsResultMsg{Err: fmt.Errorf("parse attachments: %w", err)}
 		}
 
@@ -215,12 +246,13 @@ func (c *Coordinator) SaveAttachments(acctEmail, folder string, uid uint32, atta
 			// Avoid overwriting: append (1), (2), etc.
 			path = uniquePath(path)
 			if err := os.WriteFile(path, att.Data, 0600); err != nil {
-				log.Printf("save attachment %s: %v", att.Filename, err)
+				logging.Error("save", "write attachment failed", logging.KV("filename", att.Filename), logging.Err(err))
 				continue
 			}
 			saved++
 		}
 
+		logging.Info("save", "attachments saved", logging.KV("saved", saved), logging.KV("dir", dir), logging.Dur(time.Since(start)))
 		return util.SaveAttachmentsResultMsg{Count: saved, Dir: dir}
 	}
 }
@@ -245,6 +277,8 @@ func uniquePath(path string) string {
 // The operation is queued so it can be retried on reconnect.
 func (c *Coordinator) SendAndArchive(acctEmail string, req SendRequest) tea.Cmd {
 	return func() tea.Msg {
+		logging.Info("send", "sending email", logging.Acct(acctEmail), logging.KV("to", req.To), logging.KV("subject", req.Subject))
+		start := time.Now()
 		opID, _ := c.store.QueueOp(cache.OpSend, acctEmail, "", cache.SendPayload{
 			From: req.From, To: req.To, Subject: req.Subject, Body: req.Body,
 		})
@@ -252,12 +286,14 @@ func (c *Coordinator) SendAndArchive(acctEmail string, req SendRequest) tea.Cmd 
 
 		smtpW := c.getSMTPWorker(acctEmail)
 		if smtpW == nil {
+			logging.Error("send", "no SMTP worker", logging.Acct(acctEmail))
 			c.store.FailOp(opID, fmt.Sprintf("no SMTP worker for %s", acctEmail))
 			return SendResult{Err: fmt.Errorf("no SMTP worker for %s", acctEmail)}
 		}
 
 		msgID, sentMsg, err := smtpW.Send(req)
 		if err != nil {
+			logging.Error("send", "SMTP send failed", logging.Acct(acctEmail), logging.Dur(time.Since(start)), logging.Err(err))
 			c.store.FailOp(opID, err.Error())
 			return SendResult{Err: err}
 		}
@@ -266,11 +302,12 @@ func (c *Coordinator) SendAndArchive(acctEmail string, req SendRequest) tea.Cmd 
 		imapW := c.getIMAPWorker(acctEmail)
 		if imapW != nil && sentMsg != nil {
 			if err := imapW.AppendToFolder("Sent", sentMsg, nil); err != nil {
-				log.Printf("APPEND to Sent failed: %v", err)
+				logging.Warn("send", "IMAP APPEND to Sent failed", logging.Acct(acctEmail), logging.Err(err))
 			}
 		}
 
 		c.store.CompleteOp(opID)
+		logging.Info("send", "email sent", logging.Acct(acctEmail), logging.KV("message_id", msgID), logging.Dur(time.Since(start)))
 		return SendResult{MessageID: msgID}
 	}
 }
@@ -278,16 +315,21 @@ func (c *Coordinator) SendAndArchive(acctEmail string, req SendRequest) tea.Cmd 
 // DeleteFolder returns a tea.Cmd that deletes a mailbox on the IMAP server and removes it from cache.
 func (c *Coordinator) DeleteFolder(acctEmail, folder string) tea.Cmd {
 	return func() tea.Msg {
+		logging.Info("delete_folder", "deleting folder", logging.Acct(acctEmail), logging.Fld(folder))
+		start := time.Now()
 		w := c.getIMAPWorker(acctEmail)
 		if w == nil {
+			logging.Error("delete_folder", "no IMAP worker", logging.Acct(acctEmail), logging.Fld(folder))
 			return util.DeleteFolderCompleteMsg{Account: acctEmail, Folder: folder, Err: fmt.Errorf("no IMAP worker for %s", acctEmail)}
 		}
 
 		if err := w.DeleteMailbox(folder); err != nil {
+			logging.Error("delete_folder", "IMAP DELETE failed", logging.Acct(acctEmail), logging.Fld(folder), logging.Dur(time.Since(start)), logging.Err(err))
 			return util.DeleteFolderCompleteMsg{Account: acctEmail, Folder: folder, Err: err}
 		}
 
 		c.store.DeleteFolder(acctEmail, folder)
+		logging.Info("delete_folder", "folder deleted", logging.Acct(acctEmail), logging.Fld(folder), logging.Dur(time.Since(start)))
 		return util.DeleteFolderCompleteMsg{Account: acctEmail, Folder: folder}
 	}
 }
@@ -301,11 +343,14 @@ func (c *Coordinator) DeleteMessage(acctEmail, folder string, uid uint32) tea.Cm
 // The operation is queued so it can be retried on reconnect.
 func (c *Coordinator) DeleteMessages(acctEmail, folder string, uids []uint32) tea.Cmd {
 	return func() tea.Msg {
+		logging.Info("delete", "deleting messages", logging.Acct(acctEmail), logging.Fld(folder), logging.KV("count", len(uids)))
+		start := time.Now()
 		opID, _ := c.store.QueueOp(cache.OpDelete, acctEmail, folder, cache.DeletePayload{UIDs: uids})
 		c.store.StartOp(opID)
 
 		w := c.getIMAPWorker(acctEmail)
 		if w == nil {
+			logging.Error("delete", "no IMAP worker", logging.Acct(acctEmail), logging.Fld(folder))
 			c.store.FailOp(opID, fmt.Sprintf("no IMAP worker for %s", acctEmail))
 			return DeleteResult{
 				Account: acctEmail,
@@ -327,10 +372,12 @@ func (c *Coordinator) DeleteMessages(acctEmail, folder string, uids []uint32) te
 		}
 		err := w.MoveToTrashBatch(folder, uids, onProgress)
 		if err != nil {
+			logging.Error("delete", "batch delete failed", logging.Acct(acctEmail), logging.Fld(folder), logging.KV("count", len(uids)), logging.Dur(time.Since(start)), logging.Err(err))
 			c.store.FailOp(opID, err.Error())
 		} else {
 			c.store.CompleteOp(opID)
 			c.store.ClearPendingDeletes(acctEmail, folder, uids)
+			logging.Info("delete", "messages deleted", logging.Acct(acctEmail), logging.Fld(folder), logging.KV("count", len(uids)), logging.Dur(time.Since(start)))
 		}
 		return DeleteResult{
 			Account: acctEmail,
@@ -344,6 +391,9 @@ func (c *Coordinator) DeleteMessages(acctEmail, folder string, uids []uint32) te
 func (c *Coordinator) RetryPendingOps() tea.Cmd {
 	return func() tea.Msg {
 		ops := c.store.PendingOps()
+		if len(ops) > 0 {
+			logging.Info("retry", "retrying pending ops", logging.KV("count", len(ops)))
+		}
 		for _, op := range ops {
 			c.store.StartOp(op.ID)
 			var err error
@@ -405,7 +455,7 @@ func (c *Coordinator) RetryPendingOps() tea.Cmd {
 			}
 
 			if err != nil {
-				log.Printf("retry op %d (%s): %v", op.ID, op.Type, err)
+				logging.Warn("retry", "op retry failed", logging.Acct(op.Account), logging.KV("op_id", op.ID), logging.KV("op_type", string(op.Type)), logging.Err(err))
 				c.store.FailOp(op.ID, err.Error())
 			} else {
 				c.store.CompleteOp(op.ID)
@@ -435,10 +485,14 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig) error {
 	}
 	c.mu.Unlock()
 
+	logging.Info("connect", "connecting IMAP", logging.Acct(acct.Email), logging.KV("host", acct.IMAPHost))
+	connectStart := time.Now()
 	w := NewIMAPWorker(acct, creds, c.store)
 	if err := w.Connect(); err != nil {
+		logging.Error("connect", "IMAP connect failed", logging.Acct(acct.Email), logging.Dur(time.Since(connectStart)), logging.Err(err))
 		return err
 	}
+	logging.Info("connect", "IMAP connected", logging.Acct(acct.Email), logging.Dur(time.Since(connectStart)))
 
 	c.mu.Lock()
 	c.imap[acct.Email] = w
@@ -450,6 +504,7 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig) error {
 		if op.Account != acct.Email {
 			continue
 		}
+		logging.Info("retry", "retrying pending op during sync", logging.Acct(acct.Email), logging.KV("op_id", op.ID), logging.KV("op_type", string(op.Type)))
 		c.store.StartOp(op.ID)
 		switch op.Type {
 		case cache.OpDelete:
@@ -459,7 +514,7 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig) error {
 				continue
 			}
 			if err := w.MoveToTrashBatch(op.Folder, payload.UIDs, nil); err != nil {
-				log.Printf("retry delete %s/%s: %v", op.Account, op.Folder, err)
+				logging.Warn("retry", "retry delete failed", logging.Acct(op.Account), logging.Fld(op.Folder), logging.Err(err))
 				c.store.FailOp(op.ID, err.Error())
 			} else {
 				c.store.CompleteOp(op.ID)
@@ -483,8 +538,10 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig) error {
 	// List mailboxes.
 	folders, err := w.ListMailboxes()
 	if err != nil {
+		logging.Error("sync", "list mailboxes failed", logging.Acct(acct.Email), logging.Err(err))
 		return fmt.Errorf("list mailboxes: %w", err)
 	}
+	logging.Debug("sync", "mailboxes listed", logging.Acct(acct.Email), logging.KV("folders", len(folders)))
 
 	// Sync each folder with progress reporting.
 	// Use STATUS pre-check to skip folders with no new messages.
@@ -503,17 +560,18 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig) error {
 		// Quick STATUS check: skip folder if UIDNEXT hasn't changed.
 		uidNext, uidValidity, err := w.FolderStatus(folder)
 		if err != nil {
-			log.Printf("status %s/%s: %v", acct.Email, folder, err)
+			logging.Warn("sync", "folder STATUS failed", logging.Acct(acct.Email), logging.Fld(folder), logging.Err(err))
 			continue
 		}
 		storedUV, _ := c.store.GetUIDValidity(acct.Email, folder)
 		highUID, _ := c.store.HighestUID(acct.Email, folder)
 		if storedUV == uidValidity && highUID > 0 && uidNext <= highUID+1 {
-			log.Printf("skip %s/%s: no new messages (UIDNEXT=%d, highUID=%d)", acct.Email, folder, uidNext, highUID)
+			logging.Debug("sync", "folder skipped, no new messages", logging.Acct(acct.Email), logging.Fld(folder), logging.KV("uidnext", uidNext), logging.KV("high_uid", highUID))
 			continue
 		}
 
 		synced++
+		folderStart := time.Now()
 		var onProgress func(fetched int)
 		if c.program != nil {
 			folderCopy := folder
@@ -530,10 +588,12 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig) error {
 			}
 		}
 		if _, err := w.SyncFolder(folder, onProgress); err != nil {
-			log.Printf("sync %s/%s: %v", acct.Email, folder, err)
+			logging.Warn("sync", "folder sync error", logging.Acct(acct.Email), logging.Fld(folder), logging.Dur(time.Since(folderStart)), logging.Err(err))
+		} else {
+			logging.Debug("sync", "folder synced", logging.Acct(acct.Email), logging.Fld(folder), logging.Dur(time.Since(folderStart)))
 		}
 	}
-	log.Printf("sync %s: %d/%d folders needed sync", acct.Email, synced, len(folders))
+	logging.Info("sync", "account folders synced", logging.Acct(acct.Email), logging.KV("synced", synced), logging.KV("total", len(folders)))
 
 	// Also set up SMTP worker if configured.
 	if acct.SMTPHost != "" {
@@ -560,10 +620,12 @@ func (c *Coordinator) getSMTPWorker(acctEmail string) *SMTPWorker {
 
 // DisconnectAll cleanly disconnects all workers.
 func (c *Coordinator) DisconnectAll() {
+	logging.Info("connect", "disconnecting all workers")
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for _, w := range c.imap {
+	for email, w := range c.imap {
 		w.Disconnect()
+		logging.Debug("connect", "IMAP disconnected", logging.Acct(email))
 	}
 	c.imap = make(map[string]*IMAPWorker)
 	c.smtp = make(map[string]*SMTPWorker)

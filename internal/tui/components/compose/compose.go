@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/gausejakub/vimail/internal/ai"
 	"github.com/gausejakub/vimail/internal/config"
+	"github.com/gausejakub/vimail/internal/logging"
 	"github.com/gausejakub/vimail/internal/theme"
 	"github.com/gausejakub/vimail/internal/tui/keys"
 	"github.com/gausejakub/vimail/internal/tui/util"
@@ -86,6 +87,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case util.AIRequestMsg:
+		logging.Info("ai", "AI assist requested", logging.KV("agent", msg.Agent))
 		m.aiPending = true
 		aiCfg := m.aiCfg
 		agent := msg.Agent
@@ -103,6 +105,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		)
 
 	case util.AIResponseMsg:
+		logging.Info("ai", "AI assist complete", logging.Err(msg.Err))
 		m.aiPending = false
 		if msg.Err != nil {
 			return m, tea.Batch(

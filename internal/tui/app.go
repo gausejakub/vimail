@@ -13,6 +13,7 @@ import (
 	"github.com/gausejakub/vimail/internal/cache"
 	"github.com/gausejakub/vimail/internal/config"
 	"github.com/gausejakub/vimail/internal/email"
+	"github.com/gausejakub/vimail/internal/logging"
 	"github.com/gausejakub/vimail/internal/theme"
 	"github.com/gausejakub/vimail/internal/tui/components/compose"
 	"github.com/gausejakub/vimail/internal/tui/components/help"
@@ -146,6 +147,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = m.status.SetWidth(msg.Width)
 
 	case util.FolderSelectedMsg:
+		logging.Info("nav", "folder selected", logging.Acct(msg.Account), logging.Fld(msg.Folder))
 		var cmd tea.Cmd
 		m.msglist, cmd = m.msglist.Update(msg)
 		cmds = append(cmds, cmd)
@@ -172,6 +174,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case util.MessageSelectedMsg:
+		logging.Debug("nav", "message selected", logging.MsgUID(msg.Message.UID), logging.KV("subject", msg.Message.Subject))
 		var cmd tea.Cmd
 		m.preview, cmd = m.preview.Update(msg)
 		cmds = append(cmds, cmd)
@@ -214,6 +217,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case util.ComposeSaveDraftMsg:
+		logging.Info("draft", "saving draft", logging.KV("to", msg.To), logging.KV("subject", msg.Subject))
 		m.compose = m.compose.Hide()
 		m.mode = keys.ModeNormal
 		currentEmail := m.mailbox.SelectedEmail()
@@ -253,6 +257,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case util.ComposeSubmitMsg:
+		logging.Info("send", "compose submitted", logging.KV("to", msg.To), logging.KV("subject", msg.Subject))
 		draftID := m.compose.DraftID()
 		m.compose = m.compose.Hide()
 		m.mode = keys.ModeNormal
@@ -298,6 +303,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case util.SyncStartMsg:
+		logging.Info("sync", "initial sync starting", logging.KV("accounts", len(m.cfg.Accounts)))
 		m.syncPending = len(m.cfg.Accounts)
 		for _, acct := range m.cfg.Accounts {
 			m.msglist = m.msglist.SetAccountSyncing(acct.Email, true)
@@ -326,6 +332,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case worker.SyncAccountCompleteMsg:
+		logging.Info("sync", "account sync complete (TUI)", logging.Acct(msg.Account), logging.Err(msg.Err), logging.KV("pending", m.syncPending-1))
 		m.syncPending--
 		m.mailbox = m.mailbox.SetAccountSyncing(msg.Account, false)
 		m.msglist = m.msglist.SetAccountSyncing(msg.Account, false)
@@ -365,6 +372,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case syncTickMsg:
+		logging.Info("sync", "periodic sync tick")
 		if m.coordinator != nil {
 			m.syncPending = len(m.cfg.Accounts)
 			for _, acct := range m.cfg.Accounts {
@@ -397,6 +405,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case worker.FetchBodyResult:
+		logging.Info("fetch", "body fetch result", logging.Acct(msg.Account), logging.Fld(msg.Folder), logging.MsgUID(msg.UID), logging.Err(msg.Err))
 		var cmd tea.Cmd
 		m.status, cmd = m.status.Update(util.ProcessEndMsg{ID: "fetch-body"})
 		cmds = append(cmds, cmd)
@@ -449,6 +458,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case worker.SendResult:
+		logging.Info("send", "send result", logging.Err(msg.Err))
 		var cmd tea.Cmd
 		m.status, cmd = m.status.Update(util.ProcessEndMsg{ID: "send"})
 		cmds = append(cmds, cmd)
@@ -469,6 +479,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case util.DeleteRequestMsg:
+		logging.Info("delete", "single delete requested", logging.Acct(msg.Account), logging.Fld(msg.Folder), logging.MsgUID(msg.Message.UID))
 		acct := msg.Account
 		folder := msg.Folder
 		if folder == "Drafts" {
@@ -495,6 +506,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case util.BatchDeleteRequestMsg:
+		logging.Info("delete", "batch delete requested", logging.Acct(msg.Account), logging.Fld(msg.Folder), logging.KV("count", len(msg.Messages)), logging.KV("select_all", msg.SelectAll))
 		acct := msg.Account
 		folder := msg.Folder
 		if folder == "Drafts" {
@@ -552,6 +564,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case util.BatchMarkReadRequestMsg:
+		logging.Info("mark_read", "batch mark read requested", logging.Acct(msg.Account), logging.Fld(msg.Folder), logging.KV("count", len(msg.Messages)), logging.KV("select_all", msg.SelectAll))
 		acct := msg.Account
 		folder := msg.Folder
 		n := 0
@@ -596,6 +609,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case worker.DeleteResult:
+		logging.Info("delete", "delete result", logging.Acct(msg.Account), logging.Fld(msg.Folder), logging.Err(msg.Err))
 		var cmd tea.Cmd
 		m.status, cmd = m.status.Update(util.ProcessEndMsg{ID: "delete"})
 		cmds = append(cmds, cmd)
@@ -612,6 +626,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case util.DeleteFolderRequestMsg:
+		logging.Info("delete_folder", "folder delete requested", logging.Acct(msg.Account), logging.Fld(msg.Folder))
 		acct := msg.Account
 		folder := msg.Folder
 		if m.coordinator != nil {
@@ -626,6 +641,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case util.DeleteFolderCompleteMsg:
+		logging.Info("delete_folder", "folder delete result", logging.Acct(msg.Account), logging.Fld(msg.Folder), logging.Err(msg.Err))
 		var cmd tea.Cmd
 		m.status, cmd = m.status.Update(util.ProcessEndMsg{ID: "delfolder"})
 		cmds = append(cmds, cmd)
@@ -650,6 +666,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case util.ConnectionStatusMsg:
+		logging.Info("connect", "connection status changed", logging.Acct(msg.Account), logging.KV("connected", msg.Connected), logging.Err(msg.Err))
 		var cmd tea.Cmd
 		m.status, cmd = m.status.Update(msg)
 		cmds = append(cmds, cmd)
@@ -988,6 +1005,7 @@ func (m Model) executeCommand(input string) tea.Cmd {
 	if len(parts) == 0 {
 		return nil
 	}
+	logging.Info("command", "executing command", logging.KV("cmd", parts[0]), logging.KV("args", strings.Join(parts[1:], " ")))
 
 	switch parts[0] {
 	case "quit", "q":

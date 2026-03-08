@@ -11,6 +11,7 @@ import (
 	"github.com/gausejakub/vimail/internal/cache"
 	"github.com/gausejakub/vimail/internal/config"
 	"github.com/gausejakub/vimail/internal/email"
+	"github.com/gausejakub/vimail/internal/logging"
 	"github.com/gausejakub/vimail/internal/tui"
 	"github.com/gausejakub/vimail/internal/worker"
 
@@ -53,15 +54,17 @@ func runSetup() {
 }
 
 func runTUI() {
-	// Redirect log output to a file so it doesn't corrupt bubbletea's alt-screen.
+	// Initialize structured logger.
 	home, _ := os.UserHomeDir()
 	logDir := filepath.Join(home, ".local", "share", "vimail")
-	os.MkdirAll(logDir, 0700)
-	logFile, err := os.OpenFile(filepath.Join(logDir, "vimail.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
-	if err == nil {
-		log.SetOutput(logFile)
-		defer logFile.Close()
+	if err := logging.Init(logDir, logging.LevelDebug); err != nil {
+		fmt.Fprintf(os.Stderr, "vimail: failed to init logger: %v\n", err)
 	}
+	defer logging.Close()
+
+	// Redirect stdlib log into structured logger so existing log.Printf calls are captured.
+	log.SetOutput(logging.StdLogWriter{})
+	log.SetFlags(0) // timestamps handled by structured logger
 
 	// Check for truecolor support.
 	ct := os.Getenv("COLORTERM")
@@ -75,13 +78,14 @@ func runTUI() {
 		os.Exit(1)
 	}
 
+	logging.Info("app", "vimail starting", logging.KV("accounts", len(cfg.Accounts)))
+
 	// If real accounts are configured, use SQLiteStore + Coordinator.
 	// Otherwise fall back to MockStore for development.
 	var store email.Store
 	var coord *worker.Coordinator
 
 	if len(cfg.Accounts) > 0 && cfg.Accounts[0].IMAPHost != "" {
-		home, _ := os.UserHomeDir()
 		dbDir := filepath.Join(home, ".local", "share", "vimail")
 		if err := os.MkdirAll(dbDir, 0700); err != nil {
 			fmt.Fprintf(os.Stderr, "vimail: failed to create data dir: %v\n", err)
@@ -110,11 +114,13 @@ func runTUI() {
 		// Resolve credentials (non-fatal errors just log).
 		if errs := coord.ResolveCredentials(); len(errs) > 0 {
 			for _, e := range errs {
+				logging.Error("auth", "credential resolution failed", logging.Err(e))
 				fmt.Fprintf(os.Stderr, "vimail: auth warning: %v\n", e)
 			}
 		}
 	} else {
 		store = email.NewMockStore()
+		logging.Info("app", "no accounts configured, using mock store")
 	}
 
 	m := tui.New(cfg, store)
@@ -129,9 +135,12 @@ func runTUI() {
 	}
 
 	if _, err := p.Run(); err != nil {
+		logging.Error("app", "bubbletea error", logging.Err(err))
 		fmt.Fprintf(os.Stderr, "vimail: %v\n", err)
 		os.Exit(1)
 	}
+
+	logging.Info("app", "vimail shutting down")
 
 	// Clean up.
 	if coord != nil {

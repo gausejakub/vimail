@@ -614,9 +614,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return util.InfoMsg{Text: "Message restored", IsError: false}
 			})
 		}
-		cmds = append(cmds, func() tea.Msg {
-			return util.FolderRefreshMsg{Account: acct, Folder: "Trash"}
-		})
+		// Refresh: re-run search if active, otherwise refresh Trash folder.
+		if m.msglist.IsSearchActive() {
+			cmds = append(cmds, m.executeSearch(m.msglist.SearchQuery()))
+		} else {
+			cmds = append(cmds, func() tea.Msg {
+				return util.FolderRefreshMsg{Account: acct, Folder: "Trash"}
+			})
+		}
 		return m, tea.Batch(cmds...)
 
 	case util.BatchRestoreRequestMsg:
@@ -658,9 +663,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return util.InfoMsg{Text: fmt.Sprintf("%d messages restored", n), IsError: false}
 			})
 		}
-		cmds = append(cmds, func() tea.Msg {
-			return util.FolderRefreshMsg{Account: acct, Folder: "Trash"}
-		})
+		if m.msglist.IsSearchActive() {
+			cmds = append(cmds, m.executeSearch(m.msglist.SearchQuery()))
+		} else {
+			cmds = append(cmds, func() tea.Msg {
+				return util.FolderRefreshMsg{Account: acct, Folder: "Trash"}
+			})
+		}
 		return m, tea.Batch(cmds...)
 
 	case worker.RestoreResult:
@@ -975,10 +984,14 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.preview, cmd = m.preview.HandleKey(k)
 			cmds = append(cmds, cmd)
 		} else if k == "u" {
-			// Restore from Trash
-			if m.msglist.CurrentFolder() == "Trash" {
-				if sel := m.msglist.SelectedMessage(); sel != nil {
+			// Restore from Trash (works in Trash folder or search results from Trash)
+			if sel := m.msglist.SelectedMessage(); sel != nil {
+				inTrash := m.msglist.CurrentFolder() == "Trash" || sel.Folder == "Trash"
+				if inTrash {
 					acct := m.mailbox.SelectedEmail()
+					if sel.Account != "" {
+						acct = sel.Account // use account from search results
+					}
 					msg := *sel
 					cmds = append(cmds, func() tea.Msg {
 						return util.RestoreRequestMsg{
@@ -986,11 +999,11 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 							Message: msg,
 						}
 					})
+				} else {
+					cmds = append(cmds, func() tea.Msg {
+						return util.InfoMsg{Text: "Restore only works in Trash", IsError: true}
+					})
 				}
-			} else {
-				cmds = append(cmds, func() tea.Msg {
-					return util.InfoMsg{Text: "Restore only works in Trash", IsError: true}
-				})
 			}
 		} else if k == "S" {
 			// Save attachments for current message
@@ -1097,8 +1110,13 @@ func (m Model) handleVisualKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "u":
 		// Restore from Trash in visual mode.
-		if m.msglist.CurrentFolder() == "Trash" {
-			selected := m.msglist.SelectedMessages()
+		selected := m.msglist.SelectedMessages()
+		// Check if we're in Trash or if selected messages are from Trash (search results).
+		inTrash := m.msglist.CurrentFolder() == "Trash"
+		if !inTrash && len(selected) > 0 && selected[0].Folder == "Trash" {
+			inTrash = true
+		}
+		if inTrash {
 			selectAll := m.msglist.VisualCoversAll()
 			lo, _ := m.msglist.VisualRange()
 			m.msglist = m.msglist.ExitVisual()
@@ -1109,6 +1127,9 @@ func (m Model) handleVisualKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			})
 			if len(selected) > 0 {
 				acct := m.msglist.CurrentAccount()
+				if selected[0].Account != "" {
+					acct = selected[0].Account
+				}
 				cmds = append(cmds, func() tea.Msg {
 					return util.BatchRestoreRequestMsg{
 						Account:   acct,

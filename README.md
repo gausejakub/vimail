@@ -12,6 +12,7 @@ vimail brings the speed of Vim navigation to your inbox with a 3-pane layout, mo
 - **Hot-swappable themes** — Switch with `:theme <name>` at any time
 - **AI compose assistant** — `:ai` in the editor to draft or rewrite emails using any CLI agent
 - **Compose with Vim** — Full Vim keybindings in the message body editor
+- **Global search** — Press `/` to search across all accounts and folders
 - **Multiple accounts** — Manage several email accounts in one view
 - **Attachments** — View metadata in preview, save to disk with `S`
 - **Visual mode batch ops** — Select messages with `v`, then delete (`d`) or mark as read (`r`)
@@ -167,7 +168,8 @@ After adding accounts, run `vimail setup` to store credentials.
 | `R` | Refresh |
 | `Enter` | Open draft (in Drafts folder) |
 | `Ctrl+S` | Send message (in compose) |
-| `Esc` | Close overlay / save draft |
+| `Esc` | Close overlay / save draft / clear search |
+| `/` | Search all accounts and folders |
 
 ### Modes
 
@@ -189,6 +191,7 @@ After adding accounts, run `vimail setup` to store credentials.
 | `:ai <name>` | AI-assisted compose with a specific agent |
 | `:ops` / `:queue` | Show operation queue log |
 | `:ps` / `:processes` | Show running background processes |
+| `:search <query>` / `:s <query>` | Search messages across all accounts |
 
 ### Available themes
 

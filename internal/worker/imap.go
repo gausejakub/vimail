@@ -33,6 +33,10 @@ type IMAPWorker struct {
 	// to prevent concurrent SELECT from switching the active mailbox.
 	opMu sync.Mutex
 
+	// Dedicated second connection for body fetches so they don't block behind sync.
+	fetchClient *imapclient.Client
+	fetchMu     sync.Mutex
+
 	// For IDLE notifications.
 	mu      sync.Mutex
 	newMail bool
@@ -49,7 +53,28 @@ func NewIMAPWorker(acct config.AccountConfig, creds *auth.Credentials, store *ca
 }
 
 // Connect establishes a connection to the IMAP server and authenticates.
+// Also opens a second connection dedicated to body fetches.
 func (w *IMAPWorker) Connect() error {
+	client, err := w.dial(true)
+	if err != nil {
+		return err
+	}
+	w.client = client
+
+	// Open a second connection for body fetches (best-effort).
+	fetchClient, err := w.dial(false)
+	if err != nil {
+		log.Printf("IMAP fetch-client connect failed for %s (will fall back): %v", w.acct.Email, err)
+	} else {
+		w.fetchClient = fetchClient
+	}
+
+	return nil
+}
+
+// dial opens and authenticates a single IMAP connection.
+// If withIDLE is true, the unilateral data handler for new-mail detection is attached.
+func (w *IMAPWorker) dial(withIDLE bool) (*imapclient.Client, error) {
 	host := w.acct.IMAPHost
 	port := w.acct.IMAPPort
 	if port == 0 {
@@ -64,7 +89,9 @@ func (w *IMAPWorker) Connect() error {
 
 	opts := &imapclient.Options{
 		TLSConfig: &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12},
-		UnilateralDataHandler: &imapclient.UnilateralDataHandler{
+	}
+	if withIDLE {
+		opts.UnilateralDataHandler = &imapclient.UnilateralDataHandler{
 			Mailbox: func(data *imapclient.UnilateralDataMailbox) {
 				if data.NumMessages != nil {
 					w.mu.Lock()
@@ -72,7 +99,7 @@ func (w *IMAPWorker) Connect() error {
 					w.mu.Unlock()
 				}
 			},
-		},
+		}
 	}
 
 	var client *imapclient.Client
@@ -89,17 +116,15 @@ func (w *IMAPWorker) Connect() error {
 		client, err = imapclient.DialTLS(addr, opts)
 	}
 	if err != nil {
-		return fmt.Errorf("IMAP connect to %s: %w", addr, err)
+		return nil, fmt.Errorf("IMAP connect to %s: %w", addr, err)
 	}
 
-	// Authenticate.
 	if err := w.authenticate(client); err != nil {
 		client.Close()
-		return fmt.Errorf("IMAP auth for %s: %w", w.acct.Email, err)
+		return nil, fmt.Errorf("IMAP auth for %s: %w", w.acct.Email, err)
 	}
 
-	w.client = client
-	return nil
+	return client, nil
 }
 
 func (w *IMAPWorker) authenticate(client *imapclient.Client) error {
@@ -144,6 +169,22 @@ func (w *IMAPWorker) disconnectLocked() {
 		w.client.Close()
 	}
 	w.client = nil
+
+	// Also close the fetch client.
+	if w.fetchClient != nil {
+		done2 := make(chan struct{})
+		go func() {
+			cmd := w.fetchClient.Logout()
+			cmd.Wait()
+			close(done2)
+		}()
+		select {
+		case <-done2:
+		case <-time.After(3 * time.Second):
+			w.fetchClient.Close()
+		}
+		w.fetchClient = nil
+	}
 }
 
 // IsConnected returns true if the IMAP client exists.
@@ -319,11 +360,13 @@ func (w *IMAPWorker) FetchBody(folder string, uid uint32) (BodyResult, error) {
 	fetchCmd := w.client.Fetch(seqSet, fetchOptions)
 
 	var result BodyResult
+	msgCount := 0
 	for {
 		msgData := fetchCmd.Next()
 		if msgData == nil {
 			break
 		}
+		msgCount++
 
 		for {
 			item := msgData.Next()
@@ -349,7 +392,135 @@ func (w *IMAPWorker) FetchBody(folder string, uid uint32) (BodyResult, error) {
 		return result, fmt.Errorf("FETCH body: %w", err)
 	}
 
+	if msgCount == 0 {
+		return result, fmt.Errorf("UID %d not found in %s", uid, imapName)
+	}
+
 	// Cache text + HTML body + attachment metadata.
+	w.store.UpdateMessageBody(w.acct.Email, folder, uid, result.Text, result.HTML, result.Attachments)
+
+	return result, nil
+}
+
+// FetchBodyDirect fetches a message body using the dedicated fetch connection,
+// bypassing the main opMu so it doesn't block behind sync operations.
+// Falls back to the main connection if the fetch client is unavailable.
+func (w *IMAPWorker) FetchBodyDirect(folder string, uid uint32) (BodyResult, error) {
+	w.fetchMu.Lock()
+	defer w.fetchMu.Unlock()
+
+	client := w.fetchClient
+	if client == nil {
+		newClient, err := w.dial(false)
+		if err != nil {
+			return BodyResult{}, fmt.Errorf("no fetch connection available: %w", err)
+		}
+		w.fetchClient = newClient
+		client = newClient
+	}
+
+	imapName := w.imapMailboxName(folder)
+
+	selCmd := client.Select(imapName, nil)
+	if _, err := selCmd.Wait(); err != nil {
+		// Connection may be dead — try to reconnect the fetch client.
+		newClient, dialErr := w.dial(false)
+		if dialErr != nil {
+			return BodyResult{}, fmt.Errorf("SELECT %s: %w (reconnect failed: %v)", imapName, err, dialErr)
+		}
+		w.fetchClient = newClient
+		client = newClient
+		selCmd = client.Select(imapName, nil)
+		if _, err := selCmd.Wait(); err != nil {
+			return BodyResult{}, fmt.Errorf("SELECT %s after reconnect: %w", imapName, err)
+		}
+	}
+	var seqSet imap.UIDSet
+	seqSet.AddNum(imap.UID(uid))
+
+	fetchCmd := client.Fetch(seqSet, &imap.FetchOptions{
+		BodySection: []*imap.FetchItemBodySection{{}},
+	})
+
+	var result BodyResult
+	msgCount := 0
+	for {
+		msgData := fetchCmd.Next()
+		if msgData == nil {
+			break
+		}
+		msgCount++
+		for {
+			item := msgData.Next()
+			if item == nil {
+				break
+			}
+			if bs, ok := item.(imapclient.FetchItemDataBodySection); ok {
+				data, err := io.ReadAll(bs.Literal)
+				if err != nil {
+					continue
+				}
+				parsed, err := ParseBody(data)
+				if err != nil {
+					result = BodyResult{Text: string(data)}
+				} else {
+					result = parsed
+				}
+			}
+		}
+	}
+
+	if err := fetchCmd.Close(); err != nil {
+		return result, fmt.Errorf("FETCH body: %w", err)
+	}
+
+	// UID not found on fetch client — try the main connection as fallback.
+	if msgCount == 0 {
+		if w.opMu.TryLock() {
+			defer w.opMu.Unlock()
+			if w.client != nil {
+				selCmd2 := w.client.Select(imapName, nil)
+				if _, err := selCmd2.Wait(); err == nil {
+					var seqSet2 imap.UIDSet
+					seqSet2.AddNum(imap.UID(uid))
+					fetchCmd2 := w.client.Fetch(seqSet2, &imap.FetchOptions{
+						BodySection: []*imap.FetchItemBodySection{{}},
+					})
+					for {
+						msgData := fetchCmd2.Next()
+						if msgData == nil {
+							break
+						}
+						msgCount++
+						for {
+							item := msgData.Next()
+							if item == nil {
+								break
+							}
+							if bs, ok := item.(imapclient.FetchItemDataBodySection); ok {
+								data, err := io.ReadAll(bs.Literal)
+								if err != nil {
+									continue
+								}
+								parsed, err := ParseBody(data)
+								if err != nil {
+									result = BodyResult{Text: string(data)}
+								} else {
+									result = parsed
+								}
+							}
+						}
+					}
+					fetchCmd2.Close()
+				}
+			}
+		}
+		if msgCount == 0 {
+			return result, fmt.Errorf("UID %d not found in %s (message may have been moved or deleted)", uid, imapName)
+		}
+	}
+
+	// Cache the result.
 	w.store.UpdateMessageBody(w.acct.Email, folder, uid, result.Text, result.HTML, result.Attachments)
 
 	return result, nil

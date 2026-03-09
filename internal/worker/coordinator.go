@@ -179,7 +179,8 @@ func (c *Coordinator) FetchBody(acctEmail, folder string, uid uint32) tea.Cmd {
 			}
 		}
 
-		res, err := w.FetchBody(folder, uid)
+		// Use dedicated fetch connection to avoid blocking behind sync.
+		res, err := w.FetchBodyDirect(folder, uid)
 		if err != nil {
 			logging.Error("fetch", "body fetch failed", logging.Acct(acctEmail), logging.Fld(folder), logging.MsgUID(uid), logging.Dur(time.Since(start)), logging.Err(err))
 		} else {

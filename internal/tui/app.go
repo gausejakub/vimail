@@ -405,7 +405,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case worker.FetchBodyResult:
-		logging.Info("fetch", "body fetch result", logging.Acct(msg.Account), logging.Fld(msg.Folder), logging.MsgUID(msg.UID), logging.Err(msg.Err))
+		logging.Info("fetch", "body fetch result", logging.Acct(msg.Account), logging.Fld(msg.Folder), logging.MsgUID(msg.UID), logging.Err(msg.Err), logging.KV("body_len", len(msg.Body)), logging.KV("html_len", len(msg.HTMLBody)), logging.KV("attachments", len(msg.Attachments)))
 		var cmd tea.Cmd
 		m.status, cmd = m.status.Update(util.ProcessEndMsg{ID: "fetch-body"})
 		cmds = append(cmds, cmd)
@@ -424,19 +424,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Also update the message list so reply has the body.
 			m.msglist = m.msglist.UpdateBody(msg.UID, msg.Body, msg.HTMLBody, msg.Attachments)
 		} else {
-			// Update preview with error so it doesn't show "(loading...)" forever.
-			errBody := util.FetchBodyCompleteMsg{
-				Account: msg.Account,
-				Folder:  msg.Folder,
-				UID:     msg.UID,
-				Body:    "(failed to load body)",
+			errText := msg.Err.Error()
+			isStaleUID := strings.Contains(errText, "not found in")
+			if isStaleUID {
+				// UID no longer exists on server — purge from cache and re-sync.
+				if sqlStore, ok := m.store.(*cache.SQLiteStore); ok {
+					sqlStore.DeleteMessageByUID(msg.Account, msg.Folder, msg.UID)
+				}
+				cmds = append(cmds, func() tea.Msg {
+					return util.FolderSelectedMsg{Account: msg.Account, Folder: msg.Folder}
+				})
+				// Trigger re-sync to pick up fresh UIDs.
+				if m.coordinator != nil {
+					cmds = append(cmds, m.coordinator.SyncFolder(msg.Account, msg.Folder))
+				}
+				cmds = append(cmds, func() tea.Msg {
+					return util.InfoMsg{Text: "Message moved/deleted on server — re-syncing…", IsError: false}
+				})
+			} else {
+				// Generic fetch error.
+				errBody := util.FetchBodyCompleteMsg{
+					Account: msg.Account,
+					Folder:  msg.Folder,
+					UID:     msg.UID,
+					Body:    "(failed to load body)",
+				}
+				var cmd tea.Cmd
+				m.preview, cmd = m.preview.Update(errBody)
+				cmds = append(cmds, cmd)
+				cmds = append(cmds, func() tea.Msg {
+					return util.InfoMsg{Text: "Fetch body: " + errText, IsError: true}
+				})
 			}
-			var cmd tea.Cmd
-			m.preview, cmd = m.preview.Update(errBody)
-			cmds = append(cmds, cmd)
-			cmds = append(cmds, func() tea.Msg {
-				return util.InfoMsg{Text: "Fetch body: " + msg.Err.Error(), IsError: true}
-			})
 		}
 		return m, tea.Batch(cmds...)
 
@@ -978,6 +997,38 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 						return util.OpenDraftMsg{Message: draft}
 					})
 					return m, tea.Batch(cmds...)
+				}
+				// Force re-fetch body for non-draft messages.
+				if m.coordinator != nil && selected.UID > 0 {
+					acct := m.mailbox.SelectedEmail()
+					folder := m.msglist.CurrentFolder()
+					if selected.Account != "" {
+						acct = selected.Account
+					}
+					if selected.Folder != "" {
+						folder = selected.Folder
+						if idx := strings.Index(folder, " +"); idx > 0 {
+							folder = folder[:idx]
+						}
+					}
+					uid := selected.UID
+					subject := selected.Subject
+					if len([]rune(subject)) > 30 {
+						subject = string([]rune(subject)[:30]) + "…"
+					}
+					// Clear preview to show loading state.
+					m.preview = m.preview.ClearMessage()
+					sel := *selected
+					cmds = append(cmds, func() tea.Msg {
+						return util.MessageSelectedMsg{Message: sel}
+					})
+					cmds = append(cmds, m.coordinator.FetchBody(acct, folder, uid))
+					var cmd tea.Cmd
+					m.status, cmd = m.status.Update(util.ProcessStartMsg{ID: "fetch-body", Label: fmt.Sprintf("⟳ refetch: %s", subject)})
+					cmds = append(cmds, cmd)
+					cmds = append(cmds, func() tea.Msg {
+						return util.InfoMsg{Text: "Re-fetching body…", IsError: false}
+					})
 				}
 			}
 		}

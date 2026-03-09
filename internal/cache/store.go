@@ -344,6 +344,17 @@ func (s *SQLiteStore) DeleteMessage(acctEmail, folder, id string) {
 		folderID, id, acctEmail, folder)
 }
 
+// DeleteMessageByUID removes a single message by UID from cache.
+func (s *SQLiteStore) DeleteMessageByUID(acctEmail, folder string, uid uint32) {
+	var folderID int
+	err := s.db.QueryRow(`SELECT id FROM folders WHERE account = ? AND name = ?`, acctEmail, folder).Scan(&folderID)
+	if err != nil {
+		return
+	}
+	s.db.Exec(`DELETE FROM messages WHERE folder_id = ? AND uid = ?`, folderID, uid)
+	s.db.Exec(`DELETE FROM attachments WHERE folder_id = ? AND uid = ?`, folderID, uid)
+}
+
 // DeleteMessages batch-deletes messages by ID in a single transaction.
 func (s *SQLiteStore) DeleteMessages(acctEmail, folder string, ids []string) {
 	if len(ids) == 0 {

@@ -192,6 +192,14 @@ func (m Model) View() string {
 
 	// Body with word wrapping
 	bodyText := prettyJSON(sanitizeBody(msg.Body))
+	if bodyText == "" && msg.HTMLBody != "" {
+		// HTML-only email — do a basic tag strip for preview.
+		bodyText = basicHTMLStrip(msg.HTMLBody)
+		bodyText = sanitizeBody(bodyText)
+		if bodyText == "" {
+			bodyText = "(HTML-only email — press 'o' to view)"
+		}
+	}
 	if bodyText == "" {
 		bodyText = "(loading...)"
 	}
@@ -349,6 +357,25 @@ func prettyJSON(s string) string {
 		i++
 	}
 	return result.String()
+}
+
+// basicHTMLStrip is a simple regex-based HTML tag remover for preview fallback.
+// Used when the text body is empty but HTML is available.
+func basicHTMLStrip(h string) string {
+	// Remove style and script blocks.
+	reBlock := regexp.MustCompile(`(?is)<(style|script)[^>]*>.*?</\1>`)
+	h = reBlock.ReplaceAllString(h, "")
+	// Replace <br> and block-level tags with newlines.
+	reBR := regexp.MustCompile(`(?i)<br\s*/?>`)
+	h = reBR.ReplaceAllString(h, "\n")
+	reBlock2 := regexp.MustCompile(`(?i)</?(p|div|tr|li|h[1-6])[^>]*>`)
+	h = reBlock2.ReplaceAllString(h, "\n")
+	// Strip remaining tags.
+	reTags := regexp.MustCompile(`<[^>]*>`)
+	h = reTags.ReplaceAllString(h, "")
+	// Decode entities.
+	h = html.UnescapeString(h)
+	return h
 }
 
 func formatSize(b int) string {

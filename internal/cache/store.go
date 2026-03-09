@@ -245,6 +245,22 @@ func (s *SQLiteStore) MarkRead(acctEmail, folder, id string) {
 		return
 	}
 	s.db.Exec(`UPDATE messages SET unread = 0 WHERE folder_id = ? AND uid = ?`, folderID, id)
+	// Also mark the same message read in other folders (Gmail labels).
+	s.syncReadAcrossFolders(acctEmail, folderID, id)
+}
+
+// syncReadAcrossFolders marks copies of the same message as read in other folders.
+// Gmail uses labels, so the same message appears in multiple folders with different UIDs.
+func (s *SQLiteStore) syncReadAcrossFolders(acctEmail string, folderID int, uid string) {
+	var messageID string
+	s.db.QueryRow(`SELECT message_id FROM messages WHERE folder_id = ? AND uid = ?`, folderID, uid).Scan(&messageID)
+	if messageID == "" {
+		return
+	}
+	s.db.Exec(`
+		UPDATE messages SET unread = 0
+		WHERE message_id = ? AND folder_id IN (SELECT id FROM folders WHERE account = ?)
+	`, messageID, acctEmail)
 }
 
 // MarkAllRead marks all messages in a folder as read.
@@ -253,6 +269,21 @@ func (s *SQLiteStore) MarkAllRead(acctEmail, folder string) {
 	err := s.db.QueryRow(`SELECT id FROM folders WHERE account = ? AND name = ?`, acctEmail, folder).Scan(&folderID)
 	if err != nil {
 		return
+	}
+	// Collect message_ids for cross-folder sync.
+	rows, err2 := s.db.Query(`SELECT message_id FROM messages WHERE folder_id = ? AND unread = 1 AND message_id != ''`, folderID)
+	if err2 == nil {
+		var mids []string
+		for rows.Next() {
+			var mid string
+			rows.Scan(&mid)
+			mids = append(mids, mid)
+		}
+		rows.Close()
+		// Mark read in all folders for these message_ids.
+		for _, mid := range mids {
+			s.db.Exec(`UPDATE messages SET unread = 0 WHERE message_id = ? AND folder_id IN (SELECT id FROM folders WHERE account = ?)`, mid, acctEmail)
+		}
 	}
 	s.db.Exec(`UPDATE messages SET unread = 0 WHERE folder_id = ? AND unread = 1`, folderID)
 }
@@ -338,10 +369,26 @@ func (s *SQLiteStore) DeleteMessage(acctEmail, folder, id string) {
 	if err != nil {
 		return
 	}
-	s.db.Exec(`DELETE FROM messages WHERE folder_id = ? AND uid = ?`, folderID, id)
+	// Delete the same message from all folders (Gmail labels share the same message).
+	s.deleteAcrossFolders(acctEmail, folderID, id)
 	// Track as pending delete so sync won't re-add from server.
 	s.db.Exec(`INSERT OR IGNORE INTO pending_deletes (folder_id, uid, account, folder) VALUES (?, ?, ?, ?)`,
 		folderID, id, acctEmail, folder)
+}
+
+// deleteAcrossFolders removes copies of the same message from all folders for an account.
+func (s *SQLiteStore) deleteAcrossFolders(acctEmail string, folderID int, uid string) {
+	var messageID string
+	s.db.QueryRow(`SELECT message_id FROM messages WHERE folder_id = ? AND uid = ?`, folderID, uid).Scan(&messageID)
+	// Always delete the specific message.
+	s.db.Exec(`DELETE FROM messages WHERE folder_id = ? AND uid = ?`, folderID, uid)
+	// If we have a message_id, also delete copies in other folders.
+	if messageID != "" {
+		s.db.Exec(`
+			DELETE FROM messages
+			WHERE message_id = ? AND folder_id IN (SELECT id FROM folders WHERE account = ?)
+		`, messageID, acctEmail)
+	}
 }
 
 // DeleteMessageByUID removes a single message by UID from cache.
@@ -365,6 +412,16 @@ func (s *SQLiteStore) DeleteMessages(acctEmail, folder string, ids []string) {
 	if err != nil {
 		return
 	}
+	// Collect message_ids for cross-folder sync before deleting.
+	var messageIDs []string
+	for _, id := range ids {
+		var mid string
+		s.db.QueryRow(`SELECT message_id FROM messages WHERE folder_id = ? AND uid = ?`, folderID, id).Scan(&mid)
+		if mid != "" {
+			messageIDs = append(messageIDs, mid)
+		}
+	}
+
 	tx, err := s.db.Begin()
 	if err != nil {
 		return
@@ -375,6 +432,12 @@ func (s *SQLiteStore) DeleteMessages(acctEmail, folder string, ids []string) {
 		delMsg.Exec(folderID, id)
 		insPend.Exec(folderID, id, acctEmail, folder)
 	}
+	// Delete copies from other folders (Gmail labels).
+	delCross, _ := tx.Prepare(`DELETE FROM messages WHERE message_id = ? AND folder_id IN (SELECT id FROM folders WHERE account = ?)`)
+	for _, mid := range messageIDs {
+		delCross.Exec(mid, acctEmail)
+	}
+	delCross.Close()
 	delMsg.Close()
 	insPend.Close()
 	tx.Commit()

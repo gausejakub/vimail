@@ -221,7 +221,12 @@ func (w *IMAPWorker) ListMailboxes() ([]string, error) {
 			continue
 		}
 		displayName := FolderName(mbox.Mailbox)
+		// Always populate folderMap (needed for IMAP operations like restore).
 		w.folderMap[displayName] = mbox.Mailbox
+		// Skip redundant folders from sync and sidebar.
+		if w.acct.ShouldSkipFolder(displayName) {
+			continue
+		}
 		names = append(names, displayName)
 		w.store.EnsureFolder(w.acct.Email, displayName)
 	}

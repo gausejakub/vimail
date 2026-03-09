@@ -326,12 +326,16 @@ func FolderName(mailboxName string) string {
 	// Archive
 	case base == "archive" || base == "archiv":
 		return "Archive"
-	// Gmail-specific
-	case lower == "[gmail]/all mail" || lower == "[gmail]/všechny zprávy" || lower == "[gmail]/všechna pošta":
+	// Gmail-specific (with or without / separator)
+	case lower == "[gmail]/all mail" || lower == "[gmail]all mail" ||
+		lower == "[gmail]/všechny zprávy" || lower == "[gmail]všechny zprávy" ||
+		lower == "[gmail]/všechna pošta" || lower == "[gmail]všechna pošta":
 		return "All Mail"
-	case lower == "[gmail]/starred" || lower == "[gmail]/označené hvězdičkou":
+	case lower == "[gmail]/starred" || lower == "[gmail]starred" ||
+		lower == "[gmail]/označené hvězdičkou" || lower == "[gmail]označené hvězdičkou":
 		return "Starred"
-	case lower == "[gmail]/important" || lower == "[gmail]/důležité":
+	case lower == "[gmail]/important" || lower == "[gmail]important" ||
+		lower == "[gmail]/důležité" || lower == "[gmail]důležité":
 		return "Important"
 	default:
 		return mailboxName

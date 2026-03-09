@@ -730,6 +730,13 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig) error {
 	}
 	logging.Debug("sync", "mailboxes listed", logging.Acct(acct.Email), logging.KV("folders", len(folders)))
 
+	// Remove any previously cached folders that are now skipped (e.g. Gmail All Mail).
+	for _, name := range []string{"All Mail", "Important", "[Gmail]/Všechny zprávy", "[Gmail]Všechny zprávy"} {
+		if acct.ShouldSkipFolder(name) {
+			c.store.DeleteFolder(acct.Email, name)
+		}
+	}
+
 	// Sync each folder with progress reporting.
 	// Use STATUS pre-check to skip folders with no new messages.
 	synced := 0

@@ -94,6 +94,15 @@ func Load() (Config, error) {
 	cfg := DefaultConfig()
 
 	path := configPath()
+
+	// Ensure config file has restrictive permissions (owner-only).
+	if info, err := os.Stat(path); err == nil {
+		perm := info.Mode().Perm()
+		if perm&0077 != 0 {
+			os.Chmod(path, 0600)
+		}
+	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {

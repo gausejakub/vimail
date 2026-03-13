@@ -156,9 +156,10 @@ type SaveAttachmentsRequestMsg struct {
 
 // SaveAttachmentsResultMsg reports the result of saving attachments.
 type SaveAttachmentsResultMsg struct {
-	Count int
-	Dir   string
-	Err   error
+	Count   int
+	Dir     string
+	Err     error
+	Warning string // non-fatal warning (e.g. dangerous file types)
 }
 
 // DeleteCompleteMsg signals that a message delete completed.

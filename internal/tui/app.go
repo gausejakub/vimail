@@ -470,8 +470,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			dir := msg.Dir
 			n := msg.Count
+			warn := msg.Warning
+			text := fmt.Sprintf("%d attachments saved to %s", n, dir)
+			if warn != "" {
+				text += " — " + warn
+			}
 			cmds = append(cmds, func() tea.Msg {
-				return util.InfoMsg{Text: fmt.Sprintf("%d attachments saved to %s", n, dir), IsError: false}
+				return util.InfoMsg{Text: text, IsError: warn != ""}
 			})
 		}
 		return m, tea.Batch(cmds...)

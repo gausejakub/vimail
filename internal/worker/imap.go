@@ -94,6 +94,7 @@ func (w *IMAPWorker) dial(withIDLE bool) (*imapclient.Client, error) {
 
 	opts := &imapclient.Options{
 		TLSConfig: &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12},
+		Dialer:    &net.Dialer{Timeout: 30 * time.Second},
 	}
 	if withIDLE {
 		opts.UnilateralDataHandler = &imapclient.UnilateralDataHandler{

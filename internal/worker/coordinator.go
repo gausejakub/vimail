@@ -253,6 +253,7 @@ func (c *Coordinator) SaveAttachments(acctEmail, folder string, uid uint32, atta
 		os.MkdirAll(dir, 0755)
 
 		saved := 0
+		var dangerousNames []string
 		for _, att := range parts {
 			if !wanted[att.Filename] {
 				continue
@@ -261,6 +262,9 @@ func (c *Coordinator) SaveAttachments(acctEmail, folder string, uid uint32, atta
 			safeName := filepath.Base(att.Filename)
 			if safeName == "." || safeName == "/" || safeName == "" {
 				safeName = "attachment"
+			}
+			if isDangerousFilename(safeName) {
+				dangerousNames = append(dangerousNames, safeName)
 			}
 			path := filepath.Join(dir, safeName)
 			// Avoid overwriting: append (1), (2), etc.
@@ -273,8 +277,39 @@ func (c *Coordinator) SaveAttachments(acctEmail, folder string, uid uint32, atta
 		}
 
 		logging.Info("save", "attachments saved", logging.KV("saved", saved), logging.KV("dir", dir), logging.Dur(time.Since(start)))
-		return util.SaveAttachmentsResultMsg{Count: saved, Dir: dir}
+		var warning string
+		if len(dangerousNames) > 0 {
+			warning = fmt.Sprintf("⚠ Potentially dangerous: %s", strings.Join(dangerousNames, ", "))
+			logging.Warn("save", "dangerous attachment types saved", logging.KV("files", strings.Join(dangerousNames, ", ")))
+		}
+		return util.SaveAttachmentsResultMsg{Count: saved, Dir: dir, Warning: warning}
 	}
+}
+
+// dangerousExts contains file extensions that may be executable or contain macros.
+var dangerousExts = map[string]bool{
+	".exe": true, ".bat": true, ".cmd": true, ".com": true, ".msi": true,
+	".scr": true, ".pif": true, ".ps1": true, ".sh": true, ".bash": true,
+	".js": true, ".vbs": true, ".wsf": true, ".hta": true, ".jar": true,
+	".docm": true, ".xlsm": true, ".pptm": true,
+	".iso": true, ".img": true, ".dmg": true,
+	".lnk": true, ".url": true, ".webloc": true,
+}
+
+// isDangerousFilename checks if a filename has a dangerous extension,
+// including double-extension tricks like "invoice.pdf.exe".
+func isDangerousFilename(name string) bool {
+	lower := strings.ToLower(name)
+	ext := filepath.Ext(lower)
+	if dangerousExts[ext] {
+		return true
+	}
+	// Check for double extensions (e.g. "file.pdf.exe").
+	base := strings.TrimSuffix(lower, ext)
+	if ext2 := filepath.Ext(base); ext2 != "" && dangerousExts[ext2] {
+		return true
+	}
+	return false
 }
 
 func uniquePath(path string) string {

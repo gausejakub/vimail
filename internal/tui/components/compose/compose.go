@@ -114,7 +114,13 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 				func() tea.Msg { return util.InfoMsg{Text: msg.Err.Error(), IsError: true} },
 			)
 		}
-		m.editor = newEditor(msg.Text)
+		// Preserve quoted lines from the original body and only replace the new text
+		quoted := extractQuotedTail(m.editor.GetBuffer().Text())
+		newBody := strings.TrimRight(msg.Text, "\n")
+		if quoted != "" {
+			newBody = newBody + "\n" + quoted
+		}
+		m.editor = newEditor(newBody)
 		m.registerAICommand()
 		return m, tea.Batch(
 			func() tea.Msg { return util.ProcessEndMsg{ID: "ai"} },
@@ -443,6 +449,30 @@ func (m *Model) registerAICommand() {
 			return util.AIRequestMsg{Agent: agent, Body: body}
 		}
 	})
+}
+
+// extractQuotedTail returns the trailing block of quoted lines (starting with >)
+// from the editor body. This preserves the original email context when the AI
+// replaces only the user's new reply text.
+func extractQuotedTail(body string) string {
+	lines := strings.Split(body, "\n")
+
+	// Find where the trailing quoted block starts by scanning backwards
+	quoteStart := len(lines)
+	for i := len(lines) - 1; i >= 0; i-- {
+		trimmed := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(trimmed, ">") || trimmed == "" {
+			quoteStart = i
+		} else {
+			break
+		}
+	}
+
+	if quoteStart >= len(lines) {
+		return ""
+	}
+
+	return strings.Join(lines[quoteStart:], "\n")
 }
 
 func vimteaModeToKeys(m vimtea.EditorMode) keys.Mode {

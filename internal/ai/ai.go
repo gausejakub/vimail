@@ -17,7 +17,9 @@ follow them and write the email. If it contains an existing email draft,
 improve its grammar, tone, and clarity. If it contains quoted text (lines
 starting with >), write a reply to it.
 
-Output ONLY the email body text, no headers, no markdown formatting.`
+Output ONLY your new reply text. Do NOT include quoted text (lines starting
+with >) in your output — the quoted context will be preserved automatically.
+No headers, no markdown formatting.`
 
 func Generate(cfg config.AIConfig, agentName, to, subject, body string) (string, error) {
 	agent, err := resolveAgent(cfg, agentName)

@@ -477,7 +477,11 @@ func (m Model) View() string {
 
 	if len(m.messages) > 0 {
 		// Column headers
-		colHeader := formatRow("", "From", "Subject", "Time", m.width, t.TextMuted(), t.TextMuted(), t.TextMuted(), t.TextMuted(), lipgloss.Color(""), false)
+		addrLabel := "From"
+	if m.isOutboundFolder() {
+		addrLabel = "To"
+	}
+	colHeader := formatRow("", addrLabel, "Subject", "Time", m.width, t.TextMuted(), t.TextMuted(), t.TextMuted(), t.TextMuted(), lipgloss.Color(""), false)
 		lines = append(lines, colHeader)
 
 		// Message rows
@@ -567,7 +571,11 @@ func (m Model) renderMessage(idx int, msg email.Message) string {
 	}
 
 	timeStr := relativeTime(msg.Date)
-	fromName := sanitize(displayName(msg.From))
+	addr := msg.From
+	if m.isOutboundFolder() {
+		addr = msg.To
+	}
+	fromName := sanitize(displayName(addr))
 	subject := sanitize(msg.Subject)
 	// In search mode, prepend folder context to subject.
 	if m.searchActive && msg.Folder != "" {
@@ -714,6 +722,12 @@ func (m Model) SelectedMessage() *email.Message {
 
 func (m Model) CurrentFolder() string {
 	return m.folder
+}
+
+func (m Model) isOutboundFolder() bool {
+	f := strings.ToLower(m.folder)
+	return f == "sent" || f == "drafts" || strings.HasSuffix(f, "/sent") || strings.HasSuffix(f, "/drafts") ||
+		strings.Contains(f, "sent mail") || strings.Contains(f, "sent items")
 }
 
 func (m Model) CurrentAccount() string {

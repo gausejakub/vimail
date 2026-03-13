@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/gausejakub/vimail/internal/auth"
@@ -134,6 +136,14 @@ func runTUI() {
 		coord.SetProgram(p)
 	}
 
+	// Handle OS signals for graceful shutdown.
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigChan
+		p.Kill() // Tell bubbletea to exit.
+	}()
+
 	if _, err := p.Run(); err != nil {
 		logging.Error("app", "bubbletea error", logging.Err(err))
 		fmt.Fprintf(os.Stderr, "vimail: %v\n", err)
@@ -146,4 +156,8 @@ func runTUI() {
 	if coord != nil {
 		coord.DisconnectAll()
 	}
+
+	// Clean up temp files.
+	tmpDir := filepath.Join(os.TempDir(), "vimail")
+	os.RemoveAll(tmpDir)
 }

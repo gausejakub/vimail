@@ -1,6 +1,10 @@
 package auth
 
-import "github.com/gausejakub/vimail/internal/config"
+import (
+	"fmt"
+
+	"github.com/gausejakub/vimail/internal/config"
+)
 
 // AuthMethod identifies the authentication mechanism.
 type AuthMethod int
@@ -18,6 +22,11 @@ type Credentials struct {
 	Password   string     // For plain/app-password
 	AuthMethod AuthMethod // How to authenticate
 	Token      string     // OAuth2 access token (when applicable)
+}
+
+// String returns a safe representation without secrets.
+func (c *Credentials) String() string {
+	return fmt.Sprintf("Credentials{User:%s, Method:%v}", c.Username, c.AuthMethod)
 }
 
 // Resolver resolves credentials for an account.

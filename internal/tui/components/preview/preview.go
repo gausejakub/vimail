@@ -123,10 +123,8 @@ func (m Model) openInBrowser() tea.Cmd {
 			escaped)
 	}
 
+	// Use UID as temp filename — safe integer, no path traversal risk.
 	msgID := fmt.Sprintf("%d", m.message.UID)
-	if m.message.ID != "" {
-		msgID = m.message.ID
-	}
 
 	return func() tea.Msg {
 		dir := filepath.Join(os.TempDir(), "vimail")

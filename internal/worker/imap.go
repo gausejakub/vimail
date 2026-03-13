@@ -19,6 +19,11 @@ import (
 	"github.com/gausejakub/vimail/internal/config"
 )
 
+const (
+	// maxBodySize limits the total size of a fetched message body to prevent OOM.
+	maxBodySize = 50 * 1024 * 1024 // 50 MB
+)
+
 // IMAPWorker manages a single IMAP connection for one account.
 type IMAPWorker struct {
 	acct   config.AccountConfig
@@ -111,6 +116,7 @@ func (w *IMAPWorker) dial(withIDLE bool) (*imapclient.Client, error) {
 	case "starttls":
 		client, err = imapclient.DialStartTLS(addr, opts)
 	case "none":
+		log.Printf("WARNING: IMAP connecting to %s without TLS — credentials sent in plaintext", addr)
 		client, err = imapclient.DialInsecure(addr, opts)
 	default:
 		client, err = imapclient.DialTLS(addr, opts)
@@ -379,7 +385,7 @@ func (w *IMAPWorker) FetchBody(folder string, uid uint32) (BodyResult, error) {
 				break
 			}
 			if bs, ok := item.(imapclient.FetchItemDataBodySection); ok {
-				data, err := io.ReadAll(bs.Literal)
+				data, err := io.ReadAll(io.LimitReader(bs.Literal, maxBodySize))
 				if err != nil {
 					continue
 				}
@@ -461,7 +467,7 @@ func (w *IMAPWorker) FetchBodyDirect(folder string, uid uint32) (BodyResult, err
 				break
 			}
 			if bs, ok := item.(imapclient.FetchItemDataBodySection); ok {
-				data, err := io.ReadAll(bs.Literal)
+				data, err := io.ReadAll(io.LimitReader(bs.Literal, maxBodySize))
 				if err != nil {
 					continue
 				}
@@ -565,7 +571,7 @@ func (w *IMAPWorker) FetchRawMessage(folder string, uid uint32) ([]byte, error) 
 				break
 			}
 			if bs, ok := item.(imapclient.FetchItemDataBodySection); ok {
-				data, err := io.ReadAll(bs.Literal)
+				data, err := io.ReadAll(io.LimitReader(bs.Literal, maxBodySize))
 				if err == nil {
 					raw = data
 				}

@@ -49,8 +49,10 @@ func (w *SMTPWorker) Send(req SendRequest) (string, []byte, error) {
 	switch tlsMode {
 	case "tls":
 		conn, err = tls.Dial("tcp", addr, &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12})
+	case "starttls":
+		conn, err = net.Dial("tcp", addr) // Plaintext initially; upgraded to TLS below.
 	default:
-		conn, err = net.Dial("tcp", addr)
+		return "", nil, fmt.Errorf("SMTP TLS mode %q not supported — use \"tls\" or \"starttls\"", tlsMode)
 	}
 	if err != nil {
 		return "", nil, fmt.Errorf("SMTP connect to %s: %w", addr, err)

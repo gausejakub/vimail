@@ -14,11 +14,18 @@ import (
 type SQLiteStore struct {
 	db       *sql.DB
 	draftSeq atomic.Int64
+	encKey   []byte // AES-256 key for body encryption at rest (nil = disabled)
 }
 
 // NewSQLiteStore creates a new SQLiteStore from an already-opened database.
 func NewSQLiteStore(db *sql.DB) *SQLiteStore {
 	return &SQLiteStore{db: db}
+}
+
+// SetEncryptionKey sets the AES-256 key used to encrypt email bodies at rest.
+// Pass nil to disable encryption.
+func (s *SQLiteStore) SetEncryptionKey(key []byte) {
+	s.encKey = key
 }
 
 // DB returns the underlying database for use by other layers (e.g. IMAP sync).
@@ -140,6 +147,8 @@ func (s *SQLiteStore) MessagesForPage(acctEmail, folder string, offset, limit in
 		if err := rows.Scan(&m.UID, &m.From, &m.To, &m.Subject, &m.Body, &m.HTMLBody, &dateStr, &unread, &flagged); err != nil {
 			continue
 		}
+		m.Body = decrypt(s.encKey, m.Body)
+		m.HTMLBody = decrypt(s.encKey, m.HTMLBody)
 		m.ID = fmt.Sprintf("%d", m.UID)
 		m.Date, _ = time.Parse(time.RFC3339, dateStr)
 		m.Unread = unread != 0
@@ -182,6 +191,8 @@ func (s *SQLiteStore) MessagesFor(acctEmail, folder string) []email.Message {
 		if err := rows.Scan(&m.UID, &m.From, &m.To, &m.Subject, &m.Body, &m.HTMLBody, &dateStr, &unread, &flagged); err != nil {
 			continue
 		}
+		m.Body = decrypt(s.encKey, m.Body)
+		m.HTMLBody = decrypt(s.encKey, m.HTMLBody)
 		m.ID = fmt.Sprintf("%d", m.UID)
 		m.Date, _ = time.Parse(time.RFC3339, dateStr)
 		m.Unread = unread != 0
@@ -212,6 +223,7 @@ func (s *SQLiteStore) draftsFor(acctEmail string) []email.Message {
 		if err := rows.Scan(&m.ID, &m.From, &m.To, &m.Subject, &m.Body, &dateStr); err != nil {
 			continue
 		}
+		m.Body = decrypt(s.encKey, m.Body)
 		m.Date, _ = time.Parse(time.RFC3339, dateStr)
 		msgs = append(msgs, m)
 	}
@@ -227,7 +239,7 @@ func (s *SQLiteStore) SaveDraft(acctEmail string, msg email.Message) {
 			subject = excluded.subject,
 			body = excluded.body,
 			date = excluded.date
-	`, msg.ID, acctEmail, msg.From, msg.To, msg.Subject, msg.Body, msg.Date.Format(time.RFC3339))
+	`, msg.ID, acctEmail, msg.From, msg.To, msg.Subject, encrypt(s.encKey, msg.Body), msg.Date.Format(time.RFC3339))
 }
 
 func (s *SQLiteStore) DeleteDraft(acctEmail, id string) {
@@ -298,32 +310,63 @@ func (s *SQLiteStore) SearchMessages(acctEmail, query string, limit int) []email
 	escaped := strings.NewReplacer("%", `\%`, "_", `\_`).Replace(query)
 	pattern := "%" + escaped + "%"
 
+	// When encryption is enabled, body is encrypted in the DB so we can't
+	// LIKE-search it in SQL. Search header fields in SQL, then post-filter
+	// body matches in Go after decryption.
+	bodySearchInSQL := len(s.encKey) == 0
+
 	var rows *sql.Rows
 	var err error
 	if acctEmail != "" {
-		rows, err = s.db.Query(`
-			SELECT m.uid, f.name, f.account, m.from_addr, m.to_addr, m.subject, m.body, m.date, m.unread, m.flagged
-			FROM messages m
-			JOIN folders f ON m.folder_id = f.id
-			WHERE f.account = ?
-			  AND (m.subject LIKE ? ESCAPE '\' OR m.from_addr LIKE ? ESCAPE '\' OR m.to_addr LIKE ? ESCAPE '\' OR m.body LIKE ? ESCAPE '\')
-			ORDER BY m.date DESC
-			LIMIT ?
-		`, acctEmail, pattern, pattern, pattern, pattern, limit)
+		if bodySearchInSQL {
+			rows, err = s.db.Query(`
+				SELECT m.uid, f.name, f.account, m.from_addr, m.to_addr, m.subject, m.body, m.date, m.unread, m.flagged
+				FROM messages m
+				JOIN folders f ON m.folder_id = f.id
+				WHERE f.account = ?
+				  AND (m.subject LIKE ? ESCAPE '\' OR m.from_addr LIKE ? ESCAPE '\' OR m.to_addr LIKE ? ESCAPE '\' OR m.body LIKE ? ESCAPE '\')
+				ORDER BY m.date DESC
+				LIMIT ?
+			`, acctEmail, pattern, pattern, pattern, pattern, limit)
+		} else {
+			// Fetch more candidates than needed — we'll filter body matches in Go.
+			rows, err = s.db.Query(`
+				SELECT m.uid, f.name, f.account, m.from_addr, m.to_addr, m.subject, m.body, m.date, m.unread, m.flagged
+				FROM messages m
+				JOIN folders f ON m.folder_id = f.id
+				WHERE f.account = ?
+				  AND (m.subject LIKE ? ESCAPE '\' OR m.from_addr LIKE ? ESCAPE '\' OR m.to_addr LIKE ? ESCAPE '\')
+				ORDER BY m.date DESC
+				LIMIT ?
+			`, acctEmail, pattern, pattern, pattern, limit*3)
+		}
 	} else {
-		rows, err = s.db.Query(`
-			SELECT m.uid, f.name, f.account, m.from_addr, m.to_addr, m.subject, m.body, m.date, m.unread, m.flagged
-			FROM messages m
-			JOIN folders f ON m.folder_id = f.id
-			WHERE (m.subject LIKE ? ESCAPE '\' OR m.from_addr LIKE ? ESCAPE '\' OR m.to_addr LIKE ? ESCAPE '\' OR m.body LIKE ? ESCAPE '\')
-			ORDER BY m.date DESC
-			LIMIT ?
-		`, pattern, pattern, pattern, pattern, limit)
+		if bodySearchInSQL {
+			rows, err = s.db.Query(`
+				SELECT m.uid, f.name, f.account, m.from_addr, m.to_addr, m.subject, m.body, m.date, m.unread, m.flagged
+				FROM messages m
+				JOIN folders f ON m.folder_id = f.id
+				WHERE (m.subject LIKE ? ESCAPE '\' OR m.from_addr LIKE ? ESCAPE '\' OR m.to_addr LIKE ? ESCAPE '\' OR m.body LIKE ? ESCAPE '\')
+				ORDER BY m.date DESC
+				LIMIT ?
+			`, pattern, pattern, pattern, pattern, limit)
+		} else {
+			rows, err = s.db.Query(`
+				SELECT m.uid, f.name, f.account, m.from_addr, m.to_addr, m.subject, m.body, m.date, m.unread, m.flagged
+				FROM messages m
+				JOIN folders f ON m.folder_id = f.id
+				WHERE (m.subject LIKE ? ESCAPE '\' OR m.from_addr LIKE ? ESCAPE '\' OR m.to_addr LIKE ? ESCAPE '\')
+				ORDER BY m.date DESC
+				LIMIT ?
+			`, pattern, pattern, pattern, limit*3)
+		}
 	}
 	if err != nil {
 		return nil
 	}
 	defer rows.Close()
+
+	lowerQuery := strings.ToLower(query)
 
 	// Collect all results then deduplicate across Gmail labels (same message in Inbox, All Mail, Important, etc.).
 	type dedupKey struct {
@@ -341,6 +384,18 @@ func (s *SQLiteStore) SearchMessages(acctEmail, query string, limit int) []email
 		if err := rows.Scan(&m.UID, &folder, &account, &m.From, &m.To, &m.Subject, &m.Body, &dateStr, &unread, &flagged); err != nil {
 			continue
 		}
+		m.Body = decrypt(s.encKey, m.Body)
+
+		// When body wasn't searched in SQL, check it here.
+		if !bodySearchInSQL {
+			headerMatch := strings.Contains(strings.ToLower(m.Subject), lowerQuery) ||
+				strings.Contains(strings.ToLower(m.From), lowerQuery) ||
+				strings.Contains(strings.ToLower(m.To), lowerQuery)
+			if !headerMatch && !strings.Contains(strings.ToLower(m.Body), lowerQuery) {
+				continue
+			}
+		}
+
 		m.ID = fmt.Sprintf("%d", m.UID)
 		m.Date, _ = time.Parse(time.RFC3339, dateStr)
 		m.Unread = unread != 0
@@ -359,6 +414,9 @@ func (s *SQLiteStore) SearchMessages(acctEmail, query string, limit int) []email
 		m.Folder = folder
 		seen[key] = len(msgs)
 		msgs = append(msgs, m)
+		if len(msgs) >= limit {
+			break
+		}
 	}
 	return msgs
 }
@@ -651,7 +709,9 @@ func (s *SQLiteStore) UpdateMessageBody(acctEmail, folder string, uid uint32, bo
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(`UPDATE messages SET body = ?, html_body = ?, body_fetched = 1, attachments_cached = 1 WHERE folder_id = ? AND uid = ?`, body, htmlBody, folderID, uid)
+	encBody := encrypt(s.encKey, body)
+	encHTML := encrypt(s.encKey, htmlBody)
+	_, err = s.db.Exec(`UPDATE messages SET body = ?, html_body = ?, body_fetched = 1, attachments_cached = 1 WHERE folder_id = ? AND uid = ?`, encBody, encHTML, folderID, uid)
 	if err != nil {
 		return err
 	}

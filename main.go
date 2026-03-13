@@ -103,6 +103,21 @@ func runTUI() {
 
 		sqlStore := cache.NewSQLiteStore(db)
 
+		// Initialize cache encryption key (stored in OS keyring).
+		if encKey, err := auth.GetCacheKey(); err == nil {
+			sqlStore.SetEncryptionKey(encKey)
+		} else {
+			// First run — generate and store a new key.
+			if newKey, err := cache.GenerateEncryptionKey(); err == nil {
+				if err := auth.StoreCacheKey(newKey); err == nil {
+					sqlStore.SetEncryptionKey(newKey)
+					logging.Info("app", "cache encryption key initialized")
+				} else {
+					logging.Warn("app", "failed to store cache encryption key — bodies stored unencrypted", logging.Err(err))
+				}
+			}
+		}
+
 		// Seed accounts from config.
 		for _, acct := range cfg.Accounts {
 			if err := sqlStore.SeedAccount(acct.Name, acct.Email, acct.IMAPHost, acct.IMAPPort, acct.SMTPHost, acct.SMTPPort); err != nil {

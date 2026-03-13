@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/smtp"
+	"time"
 
 	"github.com/emersion/go-sasl"
 	"github.com/gausejakub/vimail/internal/auth"
@@ -46,11 +47,12 @@ func (w *SMTPWorker) Send(req SendRequest) (string, []byte, error) {
 	var conn net.Conn
 	var err error
 
+	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
 	switch tlsMode {
 	case "tls":
-		conn, err = tls.Dial("tcp", addr, &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12})
+		conn, err = tls.DialWithDialer(dialer, "tcp", addr, &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12})
 	case "starttls":
-		conn, err = net.Dial("tcp", addr) // Plaintext initially; upgraded to TLS below.
+		conn, err = dialer.Dial("tcp", addr) // Plaintext initially; upgraded to TLS below.
 	default:
 		return "", nil, fmt.Errorf("SMTP TLS mode %q not supported — use \"tls\" or \"starttls\"", tlsMode)
 	}

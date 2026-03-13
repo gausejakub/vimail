@@ -69,6 +69,7 @@ func newEditor(content string) vimtea.Editor {
 	opts := []vimtea.EditorOption{
 		vimtea.WithEnableStatusBar(false),
 		vimtea.WithRelativeNumbers(false),
+		vimtea.WithWrap(true),
 	}
 	if content != "" {
 		opts = append(opts, vimtea.WithContent(content))

@@ -15,6 +15,84 @@ import (
 // Used to correctly calculate visible text length with syntax highlighting
 var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
 
+// ansiSubstring extracts a visual substring [start, end) from a string that may
+// contain ANSI escape sequences, preserving active styling across the cut.
+func ansiSubstring(s string, start, end int) string {
+	var sb strings.Builder
+	var activeAnsi string
+	visPos := 0
+	i := 0
+	runes := []rune(s)
+
+	for i < len(runes) {
+		// Check for ANSI escape sequence
+		if runes[i] == '\x1b' && i+1 < len(runes) && runes[i+1] == '[' {
+			// Collect the full escape sequence
+			j := i + 2
+			for j < len(runes) && !((runes[j] >= 'A' && runes[j] <= 'Z') || (runes[j] >= 'a' && runes[j] <= 'z')) {
+				j++
+			}
+			if j < len(runes) {
+				j++ // include the terminating letter
+			}
+			seq := string(runes[i:j])
+			activeAnsi = seq
+			if visPos >= start && visPos < end {
+				sb.WriteString(seq)
+			}
+			i = j
+			continue
+		}
+
+		if visPos >= end {
+			break
+		}
+
+		if visPos >= start {
+			if visPos == start && activeAnsi != "" {
+				// Re-apply the active ANSI style at the start of the substring
+				sb.WriteString(activeAnsi)
+			}
+			sb.WriteRune(runes[i])
+		}
+
+		visPos++
+		i++
+	}
+
+	return sb.String()
+}
+
+// wrapRenderedLine splits a rendered line (possibly containing ANSI codes) into
+// chunks that each fit within the given width in visual columns.
+func wrapRenderedLine(s string, width int) []string {
+	if width <= 0 {
+		return []string{s}
+	}
+
+	visLen := ansi.StringWidth(s)
+	if visLen <= width {
+		return []string{s}
+	}
+
+	var lines []string
+	offset := 0
+	for offset < visLen {
+		end := offset + width
+		if end > visLen {
+			end = visLen
+		}
+		lines = append(lines, ansiSubstring(s, offset, end))
+		offset = end
+	}
+
+	if len(lines) == 0 {
+		return []string{""}
+	}
+
+	return lines
+}
+
 // renderTab renders a tab character with visual representation using spaces
 func renderTab(col int) string {
 	spaces := tabWidth - (col % tabWidth)
@@ -108,25 +186,61 @@ func (m *editorModel) renderContent() string {
 
 	lineNumWidth := 4
 	contentWidth := m.width - lineNumWidth
+	visualRowsUsed := 0
 
 	for i, line := range visibleContent {
+		if visualRowsUsed >= m.height {
+			break
+		}
+
 		lineNum := i + m.viewport.YOffset + 1
 		rowIdx := lineNum - 1
 
-		sb.WriteString(m.renderLineNumber(lineNum, rowIdx))
-
 		if rowIdx >= m.buffer.lineCount() {
+			sb.WriteString(m.renderLineNumber(lineNum, rowIdx))
 			sb.WriteString("\n")
+			visualRowsUsed++
 			continue
 		}
 
 		inVisualSelection := m.mode == ModeVisual && rowIdx >= selStart.Row && rowIdx <= selEnd.Row
 		rendered := m.renderLine(line, rowIdx, inVisualSelection, selStart, selEnd)
-		if contentWidth > 0 {
-			rendered = ansi.Truncate(rendered, contentWidth, "")
+
+		if m.wrap && contentWidth > 0 {
+			wrappedLines := wrapRenderedLine(rendered, contentWidth)
+			for wi, wline := range wrappedLines {
+				if visualRowsUsed >= m.height {
+					break
+				}
+				if wi == 0 {
+					sb.WriteString(m.renderLineNumber(lineNum, rowIdx))
+				} else {
+					sb.WriteString(m.lineNumberStyle.Render("    "))
+				}
+				sb.WriteString(wline)
+				sb.WriteString("\n")
+				visualRowsUsed++
+			}
+		} else {
+			sb.WriteString(m.renderLineNumber(lineNum, rowIdx))
+			if contentWidth > 0 {
+				if m.xOffset > 0 {
+					rendered = ansiSubstring(rendered, m.xOffset, m.xOffset+contentWidth)
+				} else {
+					rendered = ansi.Truncate(rendered, contentWidth, "")
+				}
+			}
+			sb.WriteString(rendered)
+			sb.WriteString("\n")
+			visualRowsUsed++
 		}
-		sb.WriteString(rendered)
+	}
+
+	// Pad remaining viewport with empty lines
+	for visualRowsUsed < m.height {
+		sb.WriteString(m.lineNumberStyle.Render("    "))
 		sb.WriteString("\n")
+		visualRowsUsed++
 	}
 
 	return sb.String()

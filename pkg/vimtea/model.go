@@ -104,6 +104,7 @@ type editorModel struct {
 	viewport        viewport.Model // For scrolling
 	width           int            // Window width
 	height          int            // Window height
+	xOffset         int            // Horizontal scroll offset
 	statusMessage   string         // Current status message
 	cursorBlink     bool           // Whether cursor is visible (for blinking)
 	lastBlinkTime   time.Time      // Time of last cursor blink
@@ -119,6 +120,7 @@ type editorModel struct {
 	selectedStyle          lipgloss.Style
 
 	highlighter *syntaxHighlighter
+	wrap        bool // soft line wrapping
 
 	yankHighlight yankHighlight
 
@@ -143,6 +145,7 @@ type options struct {
 	FileName               string         // Filename for syntax highlighting
 	RelativeNumbers        bool           // Whether to show relative line numbers
 	FullScreen             bool           // Whether to use the full terminal screen
+	Wrap                   bool           // Whether to soft-wrap long lines
 }
 
 // EditorOption is a function that modifies the editor options
@@ -195,6 +198,7 @@ func NewEditor(opts ...EditorOption) Editor {
 		relativeNumbers:        options.RelativeNumbers,
 		countPrefix:            0,
 
+		wrap:          options.Wrap,
 		highlighter:   newSyntaxHighlighter(options.DefaultSyntaxTheme, options.FileName),
 		yankHighlight: newYankHighlight(),
 		registry:      newBindingRegistry(),
@@ -666,6 +670,13 @@ func WithFileName(fileName string) EditorOption {
 func WithRelativeNumbers(enable bool) EditorOption {
 	return func(o *options) {
 		o.RelativeNumbers = enable
+	}
+}
+
+// WithWrap enables or disables soft line wrapping
+func WithWrap(enable bool) EditorOption {
+	return func(o *options) {
+		o.Wrap = enable
 	}
 }
 

@@ -435,18 +435,45 @@ func (s *SQLiteStore) DeleteMessage(acctEmail, folder, id string) {
 }
 
 // deleteAcrossFolders removes copies of the same message from all folders for an account.
+// Also tracks cross-folder copies as pending deletes so sync won't re-add them.
 func (s *SQLiteStore) deleteAcrossFolders(acctEmail string, folderID int, uid string) {
 	var messageID string
 	s.db.QueryRow(`SELECT message_id FROM messages WHERE folder_id = ? AND uid = ?`, folderID, uid).Scan(&messageID)
-	// Always delete the specific message.
-	s.db.Exec(`DELETE FROM messages WHERE folder_id = ? AND uid = ?`, folderID, uid)
-	// If we have a message_id, also delete copies in other folders.
+
+	// If we have a message_id, find and remove copies in other folders.
 	if messageID != "" {
+		// Collect cross-folder copies before deleting, so we can add pending_deletes.
+		rows, err := s.db.Query(`
+			SELECT m.uid, f.id, f.name FROM messages m
+			JOIN folders f ON m.folder_id = f.id
+			WHERE m.message_id = ? AND f.account = ? AND NOT (m.folder_id = ? AND m.uid = ?)
+		`, messageID, acctEmail, folderID, uid)
+		if err == nil {
+			type copy struct {
+				uid      uint32
+				folderID int
+				folder   string
+			}
+			var copies []copy
+			for rows.Next() {
+				var c copy
+				rows.Scan(&c.uid, &c.folderID, &c.folder)
+				copies = append(copies, c)
+			}
+			rows.Close()
+			for _, c := range copies {
+				s.db.Exec(`INSERT OR IGNORE INTO pending_deletes (folder_id, uid, account, folder) VALUES (?, ?, ?, ?)`,
+					c.folderID, c.uid, acctEmail, c.folder)
+			}
+		}
 		s.db.Exec(`
 			DELETE FROM messages
 			WHERE message_id = ? AND folder_id IN (SELECT id FROM folders WHERE account = ?)
 		`, messageID, acctEmail)
 	}
+
+	// Always delete the specific message.
+	s.db.Exec(`DELETE FROM messages WHERE folder_id = ? AND uid = ?`, folderID, uid)
 }
 
 // DeleteMessageByUID removes a single message by UID from cache.
@@ -526,16 +553,17 @@ func (s *SQLiteStore) UpsertMessage(acctEmail, folder string, msg email.Message)
 		flagged = 1
 	}
 	_, err = s.db.Exec(`
-		INSERT INTO messages (uid, folder_id, from_addr, to_addr, subject, body, date, unread, flagged)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO messages (uid, folder_id, message_id, from_addr, to_addr, subject, body, date, unread, flagged)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(folder_id, uid) DO UPDATE SET
+			message_id = CASE WHEN excluded.message_id != '' THEN excluded.message_id ELSE messages.message_id END,
 			from_addr = excluded.from_addr,
 			to_addr = excluded.to_addr,
 			subject = excluded.subject,
 			date = excluded.date,
 			unread = excluded.unread,
 			flagged = excluded.flagged
-	`, msg.UID, folderID, msg.From, msg.To, msg.Subject, msg.Body,
+	`, msg.UID, folderID, msg.MessageID, msg.From, msg.To, msg.Subject, msg.Body,
 		msg.Date.Format(time.RFC3339), unread, flagged)
 	return err
 }

@@ -18,6 +18,7 @@ type Folder struct {
 type Message struct {
 	ID          string
 	UID         uint32
+	MessageID   string // RFC 5322 Message-ID header (for cross-folder correlation)
 	From        string
 	To          string
 	Subject     string

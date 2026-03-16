@@ -22,6 +22,7 @@ func ParseEnvelope(uid uint32, env *imap.Envelope, flags []imap.Flag) email.Mess
 	if env != nil {
 		msg.Subject = env.Subject
 		msg.Date = env.Date
+		msg.MessageID = env.MessageID
 
 		if len(env.From) > 0 {
 			msg.From = formatAddress(env.From[0])

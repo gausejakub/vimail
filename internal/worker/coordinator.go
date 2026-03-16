@@ -154,6 +154,10 @@ func (c *Coordinator) SyncFolder(acctEmail, folder string) tea.Cmd {
 
 // FetchBody returns a tea.Cmd that lazily fetches a message body.
 func (c *Coordinator) FetchBody(acctEmail, folder string, uid uint32) tea.Cmd {
+	// Mark this UID as the one the user wants — stale fetches will skip.
+	if w := c.getIMAPWorker(acctEmail); w != nil {
+		w.SetWantedFetchUID(uid)
+	}
 	return func() (result tea.Msg) {
 		defer func() {
 			if r := recover(); r != nil {

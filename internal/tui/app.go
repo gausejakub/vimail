@@ -423,6 +423,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, cmd)
 			// Also update the message list so reply has the body.
 			m.msglist = m.msglist.UpdateBody(msg.UID, msg.Body, msg.HTMLBody, msg.Attachments)
+		} else if strings.Contains(msg.Err.Error(), "superseded") {
+			// Fetch was skipped because user moved to another message — ignore silently.
+			logging.Debug("fetch", "skipped stale fetch", logging.MsgUID(msg.UID))
 		} else {
 			errText := msg.Err.Error()
 			isStaleUID := strings.Contains(errText, "not found in")

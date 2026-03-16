@@ -9,6 +9,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/emersion/go-imap/v2"
@@ -39,8 +40,9 @@ type IMAPWorker struct {
 	opMu sync.Mutex
 
 	// Dedicated second connection for body fetches so they don't block behind sync.
-	fetchClient *imapclient.Client
-	fetchMu     sync.Mutex
+	fetchClient    *imapclient.Client
+	fetchMu        sync.Mutex
+	wantedFetchUID atomic.Uint32 // only the latest requested UID is fetched; stale ones skip
 
 	// For IDLE notifications.
 	mu      sync.Mutex
@@ -417,12 +419,25 @@ func (w *IMAPWorker) FetchBody(folder string, uid uint32) (BodyResult, error) {
 	return result, nil
 }
 
+// SetWantedFetchUID records which UID the user currently wants fetched.
+// Stale fetches (for a different UID) will skip after acquiring the lock.
+func (w *IMAPWorker) SetWantedFetchUID(uid uint32) {
+	w.wantedFetchUID.Store(uid)
+}
+
 // FetchBodyDirect fetches a message body using the dedicated fetch connection,
 // bypassing the main opMu so it doesn't block behind sync operations.
 // Falls back to the main connection if the fetch client is unavailable.
+// If a newer fetch has been requested (wantedFetchUID changed), this fetch
+// returns early to avoid blocking the one the user actually wants.
 func (w *IMAPWorker) FetchBodyDirect(folder string, uid uint32) (BodyResult, error) {
 	w.fetchMu.Lock()
 	defer w.fetchMu.Unlock()
+
+	// Skip if user has already moved to a different message.
+	if wanted := w.wantedFetchUID.Load(); wanted != 0 && wanted != uid {
+		return BodyResult{}, fmt.Errorf("fetch skipped: UID %d superseded by UID %d", uid, wanted)
+	}
 
 	client := w.fetchClient
 	if client == nil {

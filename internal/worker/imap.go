@@ -87,7 +87,7 @@ func (w *IMAPWorker) dial(withIDLE bool) (*imapclient.Client, error) {
 	if port == 0 {
 		port = 993
 	}
-	addr := fmt.Sprintf("%s:%d", host, port)
+	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
 
 	tlsMode := w.acct.TLS
 	if tlsMode == "" {

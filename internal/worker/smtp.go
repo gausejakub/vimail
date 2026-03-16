@@ -34,7 +34,7 @@ func (w *SMTPWorker) Send(req SendRequest) (string, []byte, error) {
 	if port == 0 {
 		port = 587
 	}
-	addr := fmt.Sprintf("%s:%d", host, port)
+	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
 
 	// Build RFC 5322 message.
 	msgID, rawMsg := ComposeRFC5322(req.From, req.To, req.Subject, req.Body)

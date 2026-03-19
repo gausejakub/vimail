@@ -154,10 +154,6 @@ func (c *Coordinator) SyncFolder(acctEmail, folder string) tea.Cmd {
 
 // FetchBody returns a tea.Cmd that lazily fetches a message body.
 func (c *Coordinator) FetchBody(acctEmail, folder string, uid uint32) tea.Cmd {
-	// Mark this UID as the one the user wants — stale fetches will skip.
-	if w := c.getIMAPWorker(acctEmail); w != nil {
-		w.SetWantedFetchUID(uid)
-	}
 	return func() (result tea.Msg) {
 		defer func() {
 			if r := recover(); r != nil {
@@ -182,6 +178,9 @@ func (c *Coordinator) FetchBody(acctEmail, folder string, uid uint32) tea.Cmd {
 				Err:     fmt.Errorf("no IMAP worker for %s", acctEmail),
 			}
 		}
+
+		// Mark this UID as the one the user wants — stale fetches will skip.
+		w.SetWantedFetchUID(uid)
 
 		// Use dedicated fetch connection to avoid blocking behind sync.
 		res, err := w.FetchBodyDirect(folder, uid)
@@ -692,11 +691,15 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig) error {
 	}
 
 	// Disconnect old worker if it exists to avoid leaking connections.
+	// Extract under lock, then disconnect without holding c.mu to avoid
+	// blocking getIMAPWorker (and thus the TUI) if Disconnect blocks on opMu.
 	c.mu.Lock()
-	if old, ok := c.imap[acct.Email]; ok {
+	old := c.imap[acct.Email]
+	delete(c.imap, acct.Email)
+	c.mu.Unlock()
+	if old != nil {
 		old.Disconnect()
 	}
-	c.mu.Unlock()
 
 	logging.Info("connect", "connecting IMAP", logging.Acct(acct.Email), logging.KV("host", acct.IMAPHost))
 	connectStart := time.Now()

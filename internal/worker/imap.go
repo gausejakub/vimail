@@ -23,6 +23,19 @@ import (
 const (
 	// maxBodySize limits the total size of a fetched message body to prevent OOM.
 	maxBodySize = 50 * 1024 * 1024 // 50 MB
+
+	// opDeadline is the maximum time for a single IMAP command (SELECT, FETCH envelope, etc.).
+	opDeadline = 45 * time.Second
+
+	// syncDeadline is the maximum time for a full folder sync (may fetch many messages).
+	syncDeadline = 3 * time.Minute
+
+	// fetchBodyDeadline is the maximum time for fetching a single message body.
+	fetchBodyDeadline = 60 * time.Second
+
+	// disconnectWait is how long Disconnect waits for an in-flight op to finish
+	// after force-closing the connection.
+	disconnectWait = 5 * time.Second
 )
 
 // IMAPWorker manages a single IMAP connection for one account.
@@ -153,13 +166,40 @@ func (w *IMAPWorker) authenticate(client *imapclient.Client) error {
 	}
 }
 
-// Disconnect closes the IMAP connection gracefully.
-// It acquires opMu to wait for any in-flight operations to finish
-// before tearing down the client.
+// Disconnect closes the IMAP connection gracefully if idle, or forcefully
+// if an operation is in flight. This never blocks indefinitely, preventing
+// deadlocks when the network is down and a cmd.Wait() is stuck.
 func (w *IMAPWorker) Disconnect() {
-	w.opMu.Lock()
-	defer w.opMu.Unlock()
-	w.disconnectLocked()
+	if w.opMu.TryLock() {
+		// No operation in flight — graceful shutdown.
+		defer w.opMu.Unlock()
+		w.disconnectLocked()
+		return
+	}
+
+	// An operation is in flight holding opMu. Force-close connections to
+	// unblock any stuck cmd.Wait() calls, then wait briefly for opMu.
+	log.Printf("IMAP force-closing %s (operation in flight)", w.acct.Email)
+	if w.client != nil {
+		w.client.Close()
+	}
+	if w.fetchClient != nil {
+		w.fetchClient.Close()
+	}
+
+	done := make(chan struct{})
+	go func() {
+		w.opMu.Lock()
+		w.client = nil
+		w.fetchClient = nil
+		w.opMu.Unlock()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(disconnectWait):
+		log.Printf("IMAP disconnect: timed out waiting for in-flight op for %s", w.acct.Email)
+	}
 }
 
 // disconnectLocked closes the IMAP connection. Caller must hold opMu.
@@ -199,9 +239,51 @@ func (w *IMAPWorker) disconnectLocked() {
 	}
 }
 
+// opTimer starts a background timer that force-closes the main IMAP client
+// when the deadline fires, unblocking any stuck cmd.Wait(). The returned
+// cancel function MUST be deferred by the caller.
+func (w *IMAPWorker) opTimer(d time.Duration) func() {
+	t := time.AfterFunc(d, func() {
+		log.Printf("IMAP op timeout (%v) for %s — force-closing connection", d, w.acct.Email)
+		if w.client != nil {
+			w.client.Close()
+		}
+	})
+	return func() { t.Stop() }
+}
+
+// fetchOpTimer is like opTimer but for the dedicated fetch client.
+func (w *IMAPWorker) fetchOpTimer(d time.Duration) func() {
+	t := time.AfterFunc(d, func() {
+		log.Printf("IMAP fetch op timeout (%v) for %s — force-closing fetch connection", d, w.acct.Email)
+		if w.fetchClient != nil {
+			w.fetchClient.Close()
+		}
+	})
+	return func() { t.Stop() }
+}
+
 // IsConnected returns true if the IMAP client exists.
 func (w *IMAPWorker) IsConnected() bool {
 	return w.client != nil
+}
+
+// Ping checks if the IMAP connection is alive by issuing a NOOP command.
+// Returns true if the connection is healthy.
+func (w *IMAPWorker) Ping() bool {
+	if w.client == nil {
+		return false
+	}
+	w.opMu.Lock()
+	defer w.opMu.Unlock()
+	cancel := w.opTimer(10 * time.Second)
+	defer cancel()
+
+	if err := w.client.Noop().Wait(); err != nil {
+		log.Printf("IMAP ping failed for %s: %v", w.acct.Email, err)
+		return false
+	}
+	return true
 }
 
 // ListMailboxes fetches the list of mailboxes and syncs them to the cache.
@@ -212,6 +294,8 @@ func (w *IMAPWorker) ListMailboxes() ([]string, error) {
 	if w.client == nil {
 		return nil, fmt.Errorf("not connected")
 	}
+	cancel := w.opTimer(opDeadline)
+	defer cancel()
 
 	listCmd := w.client.List("", "*", nil)
 	mailboxes, err := listCmd.Collect()
@@ -254,6 +338,8 @@ func (w *IMAPWorker) FolderStatus(folder string) (uidNext uint32, uidValidity ui
 	if w.client == nil {
 		return 0, 0, fmt.Errorf("not connected")
 	}
+	cancel := w.opTimer(opDeadline)
+	defer cancel()
 
 	imapName := w.imapMailboxName(folder)
 	statusCmd := w.client.Status(imapName, &imap.StatusOptions{
@@ -276,6 +362,8 @@ func (w *IMAPWorker) SyncFolder(folder string, onProgress ...func(fetched int)) 
 	if w.client == nil {
 		return 0, fmt.Errorf("not connected")
 	}
+	cancel := w.opTimer(syncDeadline)
+	defer cancel()
 
 	imapName := w.imapMailboxName(folder)
 
@@ -357,6 +445,8 @@ func (w *IMAPWorker) FetchBody(folder string, uid uint32) (BodyResult, error) {
 	if w.client == nil {
 		return BodyResult{}, fmt.Errorf("not connected")
 	}
+	cancel := w.opTimer(fetchBodyDeadline)
+	defer cancel()
 
 	imapName := w.imapMailboxName(folder)
 
@@ -438,6 +528,9 @@ func (w *IMAPWorker) FetchBodyDirect(folder string, uid uint32) (BodyResult, err
 	if wanted := w.wantedFetchUID.Load(); wanted != 0 && wanted != uid {
 		return BodyResult{}, fmt.Errorf("fetch skipped: UID %d superseded by UID %d", uid, wanted)
 	}
+
+	cancel := w.fetchOpTimer(fetchBodyDeadline)
+	defer cancel()
 
 	client := w.fetchClient
 	if client == nil {
@@ -564,6 +657,8 @@ func (w *IMAPWorker) FetchRawMessage(folder string, uid uint32) ([]byte, error) 
 	if w.client == nil {
 		return nil, fmt.Errorf("not connected")
 	}
+	cancel := w.opTimer(fetchBodyDeadline)
+	defer cancel()
 
 	imapName := w.imapMailboxName(folder)
 	selCmd := w.client.Select(imapName, nil)
@@ -619,6 +714,8 @@ func (w *IMAPWorker) MarkReadBatch(folder string, uids []uint32) error {
 	if len(uids) == 0 {
 		return nil
 	}
+	cancel := w.opTimer(opDeadline)
+	defer cancel()
 
 	imapName := w.imapMailboxName(folder)
 	selCmd := w.client.Select(imapName, nil)
@@ -722,6 +819,8 @@ func (w *IMAPWorker) MoveToTrash(folder string, uid uint32) error {
 	if w.client == nil {
 		return fmt.Errorf("not connected")
 	}
+	cancel := w.opTimer(opDeadline)
+	defer cancel()
 
 	imapName := w.imapMailboxName(folder)
 	trashName := w.trashMailboxName()
@@ -772,6 +871,8 @@ func (w *IMAPWorker) MoveToTrashBatch(folder string, uids []uint32, onProgress f
 	if len(uids) == 0 {
 		return nil
 	}
+	cancel := w.opTimer(syncDeadline)
+	defer cancel()
 
 	imapName := w.imapMailboxName(folder)
 	trashName := w.trashMailboxName()
@@ -843,6 +944,8 @@ func (w *IMAPWorker) MoveToFolder(srcFolder string, uid uint32, dstFolder string
 	if w.client == nil {
 		return fmt.Errorf("not connected")
 	}
+	cancel := w.opTimer(opDeadline)
+	defer cancel()
 
 	srcName := w.imapMailboxName(srcFolder)
 	dstName := w.imapMailboxName(dstFolder)
@@ -887,6 +990,8 @@ func (w *IMAPWorker) MoveToFolderBatch(srcFolder string, uids []uint32, dstFolde
 	if len(uids) == 0 {
 		return nil
 	}
+	cancel := w.opTimer(syncDeadline)
+	defer cancel()
 
 	srcName := w.imapMailboxName(srcFolder)
 	dstName := w.imapMailboxName(dstFolder)
@@ -938,6 +1043,8 @@ func (w *IMAPWorker) DeleteMailbox(folder string) error {
 	if w.client == nil {
 		return fmt.Errorf("not connected")
 	}
+	cancel := w.opTimer(opDeadline)
+	defer cancel()
 
 	imapName := w.imapMailboxName(folder)
 	if err := w.client.Delete(imapName).Wait(); err != nil {

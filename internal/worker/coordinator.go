@@ -690,29 +690,38 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig) error {
 		return fmt.Errorf("no credentials resolved")
 	}
 
-	// Disconnect old worker if it exists to avoid leaking connections.
-	// Extract under lock, then disconnect without holding c.mu to avoid
-	// blocking getIMAPWorker (and thus the TUI) if Disconnect blocks on opMu.
+	// Reuse existing healthy connection instead of tearing down every sync cycle.
+	// This avoids exhausting server connection limits.
 	c.mu.Lock()
-	old := c.imap[acct.Email]
-	delete(c.imap, acct.Email)
+	existing := c.imap[acct.Email]
 	c.mu.Unlock()
-	if old != nil {
-		old.Disconnect()
-	}
 
-	logging.Info("connect", "connecting IMAP", logging.Acct(acct.Email), logging.KV("host", acct.IMAPHost))
-	connectStart := time.Now()
-	w := NewIMAPWorker(acct, creds, c.store)
-	if err := w.Connect(); err != nil {
-		logging.Error("connect", "IMAP connect failed", logging.Acct(acct.Email), logging.Dur(time.Since(connectStart)), logging.Err(err))
-		return err
-	}
-	logging.Info("connect", "IMAP connected", logging.Acct(acct.Email), logging.Dur(time.Since(connectStart)))
+	var w *IMAPWorker
+	if existing != nil && existing.Ping() {
+		logging.Debug("connect", "reusing healthy IMAP connection", logging.Acct(acct.Email))
+		w = existing
+	} else {
+		// Connection is dead or doesn't exist — disconnect old and create new.
+		if existing != nil {
+			c.mu.Lock()
+			delete(c.imap, acct.Email)
+			c.mu.Unlock()
+			existing.Disconnect()
+		}
 
-	c.mu.Lock()
-	c.imap[acct.Email] = w
-	c.mu.Unlock()
+		logging.Info("connect", "connecting IMAP", logging.Acct(acct.Email), logging.KV("host", acct.IMAPHost))
+		connectStart := time.Now()
+		w = NewIMAPWorker(acct, creds, c.store)
+		if err := w.Connect(); err != nil {
+			logging.Error("connect", "IMAP connect failed", logging.Acct(acct.Email), logging.Dur(time.Since(connectStart)), logging.Err(err))
+			return err
+		}
+		logging.Info("connect", "IMAP connected", logging.Acct(acct.Email), logging.Dur(time.Since(connectStart)))
+
+		c.mu.Lock()
+		c.imap[acct.Email] = w
+		c.mu.Unlock()
+	}
 
 	// Retry any pending operations for this account before syncing folders.
 	// Batch mark_read ops by folder to avoid flooding the server.
@@ -858,11 +867,16 @@ func (c *Coordinator) getSMTPWorker(acctEmail string) *SMTPWorker {
 func (c *Coordinator) DisconnectAll() {
 	logging.Info("connect", "disconnecting all workers")
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	for email, w := range c.imap {
-		w.Disconnect()
-		logging.Debug("connect", "IMAP disconnected", logging.Acct(email))
+	workers := make(map[string]*IMAPWorker, len(c.imap))
+	for k, v := range c.imap {
+		workers[k] = v
 	}
 	c.imap = make(map[string]*IMAPWorker)
 	c.smtp = make(map[string]*SMTPWorker)
+	c.mu.Unlock()
+
+	for email, w := range workers {
+		w.Disconnect()
+		logging.Debug("connect", "IMAP disconnected", logging.Acct(email))
+	}
 }

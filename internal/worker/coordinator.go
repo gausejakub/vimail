@@ -30,17 +30,22 @@ type Coordinator struct {
 	smtp  map[string]*SMTPWorker // keyed by email
 	creds map[string]*auth.Credentials
 
+	// syncInFlight tracks coalesced per-folder recovery syncs, keyed by
+	// account+"\x00"+folder, so a burst of stale-UID errors starts one sync.
+	syncInFlight map[string]bool
+
 	program *tea.Program // set after bubbletea starts, for async progress messages
 }
 
 // NewCoordinator creates a coordinator for the given config and store.
 func NewCoordinator(cfg config.Config, store *cache.SQLiteStore) *Coordinator {
 	return &Coordinator{
-		cfg:   cfg,
-		store: store,
-		imap:  make(map[string]*IMAPWorker),
-		smtp:  make(map[string]*SMTPWorker),
-		creds: make(map[string]*auth.Credentials),
+		cfg:          cfg,
+		store:        store,
+		imap:         make(map[string]*IMAPWorker),
+		smtp:         make(map[string]*SMTPWorker),
+		creds:        make(map[string]*auth.Credentials),
+		syncInFlight: make(map[string]bool),
 	}
 }
 
@@ -149,6 +154,35 @@ func (c *Coordinator) SyncFolder(acctEmail, folder string) tea.Cmd {
 			NewCount: newCount,
 			Err:      err,
 		}
+	}
+}
+
+// SyncFolderIfIdle returns a tea.Cmd that syncs the folder, or nil if a
+// coalesced sync for the same account/folder pair is already in flight.
+// Stale-UID recovery uses this so a rapid burst of missing-message errors
+// triggers exactly one folder sync instead of one per UID. The in-flight
+// mark is claimed synchronously (before the returned cmd runs) and released
+// when the sync finishes, whether it succeeds or fails.
+func (c *Coordinator) SyncFolderIfIdle(acctEmail, folder string) tea.Cmd {
+	key := acctEmail + "\x00" + folder
+	c.mu.Lock()
+	if c.syncInFlight[key] {
+		c.mu.Unlock()
+		logging.Debug("sync", "recovery sync already in flight, coalescing", logging.Acct(acctEmail), logging.Fld(folder))
+		return nil
+	}
+	c.syncInFlight[key] = true
+	c.mu.Unlock()
+
+	inner := c.SyncFolder(acctEmail, folder)
+	return func() tea.Msg {
+		// Release on every exit path so future recovery stays possible.
+		defer func() {
+			c.mu.Lock()
+			delete(c.syncInFlight, key)
+			c.mu.Unlock()
+		}()
+		return inner()
 	}
 }
 

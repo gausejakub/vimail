@@ -342,7 +342,7 @@ func (s *SQLiteStore) MarkAllRead(acctEmail, folder string) {
 // SearchMessages searches messages across all folders for an account (or all accounts if acctEmail is empty).
 // Matches against subject, from, to, and body using LIKE.
 func (s *SQLiteStore) SearchMessages(acctEmail, query string, limit int) []email.Message {
-	if query == "" {
+	if query == "" || limit <= 0 {
 		return nil
 	}
 	// Escape LIKE wildcards in user input.
@@ -354,52 +354,27 @@ func (s *SQLiteStore) SearchMessages(acctEmail, query string, limit int) []email
 	// body matches in Go after decryption.
 	bodySearchInSQL := len(s.encKey) == 0
 
-	var rows *sql.Rows
-	var err error
+	querySQL := `
+		SELECT m.uid, f.name, f.account, m.message_id, m.from_addr, m.to_addr, m.subject, m.body, m.date, m.unread, m.flagged
+		FROM messages m
+		JOIN folders f ON m.folder_id = f.id`
+	var args []interface{}
 	if acctEmail != "" {
+		querySQL += ` WHERE f.account = ?`
+		args = append(args, acctEmail)
 		if bodySearchInSQL {
-			rows, err = s.db.Query(`
-				SELECT m.uid, f.name, f.account, m.from_addr, m.to_addr, m.subject, m.body, m.date, m.unread, m.flagged
-				FROM messages m
-				JOIN folders f ON m.folder_id = f.id
-				WHERE f.account = ?
-				  AND (m.subject LIKE ? ESCAPE '\' OR m.from_addr LIKE ? ESCAPE '\' OR m.to_addr LIKE ? ESCAPE '\' OR m.body LIKE ? ESCAPE '\')
-				ORDER BY m.date DESC
-				LIMIT ?
-			`, acctEmail, pattern, pattern, pattern, pattern, limit)
-		} else {
-			// Fetch more candidates than needed — we'll filter body matches in Go.
-			rows, err = s.db.Query(`
-				SELECT m.uid, f.name, f.account, m.from_addr, m.to_addr, m.subject, m.body, m.date, m.unread, m.flagged
-				FROM messages m
-				JOIN folders f ON m.folder_id = f.id
-				WHERE f.account = ?
-				  AND (m.subject LIKE ? ESCAPE '\' OR m.from_addr LIKE ? ESCAPE '\' OR m.to_addr LIKE ? ESCAPE '\')
-				ORDER BY m.date DESC
-				LIMIT ?
-			`, acctEmail, pattern, pattern, pattern, limit*3)
+			querySQL += ` AND (m.subject LIKE ? ESCAPE '\' OR m.from_addr LIKE ? ESCAPE '\' OR m.to_addr LIKE ? ESCAPE '\' OR m.body LIKE ? ESCAPE '\')`
+			args = append(args, pattern, pattern, pattern, pattern)
 		}
-	} else {
-		if bodySearchInSQL {
-			rows, err = s.db.Query(`
-				SELECT m.uid, f.name, f.account, m.from_addr, m.to_addr, m.subject, m.body, m.date, m.unread, m.flagged
-				FROM messages m
-				JOIN folders f ON m.folder_id = f.id
-				WHERE (m.subject LIKE ? ESCAPE '\' OR m.from_addr LIKE ? ESCAPE '\' OR m.to_addr LIKE ? ESCAPE '\' OR m.body LIKE ? ESCAPE '\')
-				ORDER BY m.date DESC
-				LIMIT ?
-			`, pattern, pattern, pattern, pattern, limit)
-		} else {
-			rows, err = s.db.Query(`
-				SELECT m.uid, f.name, f.account, m.from_addr, m.to_addr, m.subject, m.body, m.date, m.unread, m.flagged
-				FROM messages m
-				JOIN folders f ON m.folder_id = f.id
-				WHERE (m.subject LIKE ? ESCAPE '\' OR m.from_addr LIKE ? ESCAPE '\' OR m.to_addr LIKE ? ESCAPE '\')
-				ORDER BY m.date DESC
-				LIMIT ?
-			`, pattern, pattern, pattern, limit*3)
-		}
+	} else if bodySearchInSQL {
+		querySQL += ` WHERE (m.subject LIKE ? ESCAPE '\' OR m.from_addr LIKE ? ESCAPE '\' OR m.to_addr LIKE ? ESCAPE '\' OR m.body LIKE ? ESCAPE '\')`
+		args = append(args, pattern, pattern, pattern, pattern)
 	}
+	// Do not LIMIT candidates before deduplication: many label copies may
+	// precede later unique messages. Rows are streamed and iteration stops as
+	// soon as the requested number of unique matches has been collected.
+	querySQL += ` ORDER BY m.date DESC, f.name, m.uid DESC`
+	rows, err := s.db.Query(querySQL, args...)
 	if err != nil {
 		return nil
 	}
@@ -407,20 +382,23 @@ func (s *SQLiteStore) SearchMessages(acctEmail, query string, limit int) []email
 
 	lowerQuery := strings.ToLower(query)
 
-	// Collect all results then deduplicate across Gmail labels (same message in Inbox, All Mail, Important, etc.).
+	// Deduplicate label copies by Message-ID. The legacy fallback is retained
+	// for old/cache-only messages that lack one, but Message-ID prevents
+	// distinct same-second notifications from collapsing together.
 	type dedupKey struct {
-		Account string
-		Subject string
-		From    string
-		Date    string
+		Account   string
+		MessageID string
+		Subject   string
+		From      string
+		Date      string
 	}
-	seen := make(map[dedupKey]int) // key → index in msgs
+	seen := make(map[dedupKey]struct{})
 	var msgs []email.Message
 	for rows.Next() {
 		var m email.Message
 		var folder, account, dateStr string
 		var unread, flagged int
-		if err := rows.Scan(&m.UID, &folder, &account, &m.From, &m.To, &m.Subject, &m.Body, &dateStr, &unread, &flagged); err != nil {
+		if err := rows.Scan(&m.UID, &folder, &account, &m.MessageID, &m.From, &m.To, &m.Subject, &m.Body, &dateStr, &unread, &flagged); err != nil {
 			continue
 		}
 		m.Body = decrypt(s.encKey, m.Body)
@@ -441,17 +419,17 @@ func (s *SQLiteStore) SearchMessages(acctEmail, query string, limit int) []email
 		m.Flagged = flagged != 0
 		m.Account = account
 
-		key := dedupKey{Account: account, Subject: m.Subject, From: m.From, Date: dateStr}
-		if idx, ok := seen[key]; ok {
-			// Duplicate — append folder name to display tag but keep primary folder for IMAP.
-			existing := msgs[idx].Folder
-			if !strings.Contains(existing, folder) {
-				msgs[idx].Folder = existing + " +" + folder
-			}
+		key := dedupKey{Account: account, MessageID: m.MessageID}
+		if m.MessageID == "" {
+			key.Subject = m.Subject
+			key.From = m.From
+			key.Date = dateStr
+		}
+		if _, ok := seen[key]; ok {
 			continue
 		}
 		m.Folder = folder
-		seen[key] = len(msgs)
+		seen[key] = struct{}{}
 		msgs = append(msgs, m)
 		if len(msgs) >= limit {
 			break

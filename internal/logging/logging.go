@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -55,10 +56,10 @@ type Field struct {
 }
 
 // Field constructors for ergonomic call sites.
-func Acct(email string) Field  { return Field{"account", email} }
-func Fld(folder string) Field  { return Field{"folder", folder} }
-func MsgUID(uid uint32) Field  { return Field{"uid", uid} }
-func Dur(d time.Duration) Field { return Field{"duration", d.Round(time.Millisecond).String()} }
+func Acct(email string) Field        { return Field{"account", email} }
+func Fld(folder string) Field        { return Field{"folder", folder} }
+func MsgUID(uid uint32) Field        { return Field{"uid", uid} }
+func Dur(d time.Duration) Field      { return Field{"duration", d.Round(time.Millisecond).String()} }
 func KV(key string, value any) Field { return Field{key, value} }
 
 func Err(err error) Field {
@@ -73,14 +74,21 @@ type Logger struct {
 	ch    chan Entry
 	file  *os.File
 	done  chan struct{}
-	level Level
+	level atomic.Int32
+
+	// closeMu guards ch against close-while-sending: emitters hold the read
+	// lock across the send, Close takes the write lock to flip closing before
+	// closing ch. A bare bool + mutex is not enough because the non-blocking
+	// select in emit would still panic if ch were closed mid-send.
+	closeMu sync.RWMutex
+	closing bool
 }
 
-const chanSize = 4096
+var chanSize = 4096
 
 var (
-	defaultLogger *Logger
-	mu            sync.Mutex
+	defaultLogger atomic.Pointer[Logger]
+	mu            sync.Mutex // serializes Init and Close
 )
 
 // Init creates the global logger. logDir is the directory for vimail.log.
@@ -88,7 +96,7 @@ func Init(logDir string, level Level) error {
 	mu.Lock()
 	defer mu.Unlock()
 
-	if defaultLogger != nil {
+	if defaultLogger.Load() != nil {
 		return nil // already initialized
 	}
 
@@ -105,38 +113,43 @@ func Init(logDir string, level Level) error {
 	}
 
 	l := &Logger{
-		ch:    make(chan Entry, chanSize),
-		file:  f,
-		done:  make(chan struct{}),
-		level: level,
+		ch:   make(chan Entry, chanSize),
+		file: f,
+		done: make(chan struct{}),
 	}
+	l.level.Store(int32(level))
 
 	go l.drain()
-	defaultLogger = l
+	defaultLogger.Store(l)
 	return nil
 }
 
 // Close flushes remaining entries and closes the log file.
 func Close() {
 	mu.Lock()
-	l := defaultLogger
-	defaultLogger = nil
-	mu.Unlock()
+	defer mu.Unlock()
 
+	l := defaultLogger.Load()
 	if l == nil {
 		return
 	}
+	defaultLogger.Store(nil)
+
+	// Block until no emitter is mid-send, then make late emitters (which
+	// loaded the pointer before we cleared it) drop instead of sending.
+	l.closeMu.Lock()
+	l.closing = true
+	l.closeMu.Unlock()
+
 	close(l.ch)
-	<-l.done // wait for drain to finish
+	<-l.done // wait for drain to flush accepted entries
 	l.file.Close()
 }
 
 // SetLevel changes the minimum log level at runtime.
 func SetLevel(level Level) {
-	mu.Lock()
-	defer mu.Unlock()
-	if defaultLogger != nil {
-		defaultLogger.level = level
+	if l := defaultLogger.Load(); l != nil {
+		l.level.Store(int32(level))
 	}
 }
 
@@ -155,11 +168,8 @@ func (l *Logger) drain() {
 
 // emit sends an entry to the channel. Non-blocking: drops if full.
 func emit(level Level, op, msg string, fields []Field) {
-	mu.Lock()
-	l := defaultLogger
-	mu.Unlock()
-
-	if l == nil || level < l.level {
+	l := defaultLogger.Load()
+	if l == nil || level < Level(l.level.Load()) {
 		return
 	}
 
@@ -195,12 +205,17 @@ func emit(level Level, op, msg string, fields []Field) {
 		}
 	}
 
-	// Non-blocking send.
-	select {
-	case l.ch <- e:
-	default:
-		// Channel full, drop entry to avoid blocking TUI.
+	// Non-blocking send, holding the read lock so Close cannot close ch
+	// between the closing check and the send.
+	l.closeMu.RLock()
+	if !l.closing {
+		select {
+		case l.ch <- e:
+		default:
+			// Channel full, drop entry to avoid blocking TUI.
+		}
 	}
+	l.closeMu.RUnlock()
 }
 
 // Package-level convenience functions.

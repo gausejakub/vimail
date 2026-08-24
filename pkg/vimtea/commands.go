@@ -786,16 +786,39 @@ func yankVisualSelection(model *editorModel) tea.Cmd {
 	return switchMode(model, ModeNormal)
 }
 
+// firstNonBlankCol returns the column of the first non-whitespace
+// character of a line (0 for blank lines), where Vim rests the cursor
+// after linewise operations.
+func firstNonBlankCol(line string) int {
+	for i := 0; i < len(line); i++ {
+		if line[i] != ' ' && line[i] != '\t' {
+			return i
+		}
+	}
+	return 0
+}
+
 func deleteVisualSelection(model *editorModel) tea.Cmd {
 	model.buffer.saveUndoState(model.cursor)
 	start, end := model.GetSelectionBoundary()
 
-	selectedText := model.buffer.getRange(start, end)
 	if model.isVisualLine {
-		selectedText = "\n" + selectedText
+		// Linewise deletion: remove the selected lines entirely,
+		// including their line breaks, instead of blanking their
+		// characters. The register is linewise ("\n" prefix) so a
+		// subsequent p/P pastes whole lines.
+		model.yankBuffer = "\n" + strings.Join(model.buffer.lines[start.Row:end.Row+1], "\n")
+		for range end.Row - start.Row + 1 {
+			// deleteLine keeps at least one (empty) line in the buffer.
+			model.buffer.deleteLine(start.Row)
+		}
+		row := min(start.Row, model.buffer.lineCount()-1)
+		model.cursor = Cursor{Row: row, Col: firstNonBlankCol(model.buffer.Line(row))}
+		model.ensureCursorVisible()
+		return switchMode(model, ModeNormal)
 	}
-	model.yankBuffer = selectedText
 
+	model.yankBuffer = model.buffer.getRange(start, end)
 	model.buffer.deleteRange(start, end)
 
 	model.cursor = start

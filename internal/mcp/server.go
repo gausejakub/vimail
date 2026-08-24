@@ -10,11 +10,13 @@ package mcp
 
 import (
 	"context"
+	"sync"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/gausejakub/vimail/internal/cache"
 	"github.com/gausejakub/vimail/internal/config"
+	"github.com/gausejakub/vimail/internal/worker"
 )
 
 // version identifies the vmail MCP server implementation to clients.
@@ -24,14 +26,23 @@ const version = "0.1.0"
 type Server struct {
 	cfg   config.Config
 	store *cache.SQLiteStore
+	coord *worker.Coordinator // drains queued ops and syncs when running standalone
 	srv   *sdk.Server
+
+	// credsOnce lazily resolves account credentials on the first sync call,
+	// so starting the server never blocks on keyring access.
+	credsOnce sync.Once
 }
 
-// New creates an MCP server with the read-only tool set registered.
-func New(cfg config.Config, store *cache.SQLiteStore) *Server {
+// New creates an MCP server with the read and write tool sets registered.
+// coord is the server's own coordinator, used by the sync tool and for
+// pushing queued writes; the op queue's cross-process claiming (owner +
+// lease) keeps it safe alongside a running TUI.
+func New(cfg config.Config, store *cache.SQLiteStore, coord *worker.Coordinator) *Server {
 	s := &Server{
 		cfg:   cfg,
 		store: store,
+		coord: coord,
 		srv: sdk.NewServer(&sdk.Implementation{
 			Name:    "vmail",
 			Title:   "vmail email client",
@@ -39,6 +50,7 @@ func New(cfg config.Config, store *cache.SQLiteStore) *Server {
 		}, nil),
 	}
 	s.registerReadTools()
+	s.registerWriteTools()
 	return s
 }
 

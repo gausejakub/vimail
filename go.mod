@@ -1,6 +1,6 @@
 module github.com/gausejakub/vimail
 
-go 1.26.1
+go 1.26.6
 
 require (
 	github.com/BurntSushi/toml v1.6.0
@@ -15,7 +15,7 @@ require (
 	github.com/muesli/reflow v0.3.0
 	github.com/zalando/go-keyring v0.2.6
 	golang.org/x/oauth2 v0.35.0
-	golang.org/x/term v0.41.0
+	golang.org/x/term v0.45.0
 	modernc.org/sqlite v1.36.3
 )
 
@@ -30,7 +30,7 @@ require (
 	github.com/olekukonko/ll v0.1.4-0.20260115111900-9e59c2286df0 // indirect
 	github.com/olekukonko/tablewriter v1.1.3 // indirect
 	github.com/ssor/bom v0.0.0-20170718123548-6386211fdfcf // indirect
-	golang.org/x/net v0.52.0 // indirect
+	golang.org/x/net v0.58.0 // indirect
 )
 
 require (
@@ -60,8 +60,8 @@ require (
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	golang.org/x/exp v0.0.0-20231006140011-7918f672742d // indirect
-	golang.org/x/sys v0.42.0 // indirect
-	golang.org/x/text v0.35.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/text v0.41.0 // indirect
 	modernc.org/libc v1.61.13 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect

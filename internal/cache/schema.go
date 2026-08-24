@@ -85,6 +85,8 @@ CREATE TABLE IF NOT EXISTS pending_ops (
 	error       TEXT NOT NULL DEFAULT '',
 	owner       TEXT NOT NULL DEFAULT '',
 	lease_until DATETIME,
+	attempts    INTEGER NOT NULL DEFAULT 0,
+	next_attempt_at DATETIME,
 	created_at  DATETIME NOT NULL,
 	updated_at  DATETIME NOT NULL
 );
@@ -173,6 +175,8 @@ func Open(path string) (*sql.DB, error) {
 	// existing databases) and the cross-process sync lock table.
 	db.Exec(`ALTER TABLE pending_ops ADD COLUMN owner TEXT NOT NULL DEFAULT ''`)
 	db.Exec(`ALTER TABLE pending_ops ADD COLUMN lease_until DATETIME`)
+	db.Exec(`ALTER TABLE pending_ops ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0`)
+	db.Exec(`ALTER TABLE pending_ops ADD COLUMN next_attempt_at DATETIME`)
 	db.Exec(`CREATE TABLE IF NOT EXISTS sync_locks (
 		account    TEXT PRIMARY KEY,
 		owner      TEXT NOT NULL,

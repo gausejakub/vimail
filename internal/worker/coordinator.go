@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -29,6 +30,9 @@ type Coordinator struct {
 	imap  map[string]*IMAPWorker // keyed by email
 	smtp  map[string]*SMTPWorker // keyed by email
 	creds map[string]*auth.Credentials
+	// connectMu serializes lazy worker creation per account without blocking
+	// independent accounts from connecting concurrently.
+	connectMu map[string]*sync.Mutex
 
 	// syncInFlight tracks coalesced per-folder recovery syncs, keyed by
 	// account+"\x00"+folder, so a burst of stale-UID errors starts one sync.
@@ -45,6 +49,7 @@ func NewCoordinator(cfg config.Config, store *cache.SQLiteStore) *Coordinator {
 		imap:         make(map[string]*IMAPWorker),
 		smtp:         make(map[string]*SMTPWorker),
 		creds:        make(map[string]*auth.Credentials),
+		connectMu:    make(map[string]*sync.Mutex),
 		syncInFlight: make(map[string]bool),
 	}
 }
@@ -59,19 +64,47 @@ func (c *Coordinator) SetProgram(p *tea.Program) {
 func (c *Coordinator) ResolveCredentials() []error {
 	var errs []error
 	for _, acct := range c.cfg.Accounts {
-		resolver := auth.NewResolver(acct)
-		creds, err := resolver.Resolve(acct)
-		if err != nil {
+		if err := c.ensureCredentials(acct); err != nil {
 			logging.Error("auth", "credential resolution failed", logging.Acct(acct.Email), logging.Err(err))
 			errs = append(errs, fmt.Errorf("%s: %w", acct.Email, err))
-			continue
 		}
-		logging.Debug("auth", "credentials resolved", logging.Acct(acct.Email))
-		c.mu.Lock()
-		c.creds[acct.Email] = creds
-		c.mu.Unlock()
 	}
 	return errs
+}
+
+// ensureCredentials resolves one account lazily. This lets standalone MCP
+// writes establish their own worker without requiring a sync first.
+func (c *Coordinator) ensureCredentials(acct config.AccountConfig) error {
+	c.mu.Lock()
+	creds := c.creds[acct.Email]
+	if creds != nil {
+		c.mu.Unlock()
+		return nil
+	}
+
+	// Hold the coordinator lock through resolution so concurrent first writes
+	// cannot prompt for or resolve the same account credentials repeatedly.
+	resolver := auth.NewResolver(acct)
+	resolved, err := resolver.Resolve(acct)
+	if err != nil {
+		c.mu.Unlock()
+		return err
+	}
+	logging.Debug("auth", "credentials resolved", logging.Acct(acct.Email))
+	c.creds[acct.Email] = resolved
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *Coordinator) accountConnectMutex(account string) *sync.Mutex {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	mu := c.connectMu[account]
+	if mu == nil {
+		mu = &sync.Mutex{}
+		c.connectMu[account] = mu
+	}
+	return mu
 }
 
 // SyncAll returns a tea.Cmd that syncs all accounts concurrently.
@@ -257,10 +290,16 @@ func (c *Coordinator) MarkRead(acctEmail, folder string, uid uint32) tea.Cmd {
 			return nil
 		}
 
-		w := c.getIMAPWorker(acctEmail)
-		if w == nil {
-			logging.Warn("mark_read", "no IMAP worker", logging.Acct(acctEmail), logging.Fld(folder), logging.MsgUID(uid))
-			c.store.FailOp(opID, "no IMAP worker")
+		acct, ok := c.accountByEmail(acctEmail)
+		if !ok {
+			err := fmt.Errorf("no such account: %s", acctEmail)
+			c.store.FailOp(opID, err.Error())
+			return nil
+		}
+		w, err := c.ensureIMAPWorkerForWrite(acct)
+		if err != nil {
+			logging.Warn("mark_read", "IMAP worker unavailable", logging.Acct(acctEmail), logging.Fld(folder), logging.MsgUID(uid), logging.Err(err))
+			c.store.FailOp(opID, err.Error())
 			return nil
 		}
 		if err := w.MarkRead(folder, uid); err != nil {
@@ -468,15 +507,21 @@ func (c *Coordinator) DeleteMessages(acctEmail, folder string, uids []uint32) te
 			return DeleteResult{Account: acctEmail, Folder: folder}
 		}
 
-		w := c.getIMAPWorker(acctEmail)
-		if w == nil {
-			logging.Error("delete", "no IMAP worker", logging.Acct(acctEmail), logging.Fld(folder))
-			c.store.FailOp(opID, fmt.Sprintf("no IMAP worker for %s", acctEmail))
+		acct, ok := c.accountByEmail(acctEmail)
+		if !ok {
+			err := fmt.Errorf("no such account: %s", acctEmail)
+			c.store.FailOp(opID, err.Error())
 			return DeleteResult{
 				Account: acctEmail,
 				Folder:  folder,
-				Err:     fmt.Errorf("no IMAP worker for %s", acctEmail),
+				Err:     err,
 			}
+		}
+		w, err := c.ensureIMAPWorkerForWrite(acct)
+		if err != nil {
+			logging.Error("delete", "IMAP worker unavailable", logging.Acct(acctEmail), logging.Fld(folder), logging.Err(err))
+			c.store.FailOp(opID, err.Error())
+			return DeleteResult{Account: acctEmail, Folder: folder, Err: err}
 		}
 
 		var onProgress func(done, total int)
@@ -490,7 +535,7 @@ func (c *Coordinator) DeleteMessages(acctEmail, folder string, uids []uint32) te
 				})
 			}
 		}
-		err := w.MoveToTrashBatch(folder, uids, onProgress)
+		err = w.MoveToTrashBatch(folder, uids, onProgress)
 		if err != nil {
 			logging.Error("delete", "batch delete failed", logging.Acct(acctEmail), logging.Fld(folder), logging.KV("count", len(uids)), logging.Dur(time.Since(start)), logging.Err(err))
 			c.store.FailOp(opID, err.Error())
@@ -664,10 +709,37 @@ func (c *Coordinator) RestoreFromTrash(acctEmail string, uids []uint32, dstFolde
 // RetryPendingOps retries any pending or failed operations from the queue.
 func (c *Coordinator) RetryPendingOps() tea.Cmd {
 	return func() tea.Msg {
-		ops := c.store.PendingOps()
-		if len(ops) > 0 {
-			logging.Info("retry", "retrying pending ops", logging.KV("count", len(ops)))
+		ops := c.store.RetryableOps()
+		if len(ops) == 0 {
+			return nil
 		}
+		logging.Info("retry", "retrying pending ops", logging.KV("count", len(ops)))
+
+		imapWorkers := make(map[string]*IMAPWorker)
+		imapErrors := make(map[string]error)
+		getIMAP := func(account string) (*IMAPWorker, error) {
+			if w, ok := imapWorkers[account]; ok {
+				return w, nil
+			}
+			if err, ok := imapErrors[account]; ok {
+				return nil, err
+			}
+			acct, ok := c.accountByEmail(account)
+			if !ok {
+				err := fmt.Errorf("no such account: %s", account)
+				imapErrors[account] = err
+				return nil, err
+			}
+			w, err := c.ensureIMAPWorker(acct)
+			if err != nil {
+				imapErrors[account] = err
+				return nil, err
+			}
+			imapWorkers[account] = w
+			return w, nil
+		}
+
+		markReadBatches := make(map[string]map[string]*markReadBatch)
 		for _, op := range ops {
 			if !c.store.StartOp(op.ID) {
 				continue // claimed by another drainer in the meantime
@@ -680,12 +752,12 @@ func (c *Coordinator) RetryPendingOps() tea.Cmd {
 					c.store.FailOp(op.ID, "bad payload: "+e.Error())
 					continue
 				}
-				w := c.getIMAPWorker(op.Account)
-				if w == nil {
-					c.store.FailOp(op.ID, "no IMAP worker")
-					continue
+				w, workerErr := getIMAP(op.Account)
+				if workerErr != nil {
+					err = workerErr
+				} else {
+					err = w.MoveToTrashBatch(op.Folder, payload.UIDs, nil)
 				}
-				err = w.MoveToTrashBatch(op.Folder, payload.UIDs, nil)
 				if err == nil {
 					c.store.ClearPendingDeletes(op.Account, op.Folder, payload.UIDs)
 				}
@@ -696,10 +768,10 @@ func (c *Coordinator) RetryPendingOps() tea.Cmd {
 					c.store.FailOp(op.ID, "bad payload: "+e.Error())
 					continue
 				}
-				smtpW := c.getSMTPWorker(op.Account)
-				if smtpW == nil {
-					c.store.FailOp(op.ID, "no SMTP worker")
-					continue
+				smtpW, workerErr := c.ensureSMTPWorker(op.Account)
+				if workerErr != nil {
+					err = workerErr
+					break
 				}
 				_, sentMsg, sendErr := smtpW.Send(SendRequest{
 					From: payload.From, To: payload.To,
@@ -708,7 +780,7 @@ func (c *Coordinator) RetryPendingOps() tea.Cmd {
 				if sendErr != nil {
 					err = sendErr
 				} else {
-					imapW := c.getIMAPWorker(op.Account)
+					imapW, _ := getIMAP(op.Account)
 					if imapW != nil && sentMsg != nil {
 						imapW.AppendToFolder("Sent", sentMsg, nil)
 					}
@@ -720,14 +792,22 @@ func (c *Coordinator) RetryPendingOps() tea.Cmd {
 					c.store.FailOp(op.ID, "bad payload: "+e.Error())
 					continue
 				}
-				w := c.getIMAPWorker(op.Account)
-				if w == nil {
-					c.store.FailOp(op.ID, "no IMAP worker")
-					continue
+				byFolder := markReadBatches[op.Account]
+				if byFolder == nil {
+					byFolder = make(map[string]*markReadBatch)
+					markReadBatches[op.Account] = byFolder
 				}
-				// Propagate the batch error so a failed mark-read stays
-				// retryable instead of being silently completed.
-				err = w.MarkReadBatch(op.Folder, payload.UIDs)
+				batch := byFolder[op.Folder]
+				if batch == nil {
+					batch = &markReadBatch{}
+					byFolder[op.Folder] = batch
+				}
+				batch.uids = append(batch.uids, payload.UIDs...)
+				batch.opIDs = append(batch.opIDs, op.ID)
+				continue
+
+			default:
+				err = fmt.Errorf("unsupported queued op type %q", op.Type)
 			}
 
 			if err != nil {
@@ -736,6 +816,19 @@ func (c *Coordinator) RetryPendingOps() tea.Cmd {
 			} else {
 				c.store.CompleteOp(op.ID)
 			}
+		}
+
+		for account, byFolder := range markReadBatches {
+			w, err := getIMAP(account)
+			if err != nil {
+				for _, batch := range byFolder {
+					for _, id := range batch.opIDs {
+						c.store.FailOp(id, err.Error())
+					}
+				}
+				continue
+			}
+			retryMarkReadBatches(c.store, account, byFolder, w.MarkReadBatch)
 		}
 		return nil
 	}
@@ -771,15 +864,30 @@ func retryMarkReadBatches(store *cache.SQLiteStore, acctEmail string, batches ma
 // reusing the existing connection when possible instead of tearing down every
 // cycle (avoids exhausting server connection limits).
 func (c *Coordinator) ensureIMAPWorker(acct config.AccountConfig) (*IMAPWorker, error) {
+	return c.ensureIMAPWorkerMode(acct, true)
+}
+
+// ensureIMAPWorkerForWrite avoids a PING round trip before every individual
+// queued write. The write itself reports connection loss and remains
+// retryable; first-use connection creation is still serialized per account.
+func (c *Coordinator) ensureIMAPWorkerForWrite(acct config.AccountConfig) (*IMAPWorker, error) {
+	return c.ensureIMAPWorkerMode(acct, false)
+}
+
+func (c *Coordinator) ensureIMAPWorkerMode(acct config.AccountConfig, healthCheck bool) (*IMAPWorker, error) {
+	connectMu := c.accountConnectMutex(acct.Email)
+	connectMu.Lock()
+	defer connectMu.Unlock()
+
+	if err := c.ensureCredentials(acct); err != nil {
+		return nil, fmt.Errorf("resolve credentials: %w", err)
+	}
 	c.mu.Lock()
 	creds := c.creds[acct.Email]
 	existing := c.imap[acct.Email]
 	c.mu.Unlock()
-	if creds == nil {
-		return nil, fmt.Errorf("no credentials resolved")
-	}
 
-	if existing != nil && existing.Ping() {
+	if existing != nil && (!healthCheck || existing.Ping()) {
 		logging.Debug("connect", "reusing healthy IMAP connection", logging.Acct(acct.Email))
 		return existing, nil
 	}
@@ -810,6 +918,10 @@ func (c *Coordinator) ensureIMAPWorker(acct config.AccountConfig) (*IMAPWorker, 
 // ensureSMTPWorker returns an SMTP worker for the account, creating one if
 // the coordinator has not synced yet (the sync path normally creates it).
 func (c *Coordinator) ensureSMTPWorker(acctEmail string) (*SMTPWorker, error) {
+	connectMu := c.accountConnectMutex(acctEmail)
+	connectMu.Lock()
+	defer connectMu.Unlock()
+
 	if w := c.getSMTPWorker(acctEmail); w != nil {
 		return w, nil
 	}
@@ -819,6 +931,9 @@ func (c *Coordinator) ensureSMTPWorker(acctEmail string) (*SMTPWorker, error) {
 	}
 	if acct.SMTPHost == "" {
 		return nil, fmt.Errorf("no SMTP host configured for %s", acctEmail)
+	}
+	if err := c.ensureCredentials(acct); err != nil {
+		return nil, fmt.Errorf("resolve credentials: %w", err)
 	}
 	c.mu.Lock()
 	creds := c.creds[acctEmail]
@@ -867,6 +982,10 @@ func (c *Coordinator) accountByEmail(acctEmail string) (config.AccountConfig, bo
 	return config.AccountConfig{}, false
 }
 
+// ErrSyncLocked reports that another process currently owns the account sync.
+// Callers must not treat this as a successful zero-message sync.
+var ErrSyncLocked = errors.New("account sync is locked by another process")
+
 // SyncAccountNow synchronously connects (if needed), drains the account's
 // queued ops, and syncs all its folders, returning the number of newly
 // fetched messages. For callers without a bubbletea loop (the MCP server).
@@ -888,7 +1007,7 @@ func (c *Coordinator) SyncFolderNow(acctEmail, folder string) (int, error) {
 	}
 	release, lockOK := c.store.TryAcquireSyncLock(acctEmail)
 	if !lockOK {
-		return 0, fmt.Errorf("account %s is being synced by another process — try again shortly", acctEmail)
+		return 0, fmt.Errorf("%w: %s — try again shortly", ErrSyncLocked, acctEmail)
 	}
 	defer release()
 
@@ -912,8 +1031,8 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig) (int, error) {
 	// lock holder is refreshing the same account.
 	release, ok := c.store.TryAcquireSyncLock(acct.Email)
 	if !ok {
-		logging.Info("sync", "account sync locked by another process, skipping", logging.Acct(acct.Email))
-		return 0, nil
+		logging.Info("sync", "account sync locked by another process", logging.Acct(acct.Email))
+		return 0, fmt.Errorf("%w: %s — try again shortly", ErrSyncLocked, acct.Email)
 	}
 	defer release()
 
@@ -930,7 +1049,7 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig) (int, error) {
 		if op.Account != acct.Email {
 			continue
 		}
-		if !c.store.StartOp(op.ID) {
+		if !c.store.StartOpNow(op.ID) {
 			continue // claimed by another drainer in the meantime
 		}
 		switch op.Type {

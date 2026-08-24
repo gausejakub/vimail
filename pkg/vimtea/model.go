@@ -88,6 +88,13 @@ type editorModel struct {
 
 	countPrefix int // Numeric prefix for commands like "10j"
 
+	// insertUndoSaved is true once the current insert session has an
+	// undo snapshot. A whole insert session (entry through esc) forms a
+	// single undo unit, as in Vim; commands that snapshot before
+	// entering insert mode (c, cc, C, o, O, s) set it so the first
+	// typed character does not push a second state.
+	insertUndoSaved bool
+
 	// Pending action state (for f/F/t/T/r and operator+find combos)
 	pendingAction  string // "f","F","t","T","r","df","dF","dt","dT","cf",... or ""
 	lastFindChar   byte   // last char used in f/F/t/T (for ;/,)

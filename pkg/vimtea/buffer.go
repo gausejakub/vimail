@@ -375,6 +375,86 @@ func (b *buffer) getRange(start, end Cursor) string {
 	return result.String()
 }
 
+// getCharRange returns the text in [start, end) where end is EXCLUSIVE.
+// Positions use a flat-text model: Col == len(line) addresses the line
+// break after that line, so a range ending at (row+1, 0) includes the
+// newline of row. This is the natural coordinate system for Vim's
+// exclusive motions; the older getRange/deleteRange pair is inclusive
+// and remains in use for visual-mode selections.
+func (b *buffer) getCharRange(start, end Cursor) string {
+	if end.Row < start.Row || (end.Row == start.Row && end.Col < start.Col) {
+		start, end = end, start
+	}
+
+	if start.Row == end.Row {
+		line := b.Line(start.Row)
+		s := min(start.Col, len(line))
+		e := min(end.Col, len(line))
+		if s >= e {
+			return ""
+		}
+		return line[s:e]
+	}
+
+	var sb strings.Builder
+	first := b.Line(start.Row)
+	sb.WriteString(first[min(start.Col, len(first)):])
+	sb.WriteString("\n")
+	for i := start.Row + 1; i < end.Row && i < b.lineCount(); i++ {
+		sb.WriteString(b.Line(i))
+		sb.WriteString("\n")
+	}
+	if end.Row < b.lineCount() {
+		last := b.Line(end.Row)
+		sb.WriteString(last[:min(end.Col, len(last))])
+	}
+	return sb.String()
+}
+
+// deleteCharRange removes the text in [start, end) (end EXCLUSIVE, same
+// coordinate model as getCharRange) and returns the deleted text.
+func (b *buffer) deleteCharRange(start, end Cursor) string {
+	if end.Row < start.Row || (end.Row == start.Row && end.Col < start.Col) {
+		start, end = end, start
+	}
+
+	deleted := b.getCharRange(start, end)
+
+	if start.Row == end.Row {
+		line := b.Line(start.Row)
+		s := min(start.Col, len(line))
+		e := min(end.Col, len(line))
+		b.setLine(start.Row, line[:s]+line[e:])
+		return deleted
+	}
+
+	endRow := min(end.Row, b.lineCount()-1)
+	first := b.Line(start.Row)
+	tail := ""
+	if end.Row < b.lineCount() {
+		last := b.Line(end.Row)
+		tail = last[min(end.Col, len(last)):]
+	}
+	b.setLine(start.Row, first[:min(start.Col, len(first))]+tail)
+	for range endRow - start.Row {
+		b.deleteLine(start.Row + 1)
+	}
+	return deleted
+}
+
+// advancePos moves a position one character forward in the flat-text
+// model (the newline counts as one character at Col == len(line)).
+// Used to convert an inclusive motion endpoint into an exclusive one.
+func (b *buffer) advancePos(p Cursor) Cursor {
+	if p.Col < b.lineLength(p.Row) {
+		return Cursor{Row: p.Row, Col: p.Col + 1}
+	}
+	if p.Row < b.lineCount()-1 {
+		return Cursor{Row: p.Row + 1, Col: 0}
+	}
+	return Cursor{Row: p.Row, Col: b.lineLength(p.Row)}
+}
+
 // joinLines concatenates two lines, removing the line break between them
 func (b *buffer) joinLines(row, nextRow int) {
 	if row < 0 || nextRow >= len(b.lines) || row >= nextRow {

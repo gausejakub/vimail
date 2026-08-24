@@ -46,11 +46,15 @@ func joinLinesNoSpace(m *editorModel) tea.Cmd {
 // substituteChar deletes char at cursor and enters insert mode (s).
 func substituteChar(m *editorModel) tea.Cmd {
 	line := m.buffer.Line(m.cursor.Row)
+	saved := false
 	if len(line) > 0 && m.cursor.Col < len(line) {
 		m.buffer.saveUndoState(m.cursor)
 		m.buffer.setLine(m.cursor.Row, line[:m.cursor.Col]+line[m.cursor.Col+1:])
+		saved = true
 	}
-	return switchMode(m, ModeInsert)
+	cmd := switchMode(m, ModeInsert)
+	m.insertUndoSaved = saved
+	return cmd
 }
 
 // substituteLine clears the line and enters insert mode (S).
@@ -233,7 +237,7 @@ func insertDeleteWord(m *editorModel) tea.Cmd {
 	if m.cursor.Col == 0 {
 		return nil
 	}
-	m.buffer.saveUndoState(m.cursor)
+	saveInsertUndo(m)
 	line := m.buffer.Line(m.cursor.Row)
 	col := m.cursor.Col
 	// Skip whitespace backward

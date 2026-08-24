@@ -300,6 +300,55 @@ func (s *SQLiteStore) MarkRead(acctEmail, folder, id string) {
 	s.syncReadAcrossFolders(acctEmail, folderID, id)
 }
 
+// MarkReadUIDs marks a batch read in one transaction and cascades the state
+// to label copies that share a Message-ID.
+func (s *SQLiteStore) MarkReadUIDs(acctEmail, folder string, uids []uint32) error {
+	if len(uids) == 0 {
+		return nil
+	}
+	var folderID int
+	if err := s.db.QueryRow(`SELECT id FROM folders WHERE account = ? AND name = ?`, acctEmail, folder).Scan(&folderID); err != nil {
+		return fmt.Errorf("folder %q not found for %s: %w", folder, acctEmail, err)
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	findMessageID, err := tx.Prepare(`SELECT message_id FROM messages WHERE folder_id = ? AND uid = ?`)
+	if err != nil {
+		return err
+	}
+	defer findMessageID.Close()
+	markOne, err := tx.Prepare(`UPDATE messages SET unread = 0 WHERE folder_id = ? AND uid = ?`)
+	if err != nil {
+		return err
+	}
+	defer markOne.Close()
+	markCopies, err := tx.Prepare(`UPDATE messages SET unread = 0 WHERE message_id = ? AND folder_id IN (SELECT id FROM folders WHERE account = ?)`)
+	if err != nil {
+		return err
+	}
+	defer markCopies.Close()
+
+	for _, uid := range uids {
+		var messageID string
+		if err := findMessageID.QueryRow(folderID, uid).Scan(&messageID); err != nil {
+			return fmt.Errorf("message %d not found in %s/%s: %w", uid, acctEmail, folder, err)
+		}
+		if _, err := markOne.Exec(folderID, uid); err != nil {
+			return err
+		}
+		if messageID != "" {
+			if _, err := markCopies.Exec(messageID, acctEmail); err != nil {
+				return err
+			}
+		}
+	}
+	return tx.Commit()
+}
+
 // syncReadAcrossFolders marks copies of the same message as read in other folders.
 // Gmail uses labels, so the same message appears in multiple folders with different UIDs.
 func (s *SQLiteStore) syncReadAcrossFolders(acctEmail string, folderID int, uid string) {

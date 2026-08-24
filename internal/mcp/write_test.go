@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"testing"
 	"time"
@@ -79,6 +80,9 @@ func TestMarkReadCacheAndQueue(t *testing.T) {
 	// UID 3 is the unread seeded message.
 	var out markReadResult
 	call(t, session, "mark_read", map[string]any{"folder": "Inbox", "uid": 3}, &out)
+	if out.UID != 3 || out.Count != 1 || len(out.UIDs) != 1 || out.UIDs[0] != 3 {
+		t.Errorf("single mark_read result = %+v, want UID 3 / count 1", out)
+	}
 
 	m, _, ok := store.MessageByUID(testAcct, "Inbox", 3)
 	if !ok || m.Unread {
@@ -93,6 +97,58 @@ func TestMarkReadCacheAndQueue(t *testing.T) {
 	}
 
 	expectToolError(t, session, "mark_read", map[string]any{"folder": "Inbox", "uid": 999})
+}
+
+func TestMarkReadBulkUsesOneQueuedOperation(t *testing.T) {
+	store := seededStore(t)
+	for _, uid := range []uint32{2, 4} {
+		msg, _, _ := store.MessageByUID(testAcct, "Inbox", uid)
+		msg.Unread = true
+		if err := store.UpsertMessage(testAcct, "Inbox", msg); err != nil {
+			t.Fatalf("make UID %d unread: %v", uid, err)
+		}
+	}
+	session := connect(t, store)
+
+	var out markReadResult
+	call(t, session, "mark_read", map[string]any{"folder": "Inbox", "uids": []uint32{2, 3, 4, 3}}, &out)
+	if out.Count != 3 || len(out.UIDs) != 3 {
+		t.Fatalf("bulk result = %+v, want 3 deduplicated UIDs", out)
+	}
+	for _, uid := range []uint32{2, 3, 4} {
+		msg, _, ok := store.MessageByUID(testAcct, "Inbox", uid)
+		if !ok || msg.Unread {
+			t.Errorf("UID %d after bulk mark_read = found %v unread %v, want read", uid, ok, msg.Unread)
+		}
+	}
+
+	ops := store.RecentOps(10)
+	if len(ops) != 1 || ops[0].Type != cache.OpMarkRead {
+		t.Fatalf("queue = %+v, want one mark_read op", ops)
+	}
+	var payload cache.MarkReadPayload
+	if err := json.Unmarshal(ops[0].Payload, &payload); err != nil {
+		t.Fatalf("decode queued payload: %v", err)
+	}
+	if len(payload.UIDs) != 3 {
+		t.Fatalf("queued UIDs = %v, want one 3-UID payload", payload.UIDs)
+	}
+}
+
+func TestMarkReadBulkValidatesBeforeMutation(t *testing.T) {
+	store := seededStore(t)
+	session := connect(t, store)
+	expectToolError(t, session, "mark_read", map[string]any{"folder": "Inbox", "uids": []uint32{3, 999}})
+
+	msg, _, ok := store.MessageByUID(testAcct, "Inbox", 3)
+	if !ok || !msg.Unread {
+		t.Fatal("valid UID was mutated before the invalid batch member failed")
+	}
+	if ops := store.RecentOps(10); len(ops) != 0 {
+		t.Fatalf("invalid batch queued ops: %+v", ops)
+	}
+	expectToolError(t, session, "mark_read", map[string]any{"folder": "Inbox", "uid": 3, "uids": []uint32{3}})
+	expectToolError(t, session, "mark_read", map[string]any{"folder": "Inbox", "uids": []uint32{}})
 }
 
 func TestDeleteMessageMovesToTrashOnly(t *testing.T) {
@@ -119,6 +175,37 @@ func TestDeleteMessageMovesToTrashOnly(t *testing.T) {
 	expectToolError(t, session, "delete_message", map[string]any{"folder": "Trash", "uid": 1})
 	expectToolError(t, session, "delete_message", map[string]any{"folder": "Drafts", "uid": 1})
 	expectToolError(t, session, "delete_message", map[string]any{"folder": "Inbox", "uid": 999})
+}
+
+func TestDeleteMessageBulkUsesOneQueuedOperation(t *testing.T) {
+	store := seededStore(t)
+	session := connect(t, store)
+
+	var out deleteMessageResult
+	call(t, session, "delete_message", map[string]any{"folder": "Inbox", "uids": []uint32{1, 2, 1}}, &out)
+	if out.Count != 2 || len(out.UIDs) != 2 {
+		t.Fatalf("bulk delete result = %+v, want 2 deduplicated UIDs", out)
+	}
+	for _, uid := range []uint32{1, 2} {
+		if _, _, ok := store.MessageByUID(testAcct, "Inbox", uid); ok {
+			t.Errorf("UID %d remains in cache after bulk delete", uid)
+		}
+	}
+	tombstones := store.PendingDeletes()
+	if len(tombstones) != 1 || len(tombstones[0].UIDs) != 2 {
+		t.Fatalf("tombstones = %+v, want one 2-UID group", tombstones)
+	}
+	ops := store.RecentOps(10)
+	if len(ops) != 1 || ops[0].Type != cache.OpDelete {
+		t.Fatalf("queue = %+v, want one delete op", ops)
+	}
+	var payload cache.DeletePayload
+	if err := json.Unmarshal(ops[0].Payload, &payload); err != nil {
+		t.Fatalf("decode queued payload: %v", err)
+	}
+	if len(payload.UIDs) != 2 {
+		t.Fatalf("queued UIDs = %v, want one 2-UID payload", payload.UIDs)
+	}
 }
 
 func TestSyncToolReportsFailureCleanly(t *testing.T) {

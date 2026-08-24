@@ -44,18 +44,24 @@ func (m *editorModel) handleSearchInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
-// searchNext finds the next occurrence of the search pattern from cursor.
+// searchNext finds the next occurrence of the search pattern after the
+// cursor, wrapping through the end of the document and back through the
+// part of the cursor's own line before the cursor ('wrapscan').
 func searchNext(m *editorModel) {
 	if m.searchPattern == "" {
 		return
 	}
 
-	// Start searching from position after cursor
 	row := m.cursor.Row
 	col := m.cursor.Col + 1
+	lineCount := m.buffer.lineCount()
 
-	for i := 0; i < m.buffer.lineCount(); i++ {
-		lineIdx := (row + i) % m.buffer.lineCount()
+	// One extra iteration revisits the starting line after the wrap so a
+	// match earlier on the same line is found too. If the only match is
+	// the one under the cursor, the search lands on it again (Vim's
+	// wrapscan behaves the same way).
+	for i := 0; i <= lineCount; i++ {
+		lineIdx := (row + i) % lineCount
 		line := m.buffer.Line(lineIdx)
 
 		startCol := 0
@@ -63,7 +69,7 @@ func searchNext(m *editorModel) {
 			startCol = col
 		}
 
-		if startCol < len(line) {
+		if startCol <= len(line) {
 			idx := strings.Index(line[startCol:], m.searchPattern)
 			if idx >= 0 {
 				m.cursor.Row = lineIdx
@@ -78,7 +84,10 @@ func searchNext(m *editorModel) {
 	m.statusMessage = "Pattern not found: " + m.searchPattern
 }
 
-// searchPrev finds the previous occurrence of the search pattern from cursor.
+// searchPrev finds the closest occurrence of the search pattern that
+// starts before the cursor, wrapping through the start of the document.
+// A match may extend up to or past the cursor position: ?abc with the
+// cursor on the trailing c of "abc" finds that occurrence.
 func searchPrev(m *editorModel) {
 	if m.searchPattern == "" {
 		return
@@ -86,21 +95,33 @@ func searchPrev(m *editorModel) {
 
 	row := m.cursor.Row
 	col := m.cursor.Col
+	lineCount := m.buffer.lineCount()
 
-	for i := 0; i < m.buffer.lineCount(); i++ {
-		lineIdx := (row - i + m.buffer.lineCount()) % m.buffer.lineCount()
+	for i := 0; i <= lineCount; i++ {
+		lineIdx := (row - i%lineCount + lineCount) % lineCount
 		line := m.buffer.Line(lineIdx)
 
-		searchIn := line
-		if i == 0 {
-			if col > 0 {
-				searchIn = line[:col]
-			} else {
+		var idx int
+		switch {
+		case i == 0:
+			// Matches must START before the cursor, but may extend to or
+			// beyond it, so the slice keeps len(pattern)-1 extra bytes.
+			if col == 0 {
 				continue
 			}
+			limit := min(len(line), col+len(m.searchPattern)-1)
+			idx = strings.LastIndex(line[:limit], m.searchPattern)
+		case i == lineCount:
+			// Full wrap back to the starting line: only matches at or
+			// after the cursor remain candidates here.
+			idx = strings.LastIndex(line, m.searchPattern)
+			if idx < col {
+				idx = -1
+			}
+		default:
+			idx = strings.LastIndex(line, m.searchPattern)
 		}
 
-		idx := strings.LastIndex(searchIn, m.searchPattern)
 		if idx >= 0 {
 			m.cursor.Row = lineIdx
 			m.cursor.Col = idx
@@ -111,6 +132,19 @@ func searchPrev(m *editorModel) {
 		}
 	}
 	m.statusMessage = "Pattern not found: " + m.searchPattern
+}
+
+// repeatSearch steps to the next match in the direction of the original
+// search (n) or against it (N), per Vim's n/N semantics.
+func repeatSearch(m *editorModel, sameDirection bool) {
+	if m.searchPattern == "" {
+		return
+	}
+	if m.searchForward == sameDirection {
+		searchNext(m)
+	} else {
+		searchPrev(m)
+	}
 }
 
 // registerSearchBindings registers /, ?, n, N bindings.
@@ -130,18 +164,12 @@ func registerSearchBindings(m *editorModel) {
 	}, ModeNormal, "Search backward")
 
 	m.registry.Add("n", func(model *editorModel) tea.Cmd {
-		if model.searchPattern == "" {
-			return nil
-		}
-		searchNext(model)
+		repeatSearch(model, true)
 		return nil
-	}, ModeNormal, "Next search result")
+	}, ModeNormal, "Repeat search")
 
 	m.registry.Add("N", func(model *editorModel) tea.Cmd {
-		if model.searchPattern == "" {
-			return nil
-		}
-		searchPrev(model)
+		repeatSearch(model, false)
 		return nil
-	}, ModeNormal, "Previous search result")
+	}, ModeNormal, "Repeat search backward")
 }

@@ -286,6 +286,31 @@ Any tool that accepts a prompt as an argument and prints the response to stdout 
 - [aichat](https://github.com/sigoden/aichat) — `aichat -m <model>`
 - [mods](https://github.com/charmbracelet/mods) — `mods`
 
+## MCP server (AI clients)
+
+`vimail mcp` runs a [Model Context Protocol](https://modelcontextprotocol.io) server on stdio, so local AI clients (Claude Code, Claude Desktop) can work with your email through vimail's cache and offline queue. Point your client at the binary:
+
+```json
+{
+  "mcpServers": {
+    "vmail": { "command": "vimail", "args": ["mcp"] }
+  }
+}
+```
+
+Reads (`list_accounts`, `list_folders`, `list_messages`, `read_message`, `search_messages`) are served from the local cache. Writes (`save_draft`, `delete_draft`, `mark_read`, `delete_message`) update the cache immediately and queue the server-side operation; `delete_message` only ever moves to Trash — permanent deletion stays in the TUI. The `sync` tool refreshes an account or folder on demand and delivers queued writes. The MCP server is safe to run alongside the TUI: queued operations are claimed exactly once and account syncs are serialized across processes.
+
+Sending email is **disabled by default**. Any connected MCP client can act as you, so outbound mail requires an explicit opt-in in `~/.config/vimail/config.toml`:
+
+```toml
+[mcp]
+allow_send = false   # set to true to expose the send_email tool
+```
+
+With `allow_send = true`, `send_email` sends via the account's SMTP server and archives to Sent. When it is false (or the section is absent), the tool is not registered at all — clients never see it.
+
+The MCP process logs to `~/.local/share/vimail/vimail-mcp.log`.
+
 ## Logs
 
 vimail writes structured JSON logs to `~/.local/share/vimail/vimail.log`. Every background operation (sync, fetch, send, delete, mark-read), user action, and error is logged with full context (account, folder, UID, duration).

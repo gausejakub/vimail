@@ -51,6 +51,11 @@ func New(cfg config.Config, store *cache.SQLiteStore, coord *worker.Coordinator)
 	}
 	s.registerReadTools()
 	s.registerWriteTools()
+	// Outbound mail is opt-in: without [mcp] allow_send = true the
+	// send_email tool is never registered, so clients cannot see it.
+	if cfg.MCP.AllowSend {
+		s.registerSendTool()
+	}
 	return s
 }
 

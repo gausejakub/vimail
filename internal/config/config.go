@@ -61,11 +61,20 @@ type AIConfig struct {
 	Agents  []AIAgentConfig `toml:"agents"`
 }
 
+// MCPConfig controls the `vimail mcp` server. Sending is opt-in: any
+// connected MCP client can act as the user, so outbound mail requires an
+// explicit allow_send = true. When false (the default, and when the section
+// is absent) the send_email tool is not registered at all.
+type MCPConfig struct {
+	AllowSend bool `toml:"allow_send"`
+}
+
 type Config struct {
 	General  GeneralConfig   `toml:"general"`
 	Accounts []AccountConfig `toml:"accounts"`
 	Theme    ThemeConfig     `toml:"theme"`
 	AI       AIConfig        `toml:"ai"`
+	MCP      MCPConfig       `toml:"mcp"`
 }
 
 func DefaultConfig() Config {

@@ -10,9 +10,9 @@ import (
 type OpType string
 
 const (
-	OpDelete    OpType = "delete"
-	OpSend      OpType = "send"
-	OpMarkRead  OpType = "mark_read"
+	OpDelete   OpType = "delete"
+	OpSend     OpType = "send"
+	OpMarkRead OpType = "mark_read"
 )
 
 // OpStatus tracks the lifecycle of a queued operation.
@@ -94,11 +94,13 @@ func (s *SQLiteStore) FailOp(id int64, errMsg string) {
 		string(OpFailed), errMsg, now, id)
 }
 
-// PendingOps returns all operations that are pending or running (need retry).
+// PendingOps returns all operations that still need execution: pending,
+// running (interrupted by a crash), and failed (eligible for retry on
+// reconnect). Failed ops stay retryable until CleanupOldOps ages them out.
 func (s *SQLiteStore) PendingOps() []QueuedOp {
 	return s.queryOps(`SELECT id, type, status, account, folder, payload, error, created_at, updated_at
-		FROM pending_ops WHERE status IN (?, ?) ORDER BY created_at`,
-		string(OpPending), string(OpRunning))
+		FROM pending_ops WHERE status IN (?, ?, ?) ORDER BY created_at`,
+		string(OpPending), string(OpRunning), string(OpFailed))
 }
 
 // RecentOps returns the most recent operations (for the :ops log view).

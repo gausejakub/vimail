@@ -27,6 +27,24 @@ jobs:
       - name: Verify go.sum
         run: go mod verify
 
+      # pkg/vimtea is a nested Go module: the root go build/vet/test
+      # commands stop at its module boundary, so it gets explicit steps.
+      - name: Build vimtea
+        working-directory: pkg/vimtea
+        run: go build ./...
+
+      - name: Vet vimtea
+        working-directory: pkg/vimtea
+        run: go vet ./...
+
+      - name: Test vimtea
+        working-directory: pkg/vimtea
+        run: go test ./...
+
+      - name: Verify vimtea go.sum
+        working-directory: pkg/vimtea
+        run: go mod verify
+
   security:
     runs-on: ubuntu-latest
     steps:
@@ -39,3 +57,7 @@ jobs:
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
+
+      - name: govulncheck vimtea
+        working-directory: pkg/vimtea
+        run: govulncheck ./...

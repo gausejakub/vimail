@@ -229,10 +229,12 @@ func TestWORDMotions(t *testing.T) {
 			row:     0, col: 10,
 		},
 		{
+			// From the "x" of "qux" (col 14), B lands on the start of
+			// the WORD under the cursor: "qux" at zero-based col 12.
 			name:    "B moves to previous WORD",
 			content: "foo bar.baz qux",
 			keys:    []string{"$", "B"},
-			row:     0, col: 4,
+			row:     0, col: 12,
 		},
 	}
 
@@ -512,10 +514,12 @@ func TestYankAndPaste(t *testing.T) {
 		assertText(t, m, "line1\nline1\nline2")
 	})
 
-	t.Run("dd followed by p puts deleted line back", func(t *testing.T) {
+	t.Run("dd followed by p pastes deleted line below", func(t *testing.T) {
 		m := testEditor("line1\nline2\nline3")
+		// After jdd the cursor sits on "line3"; p pastes the deleted
+		// "line2" BELOW it, as in Vim: line1, line3, line2.
 		sendKeys(m, "j", "d", "d", "p")
-		assertText(t, m, "line1\nline2\nline3")
+		assertText(t, m, "line1\nline3\nline2")
 	})
 }
 
@@ -1061,11 +1065,11 @@ func TestScenarioSwapWords(t *testing.T) {
 	m := testEditor("world hello")
 
 	// Delete first word, go to end, paste
-	sendKeys(m, "d", "w")   // → "hello"
+	sendKeys(m, "d", "w") // → "hello"
 	assertText(t, m, "hello")
-	sendKeys(m, "A")         // append at end
-	sendKeys(m, " ", "esc")  // add space
-	sendKeys(m, "p")         // paste "world " after cursor
+	sendKeys(m, "A")        // append at end
+	sendKeys(m, " ", "esc") // add space
+	sendKeys(m, "p")        // paste "world " after cursor
 	assertText(t, m, "hello world ")
 }
 
@@ -1137,8 +1141,8 @@ func TestScenarioMultiLineYankPaste(t *testing.T) {
 
 	// Yank line 2, paste it after line 4
 	sendKeys(m, "j", "y", "y") // yank "line2"
-	sendKeys(m, "G")            // go to last line
-	sendKeys(m, "p")            // paste after
+	sendKeys(m, "G")           // go to last line
+	sendKeys(m, "p")           // paste after
 	assertText(t, m, "line1\nline2\nline3\nline4\nline2")
 }
 

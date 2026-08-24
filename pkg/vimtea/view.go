@@ -93,12 +93,6 @@ func wrapRenderedLine(s string, width int) []string {
 	return lines
 }
 
-// renderTab renders a tab character with visual representation using spaces
-func renderTab(col int) string {
-	spaces := tabWidth - (col % tabWidth)
-	return strings.Repeat(" ", spaces)
-}
-
 // visualLength calculates the visual length of a string, counting tabs as tabWidth spaces
 func visualLength(s string, startCol int) int {
 	length := 0

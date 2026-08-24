@@ -47,14 +47,6 @@ func motionTarget(model *editorModel, motion func(*editorModel) tea.Cmd) Cursor 
 	return target
 }
 
-// orderCursors returns (start, end) so start is always before end.
-func orderCursors(a, b Cursor) (Cursor, Cursor) {
-	if a.Row < b.Row || (a.Row == b.Row && a.Col <= b.Col) {
-		return a, b
-	}
-	return b, a
-}
-
 // isWordStartAt reports whether line[col] begins a new word (small) or
 // WORD (big) — i.e. it is a valid stopping point for an operator w/W
 // motion on the same line.

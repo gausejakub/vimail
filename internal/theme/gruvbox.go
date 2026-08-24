@@ -8,10 +8,10 @@ func init() { Register(gruvboxTheme{}) }
 
 func (gruvboxTheme) Name() string { return "gruvbox" }
 
-func (gruvboxTheme) Primary() lipgloss.Color           { return lipgloss.Color("#458588") }
-func (gruvboxTheme) Secondary() lipgloss.Color          { return lipgloss.Color("#b8bb26") }
-func (gruvboxTheme) Accent() lipgloss.Color             { return lipgloss.Color("#fabd2f") }
-func (gruvboxTheme) Text() lipgloss.Color               { return lipgloss.Color("#ebdbb2") }
+func (gruvboxTheme) Primary() lipgloss.Color             { return lipgloss.Color("#458588") }
+func (gruvboxTheme) Secondary() lipgloss.Color           { return lipgloss.Color("#b8bb26") }
+func (gruvboxTheme) Accent() lipgloss.Color              { return lipgloss.Color("#fabd2f") }
+func (gruvboxTheme) Text() lipgloss.Color                { return lipgloss.Color("#ebdbb2") }
 func (gruvboxTheme) TextMuted() lipgloss.Color           { return lipgloss.Color("#928374") }
 func (gruvboxTheme) TextEmphasized() lipgloss.Color      { return lipgloss.Color("#fbf1c7") }
 func (gruvboxTheme) Background() lipgloss.Color          { return lipgloss.Color("#282828") }

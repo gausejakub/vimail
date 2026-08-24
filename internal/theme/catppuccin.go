@@ -8,10 +8,10 @@ func init() { Register(catppuccinTheme{}) }
 
 func (catppuccinTheme) Name() string { return "catppuccin" }
 
-func (catppuccinTheme) Primary() lipgloss.Color           { return lipgloss.Color("#89b4fa") }
-func (catppuccinTheme) Secondary() lipgloss.Color          { return lipgloss.Color("#cba6f7") }
-func (catppuccinTheme) Accent() lipgloss.Color             { return lipgloss.Color("#f5c2e7") }
-func (catppuccinTheme) Text() lipgloss.Color               { return lipgloss.Color("#cdd6f4") }
+func (catppuccinTheme) Primary() lipgloss.Color             { return lipgloss.Color("#89b4fa") }
+func (catppuccinTheme) Secondary() lipgloss.Color           { return lipgloss.Color("#cba6f7") }
+func (catppuccinTheme) Accent() lipgloss.Color              { return lipgloss.Color("#f5c2e7") }
+func (catppuccinTheme) Text() lipgloss.Color                { return lipgloss.Color("#cdd6f4") }
 func (catppuccinTheme) TextMuted() lipgloss.Color           { return lipgloss.Color("#6c7086") }
 func (catppuccinTheme) TextEmphasized() lipgloss.Color      { return lipgloss.Color("#cdd6f4") }
 func (catppuccinTheme) Background() lipgloss.Color          { return lipgloss.Color("#1e1e2e") }

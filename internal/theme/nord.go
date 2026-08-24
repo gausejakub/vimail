@@ -8,10 +8,10 @@ func init() { Register(nordTheme{}) }
 
 func (nordTheme) Name() string { return "nord" }
 
-func (nordTheme) Primary() lipgloss.Color           { return lipgloss.Color("#5e81ac") }
-func (nordTheme) Secondary() lipgloss.Color          { return lipgloss.Color("#81a1c1") }
-func (nordTheme) Accent() lipgloss.Color             { return lipgloss.Color("#88c0d0") }
-func (nordTheme) Text() lipgloss.Color               { return lipgloss.Color("#d8dee9") }
+func (nordTheme) Primary() lipgloss.Color             { return lipgloss.Color("#5e81ac") }
+func (nordTheme) Secondary() lipgloss.Color           { return lipgloss.Color("#81a1c1") }
+func (nordTheme) Accent() lipgloss.Color              { return lipgloss.Color("#88c0d0") }
+func (nordTheme) Text() lipgloss.Color                { return lipgloss.Color("#d8dee9") }
 func (nordTheme) TextMuted() lipgloss.Color           { return lipgloss.Color("#4c566a") }
 func (nordTheme) TextEmphasized() lipgloss.Color      { return lipgloss.Color("#eceff4") }
 func (nordTheme) Background() lipgloss.Color          { return lipgloss.Color("#2e3440") }

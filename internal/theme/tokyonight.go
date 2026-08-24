@@ -8,10 +8,10 @@ func init() { Register(tokyonightTheme{}) }
 
 func (tokyonightTheme) Name() string { return "tokyonight" }
 
-func (tokyonightTheme) Primary() lipgloss.Color           { return lipgloss.Color("#7aa2f7") }
-func (tokyonightTheme) Secondary() lipgloss.Color          { return lipgloss.Color("#bb9af7") }
-func (tokyonightTheme) Accent() lipgloss.Color             { return lipgloss.Color("#7dcfff") }
-func (tokyonightTheme) Text() lipgloss.Color               { return lipgloss.Color("#c0caf5") }
+func (tokyonightTheme) Primary() lipgloss.Color             { return lipgloss.Color("#7aa2f7") }
+func (tokyonightTheme) Secondary() lipgloss.Color           { return lipgloss.Color("#bb9af7") }
+func (tokyonightTheme) Accent() lipgloss.Color              { return lipgloss.Color("#7dcfff") }
+func (tokyonightTheme) Text() lipgloss.Color                { return lipgloss.Color("#c0caf5") }
 func (tokyonightTheme) TextMuted() lipgloss.Color           { return lipgloss.Color("#565f89") }
 func (tokyonightTheme) TextEmphasized() lipgloss.Color      { return lipgloss.Color("#c0caf5") }
 func (tokyonightTheme) Background() lipgloss.Color          { return lipgloss.Color("#1a1b26") }

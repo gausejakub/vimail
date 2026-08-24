@@ -8,10 +8,10 @@ func init() { Register(kanagawaTheme{}) }
 
 func (kanagawaTheme) Name() string { return "kanagawa" }
 
-func (kanagawaTheme) Primary() lipgloss.Color           { return lipgloss.Color("#7e9cd8") }
-func (kanagawaTheme) Secondary() lipgloss.Color          { return lipgloss.Color("#957fb8") }
-func (kanagawaTheme) Accent() lipgloss.Color             { return lipgloss.Color("#7fb4ca") }
-func (kanagawaTheme) Text() lipgloss.Color               { return lipgloss.Color("#dcd7ba") }
+func (kanagawaTheme) Primary() lipgloss.Color             { return lipgloss.Color("#7e9cd8") }
+func (kanagawaTheme) Secondary() lipgloss.Color           { return lipgloss.Color("#957fb8") }
+func (kanagawaTheme) Accent() lipgloss.Color              { return lipgloss.Color("#7fb4ca") }
+func (kanagawaTheme) Text() lipgloss.Color                { return lipgloss.Color("#dcd7ba") }
 func (kanagawaTheme) TextMuted() lipgloss.Color           { return lipgloss.Color("#727169") }
 func (kanagawaTheme) TextEmphasized() lipgloss.Color      { return lipgloss.Color("#c8c093") }
 func (kanagawaTheme) Background() lipgloss.Color          { return lipgloss.Color("#1f1f28") }

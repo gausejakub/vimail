@@ -167,6 +167,39 @@ func (s *SQLiteStore) MessagesForPage(acctEmail, folder string, offset, limit in
 	return msgs
 }
 
+// MessageByUID returns a single message by UID, including any cached body.
+// bodyCached reports whether the body has been fetched from the server yet;
+// ok reports whether the message exists in the cache at all.
+func (s *SQLiteStore) MessageByUID(acctEmail, folder string, uid uint32) (msg email.Message, bodyCached, ok bool) {
+	var folderID int
+	if err := s.db.QueryRow(`SELECT id FROM folders WHERE account = ? AND name = ?`, acctEmail, folder).Scan(&folderID); err != nil {
+		return email.Message{}, false, false
+	}
+
+	var m email.Message
+	var dateStr string
+	var unread, flagged, fetched int
+	err := s.db.QueryRow(`
+		SELECT uid, from_addr, to_addr, subject, body, html_body, date, unread, flagged, body_fetched
+		FROM messages WHERE folder_id = ? AND uid = ?
+	`, folderID, uid).Scan(&m.UID, &m.From, &m.To, &m.Subject, &m.Body, &m.HTMLBody, &dateStr, &unread, &flagged, &fetched)
+	if err != nil {
+		return email.Message{}, false, false
+	}
+	m.Body = decrypt(s.encKey, m.Body)
+	m.HTMLBody = decrypt(s.encKey, m.HTMLBody)
+	m.ID = fmt.Sprintf("%d", m.UID)
+	m.Date, _ = time.Parse(time.RFC3339, dateStr)
+	m.Unread = unread != 0
+	m.Flagged = flagged != 0
+	m.Folder = folder
+	m.Account = acctEmail
+
+	msgs := []email.Message{m}
+	s.loadAttachments(folderID, msgs)
+	return msgs[0], fetched != 0, true
+}
+
 func (s *SQLiteStore) MessagesFor(acctEmail, folder string) []email.Message {
 	if folder == "Drafts" {
 		return s.draftsFor(acctEmail)

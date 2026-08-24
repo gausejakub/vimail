@@ -99,6 +99,14 @@ var (
 
 // Init creates the global logger. logDir is the directory for vimail.log.
 func Init(logDir string, level Level) error {
+	return InitFile(logDir, "vimail.log", level)
+}
+
+// InitFile creates the global logger writing to logDir/fileName. A non-TUI
+// process (e.g. the MCP server) passes its own file name so two processes
+// never contend over the same log file or its rotation; rotation only runs
+// for the default vimail.log.
+func InitFile(logDir, fileName string, level Level) error {
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -110,9 +118,11 @@ func Init(logDir string, level Level) error {
 		return err
 	}
 
-	rotateIfNeeded(logDir)
+	if fileName == "vimail.log" {
+		rotateIfNeeded(logDir)
+	}
 
-	path := filepath.Join(logDir, "vimail.log")
+	path := filepath.Join(logDir, fileName)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		return err

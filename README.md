@@ -290,7 +290,7 @@ Any tool that accepts a prompt as an argument and prints the response to stdout 
 
 vimail writes structured JSON logs to `~/.local/share/vimail/vimail.log`. Every background operation (sync, fetch, send, delete, mark-read), user action, and error is logged with full context (account, folder, UID, duration).
 
-Logs auto-rotate at 10 MB and are deleted after 3 days.
+The active log rotates when it reaches 10 MB, keeping one previous file (`vimail.log.1`). Retention is enforced both at startup and hourly while vimail runs: the active log is rotated once its oldest entry is more than 3 days old, and a log file is deleted once all of its entries are more than 3 days old.
 
 ```sh
 # Tail logs in real time

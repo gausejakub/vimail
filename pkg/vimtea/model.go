@@ -4,7 +4,6 @@
 package vimtea
 
 import (
-	"strconv"
 	"strings"
 	"time"
 
@@ -411,31 +410,15 @@ func (m *editorModel) handlePrefixKeypress(mode EditorMode) func(msg tea.KeyMsg)
 
 		keyStr := msg.String()
 
-		// Handle numeric prefixes (like "3j" to move down 3 lines)
-		if len(m.keySequence) == 0 && keyStr > "0" && keyStr <= "9" {
-			// First digit in sequence
-			count, _ := strconv.Atoi(keyStr)
-			m.countPrefix = count
-			m.keySequence = append(m.keySequence, keyStr)
+		// Numeric count prefix. Digits accumulate into countPrefix and
+		// stay out of keySequence, so a multi-key command like "2dd"
+		// reaches the dd binding with the count intact. "0" only counts
+		// as a digit after another digit ("10j"); on its own it is the
+		// move-to-start-of-line binding.
+		if len(m.keySequence) == 0 && len(keyStr) == 1 && keyStr[0] >= '0' && keyStr[0] <= '9' &&
+			(keyStr != "0" || m.countPrefix > 0) {
+			m.countPrefix = m.countPrefix*10 + int(keyStr[0]-'0')
 			return m, nil
-		} else if len(m.keySequence) > 0 && keyStr >= "0" && keyStr <= "9" {
-			// Check if we're continuing a numeric prefix
-			allDigits := true
-			for _, k := range m.keySequence {
-				if k < "0" || k > "9" {
-					allDigits = false
-					break
-				}
-			}
-
-			if allDigits {
-				// Multi-digit count (like "12j")
-				countStr := strings.Join(m.keySequence, "") + keyStr
-				count, _ := strconv.Atoi(countStr)
-				m.countPrefix = count
-				m.keySequence = append(m.keySequence, keyStr)
-				return m, nil
-			}
 		}
 
 		// Add the key to the sequence
@@ -453,26 +436,6 @@ func (m *editorModel) handlePrefixKeypress(mode EditorMode) func(msg tea.KeyMsg)
 		// If the sequence is a prefix of a longer binding, wait for more input
 		if m.registry.IsPrefix(seq, mode) {
 			return m, nil
-		}
-
-		// Try to separate numeric prefix from command part
-		nonDigitStart := 0
-		for i, k := range m.keySequence {
-			if k < "0" || k > "9" {
-				nonDigitStart = i
-				break
-			}
-		}
-
-		// If we have a mixture of digits and commands, try to execute just the command part
-		if nonDigitStart > 0 && nonDigitStart < len(m.keySequence) {
-			cmdPart := strings.Join(m.keySequence[nonDigitStart:], "")
-			if binding := m.registry.FindExact(cmdPart, mode); binding != nil {
-				cmd := binding.Command(m)
-				m.keySequence = []string{}
-				defer func() { m.countPrefix = 0 }()
-				return m, cmd
-			}
 		}
 
 		// Fallback: try to execute just the single key

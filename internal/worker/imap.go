@@ -49,6 +49,11 @@ type IMAPWorker struct {
 	client *imapclient.Client
 	store  *cache.SQLiteStore
 
+	// commandDeadline bounds one batched write command. It defaults to
+	// opDeadline and is configurable by loopback tests that exercise timeout
+	// behavior without waiting 45 seconds.
+	commandDeadline time.Duration
+
 	// Maps display folder name → actual IMAP mailbox name.
 	folderMap map[string]string
 
@@ -69,10 +74,11 @@ type IMAPWorker struct {
 // NewIMAPWorker creates a new IMAP worker for the given account.
 func NewIMAPWorker(acct config.AccountConfig, creds *auth.Credentials, store *cache.SQLiteStore) *IMAPWorker {
 	return &IMAPWorker{
-		acct:      acct,
-		creds:     creds,
-		store:     store,
-		folderMap: make(map[string]string),
+		acct:            acct,
+		creds:           creds,
+		store:           store,
+		folderMap:       make(map[string]string),
+		commandDeadline: opDeadline,
 	}
 }
 
@@ -893,17 +899,17 @@ func (w *IMAPWorker) MoveToTrashBatch(folder string, uids []uint32, onProgress f
 	if len(uids) == 0 {
 		return nil
 	}
-	cancel := w.opTimer(syncDeadline)
-	defer cancel()
-
 	imapName := w.imapMailboxName(folder)
 	trashName := w.trashMailboxName()
 
 	log.Printf("IMAP delete: %d UIDs from %s (%s) → %s", len(uids), folder, imapName, trashName)
 
 	// SELECT once for all chunks.
+	cancel := w.opTimer(w.commandDeadline)
 	selCmd := w.client.Select(imapName, nil)
-	if _, err := selCmd.Wait(); err != nil {
+	_, err := selCmd.Wait()
+	cancel()
+	if err != nil {
 		return fmt.Errorf("SELECT %s: %w", imapName, err)
 	}
 
@@ -914,7 +920,10 @@ func (w *IMAPWorker) MoveToTrashBatch(folder string, uids []uint32, onProgress f
 		}
 		chunk := uids[i:end]
 
-		if err := w.moveChunkToTrash(trashName, chunk); err != nil {
+		cancel = w.opTimer(w.commandDeadline)
+		err = w.moveChunkToTrash(trashName, chunk)
+		cancel()
+		if err != nil {
 			return fmt.Errorf("chunk %d-%d: %w", i, end-1, err)
 		}
 		log.Printf("IMAP delete: processed %d/%d UIDs", end, len(uids))
@@ -925,8 +934,11 @@ func (w *IMAPWorker) MoveToTrashBatch(folder string, uids []uint32, onProgress f
 	}
 
 	// Single EXPUNGE after all chunks.
+	cancel = w.opTimer(w.commandDeadline)
 	expungeCmd := w.client.Expunge()
-	if err := expungeCmd.Close(); err != nil {
+	err = expungeCmd.Close()
+	cancel()
+	if err != nil {
 		return fmt.Errorf("EXPUNGE: %w", err)
 	}
 

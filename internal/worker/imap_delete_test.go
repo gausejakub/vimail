@@ -4,6 +4,7 @@ import (
 	"net"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapserver"
@@ -12,7 +13,21 @@ import (
 	"github.com/gausejakub/vimail/internal/config"
 )
 
+type delayedCopySession struct {
+	imapserver.Session
+	delay time.Duration
+}
+
+func (s *delayedCopySession) Copy(numSet imap.NumSet, dest string) (*imap.CopyData, error) {
+	time.Sleep(s.delay)
+	return s.Session.Copy(numSet, dest)
+}
+
 func newIMAPTestEndpoint(t *testing.T) (config.AccountConfig, *auth.Credentials, *imapmemserver.User) {
+	return newIMAPTestEndpointWithCopyDelay(t, 0)
+}
+
+func newIMAPTestEndpointWithCopyDelay(t *testing.T, copyDelay time.Duration) (config.AccountConfig, *auth.Credentials, *imapmemserver.User) {
 	t.Helper()
 	const (
 		username = "alice@example.com"
@@ -30,7 +45,11 @@ func newIMAPTestEndpoint(t *testing.T) (config.AccountConfig, *auth.Credentials,
 
 	server := imapserver.New(&imapserver.Options{
 		NewSession: func(*imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
-			return memServer.NewSession(), nil, nil
+			session := imapserver.Session(memServer.NewSession())
+			if copyDelay > 0 {
+				session = &delayedCopySession{Session: session, delay: copyDelay}
+			}
+			return session, nil, nil
 		},
 		InsecureAuth: true,
 		Caps:         imap.CapSet{imap.CapIMAP4rev1: {}},
@@ -59,6 +78,39 @@ func newIMAPTestEndpoint(t *testing.T) (config.AccountConfig, *auth.Credentials,
 		Username: username, Password: password, AuthMethod: auth.AuthPlain,
 	}
 	return acct, creds, user
+}
+
+func TestMoveToTrashBatchRefreshesDeadlinePerChunk(t *testing.T) {
+	acct, creds, _ := newIMAPTestEndpointWithCopyDelay(t, 60*time.Millisecond)
+	w := NewIMAPWorker(acct, creds, testQueueStore(t))
+	if err := w.Connect(); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(w.Disconnect)
+	w.commandDeadline = 100 * time.Millisecond
+
+	raw := []byte("From: sender@example.com\r\nTo: alice@example.com\r\nSubject: test\r\n\r\nbody")
+	appendCmd := w.client.Append("INBOX", int64(len(raw)), nil)
+	if _, err := appendCmd.Write(raw); err != nil {
+		t.Fatalf("append write: %v", err)
+	}
+	if err := appendCmd.Close(); err != nil {
+		t.Fatalf("append close: %v", err)
+	}
+	if _, err := appendCmd.Wait(); err != nil {
+		t.Fatalf("append wait: %v", err)
+	}
+
+	// Duplicate UID values are intentional: 501 inputs force two worker chunks
+	// while requiring only one fixture message. Each COPY finishes within the
+	// command deadline, but both together exceed it.
+	uids := make([]uint32, imapUIDChunkSize+1)
+	for i := range uids {
+		uids[i] = 1
+	}
+	if err := w.MoveToTrashBatch("Inbox", uids, nil); err != nil {
+		t.Fatalf("batch should refresh its deadline after each chunk: %v", err)
+	}
 }
 
 func TestMoveToTrashDiscoversServerMailboxBeforeFirstWrite(t *testing.T) {

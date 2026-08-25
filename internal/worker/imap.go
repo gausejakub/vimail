@@ -84,6 +84,12 @@ func (w *IMAPWorker) Connect() error {
 		return err
 	}
 	w.client = client
+	w.folderMap = make(map[string]string)
+	if _, err := w.listMailboxes(); err != nil {
+		client.Close()
+		w.client = nil
+		return fmt.Errorf("discover mailboxes: %w", err)
+	}
 
 	// Open a second connection for body fetches (best-effort).
 	fetchClient, err := w.dial(false)
@@ -294,7 +300,13 @@ func (w *IMAPWorker) Ping() bool {
 func (w *IMAPWorker) ListMailboxes() ([]string, error) {
 	w.opMu.Lock()
 	defer w.opMu.Unlock()
+	return w.listMailboxes()
+}
 
+// listMailboxes fetches the server's mailbox names and refreshes folderMap.
+// The caller must have exclusive access to the main client: either hold opMu
+// or call this during Connect before the worker is published.
+func (w *IMAPWorker) listMailboxes() ([]string, error) {
 	if w.client == nil {
 		return nil, fmt.Errorf("not connected")
 	}

@@ -39,6 +39,15 @@ func (s *SQLiteStore) DB() *sql.DB {
 	return s.db
 }
 
+// DataVersion returns SQLite's connection-local change counter. The value
+// changes when another database connection commits, which lets the TUI notice
+// cache writes made by a concurrently running MCP process.
+func (s *SQLiteStore) DataVersion() (int64, error) {
+	var version int64
+	err := s.db.QueryRow(`PRAGMA data_version`).Scan(&version)
+	return version, err
+}
+
 // SeedAccount ensures an account row exists, creating it if needed.
 func (s *SQLiteStore) SeedAccount(name, acctEmail, imapHost string, imapPort int, smtpHost string, smtpPort int) error {
 	_, err := s.db.Exec(`

@@ -1,11 +1,13 @@
 package tui
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/gausejakub/vimail/internal/cache"
 	"github.com/gausejakub/vimail/internal/config"
 	"github.com/gausejakub/vimail/internal/email"
 	"github.com/gausejakub/vimail/internal/tui/keys"
@@ -138,6 +140,77 @@ func TestInitialState(t *testing.T) {
 	}
 	if m.cmdActive {
 		t.Fatal("command mode should not be active on init")
+	}
+}
+
+func TestExternalCacheWriteRefreshesMailbox(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cache.db")
+	dbTUI, err := cache.Open(path)
+	if err != nil {
+		t.Fatalf("open TUI cache: %v", err)
+	}
+	t.Cleanup(func() { dbTUI.Close() })
+	dbMCP, err := cache.Open(path)
+	if err != nil {
+		t.Fatalf("open MCP cache: %v", err)
+	}
+	t.Cleanup(func() { dbMCP.Close() })
+
+	storeTUI := cache.NewSQLiteStore(dbTUI)
+	storeMCP := cache.NewSQLiteStore(dbMCP)
+	const account = "alice@example.com"
+	if err := storeTUI.SeedAccount("Alice", account, "", 993, "", 587); err != nil {
+		t.Fatalf("seed account: %v", err)
+	}
+	if _, err := storeTUI.EnsureFolder(account, "Inbox"); err != nil {
+		t.Fatalf("ensure Inbox: %v", err)
+	}
+	for uid := uint32(1); uid <= 2; uid++ {
+		if err := storeTUI.UpsertMessage(account, "Inbox", email.Message{
+			UID: uid, From: "sender@example.com", To: account,
+			Subject: "notification", Date: time.Now(), Unread: true,
+		}); err != nil {
+			t.Fatalf("seed message %d: %v", uid, err)
+		}
+	}
+
+	m := New(config.DefaultConfig(), storeTUI)
+	sendMsg(&m, tea.WindowSizeMsg{Width: 120, Height: 40})
+	if got := m.mailbox.View(); !strings.Contains(got, "Inbox 2") {
+		t.Fatalf("initial mailbox = %q, want Inbox 2", got)
+	}
+	before, err := storeTUI.DataVersion()
+	if err != nil {
+		t.Fatalf("initial data version: %v", err)
+	}
+	storeMCP.MarkRead(account, "Inbox", "1")
+	after, err := storeTUI.DataVersion()
+	if err != nil {
+		t.Fatalf("changed data version: %v", err)
+	}
+	if after == before {
+		t.Fatal("external write did not change SQLite data_version")
+	}
+
+	sendMsg(&m, cacheVersionMsg{version: after})
+	if got := m.mailbox.View(); !strings.Contains(got, "Inbox 1") {
+		t.Fatalf("mailbox after external write = %q, want Inbox 1", got)
+	}
+
+	// The same cross-process signal must refresh the open message window, not
+	// just the sidebar counts.
+	sendMsg(&m, util.FolderSelectedMsg{Account: account, Folder: "Inbox"})
+	if got := m.msglist.TotalCount(); got != 2 {
+		t.Fatalf("initial message total = %d, want 2", got)
+	}
+	storeMCP.DeleteMessages(account, "Inbox", []string{"2"})
+	afterDelete, err := storeTUI.DataVersion()
+	if err != nil {
+		t.Fatalf("data version after delete: %v", err)
+	}
+	sendMsg(&m, cacheVersionMsg{version: afterDelete})
+	if got := m.msglist.TotalCount(); got != 1 {
+		t.Fatalf("message total after external delete = %d, want 1", got)
 	}
 }
 

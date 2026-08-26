@@ -36,6 +36,10 @@ const (
 	// disconnectWait is how long Disconnect waits for an in-flight op to finish
 	// after force-closing the connection.
 	disconnectWait = 5 * time.Second
+
+	// imapUIDChunkSize bounds generated UID-set commands for servers with
+	// conservative command-length limits.
+	imapUIDChunkSize = 500
 )
 
 // IMAPWorker manages a single IMAP connection for one account.
@@ -714,7 +718,7 @@ func (w *IMAPWorker) MarkReadBatch(folder string, uids []uint32) error {
 	if len(uids) == 0 {
 		return nil
 	}
-	cancel := w.opTimer(opDeadline)
+	cancel := w.opTimer(syncDeadline)
 	defer cancel()
 
 	imapName := w.imapMailboxName(folder)
@@ -723,17 +727,23 @@ func (w *IMAPWorker) MarkReadBatch(folder string, uids []uint32) error {
 		return fmt.Errorf("SELECT %s: %w", imapName, err)
 	}
 
-	var seqSet imap.UIDSet
-	for _, uid := range uids {
-		seqSet.AddNum(imap.UID(uid))
-	}
+	for i := 0; i < len(uids); i += imapUIDChunkSize {
+		end := i + imapUIDChunkSize
+		if end > len(uids) {
+			end = len(uids)
+		}
+		var seqSet imap.UIDSet
+		for _, uid := range uids[i:end] {
+			seqSet.AddNum(imap.UID(uid))
+		}
 
-	storeCmd := w.client.Store(seqSet, &imap.StoreFlags{
-		Op:    imap.StoreFlagsAdd,
-		Flags: []imap.Flag{imap.FlagSeen},
-	}, nil)
-	if err := storeCmd.Close(); err != nil {
-		return fmt.Errorf("STORE +FLAGS \\Seen %d uids: %w", len(uids), err)
+		storeCmd := w.client.Store(seqSet, &imap.StoreFlags{
+			Op:    imap.StoreFlagsAdd,
+			Flags: []imap.Flag{imap.FlagSeen},
+		}, nil)
+		if err := storeCmd.Close(); err != nil {
+			return fmt.Errorf("STORE +FLAGS \\Seen chunk %d-%d of %d: %w", i, end-1, len(uids), err)
+		}
 	}
 	return nil
 }
@@ -885,9 +895,8 @@ func (w *IMAPWorker) MoveToTrashBatch(folder string, uids []uint32, onProgress f
 		return fmt.Errorf("SELECT %s: %w", imapName, err)
 	}
 
-	const chunkSize = 500
-	for i := 0; i < len(uids); i += chunkSize {
-		end := i + chunkSize
+	for i := 0; i < len(uids); i += imapUIDChunkSize {
+		end := i + imapUIDChunkSize
 		if end > len(uids) {
 			end = len(uids)
 		}
@@ -1001,9 +1010,8 @@ func (w *IMAPWorker) MoveToFolderBatch(srcFolder string, uids []uint32, dstFolde
 		return fmt.Errorf("SELECT %s: %w", srcName, err)
 	}
 
-	const chunkSize = 500
-	for i := 0; i < len(uids); i += chunkSize {
-		end := i + chunkSize
+	for i := 0; i < len(uids); i += imapUIDChunkSize {
+		end := i + imapUIDChunkSize
 		if end > len(uids) {
 			end = len(uids)
 		}

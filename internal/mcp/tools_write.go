@@ -7,6 +7,7 @@ import (
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/gausejakub/vimail/internal/cache"
 	"github.com/gausejakub/vimail/internal/email"
 	"github.com/gausejakub/vimail/internal/logging"
 )
@@ -36,29 +37,35 @@ type deleteDraftResult struct {
 }
 
 type markReadArgs struct {
-	Account string `json:"account,omitempty" jsonschema:"account email; may be omitted when exactly one account is configured"`
-	Folder  string `json:"folder" jsonschema:"folder name, e.g. Inbox"`
-	UID     uint32 `json:"uid" jsonschema:"message UID from list_messages or search_messages"`
+	Account string   `json:"account,omitempty" jsonschema:"account email; may be omitted when exactly one account is configured"`
+	Folder  string   `json:"folder" jsonschema:"folder name, e.g. Inbox"`
+	UID     uint32   `json:"uid,omitempty" jsonschema:"one message UID; use either uid or uids"`
+	UIDs    []uint32 `json:"uids,omitempty" jsonschema:"message UIDs from list_messages or search_messages; use either uid or uids"`
 }
 
 type markReadResult struct {
-	Account string `json:"account"`
-	Folder  string `json:"folder"`
-	UID     uint32 `json:"uid"`
-	Note    string `json:"note"`
+	Account string   `json:"account"`
+	Folder  string   `json:"folder"`
+	UID     uint32   `json:"uid,omitempty"`
+	UIDs    []uint32 `json:"uids"`
+	Count   int      `json:"count"`
+	Note    string   `json:"note"`
 }
 
 type deleteMessageArgs struct {
-	Account string `json:"account,omitempty" jsonschema:"account email; may be omitted when exactly one account is configured"`
-	Folder  string `json:"folder" jsonschema:"folder the message lives in; Trash and Drafts are not allowed"`
-	UID     uint32 `json:"uid" jsonschema:"message UID from list_messages or search_messages"`
+	Account string   `json:"account,omitempty" jsonschema:"account email; may be omitted when exactly one account is configured"`
+	Folder  string   `json:"folder" jsonschema:"folder the message lives in; Trash and Drafts are not allowed"`
+	UID     uint32   `json:"uid,omitempty" jsonschema:"one message UID; use either uid or uids"`
+	UIDs    []uint32 `json:"uids,omitempty" jsonschema:"message UIDs from list_messages or search_messages; use either uid or uids"`
 }
 
 type deleteMessageResult struct {
-	Account string `json:"account"`
-	Folder  string `json:"folder"`
-	UID     uint32 `json:"uid"`
-	Note    string `json:"note"`
+	Account string   `json:"account"`
+	Folder  string   `json:"folder"`
+	UID     uint32   `json:"uid,omitempty"`
+	UIDs    []uint32 `json:"uids"`
+	Count   int      `json:"count"`
+	Note    string   `json:"note"`
 }
 
 type syncArgs struct {
@@ -139,32 +146,41 @@ func (s *Server) registerWriteTools() {
 
 	sdk.AddTool(s.srv, &sdk.Tool{
 		Name:        "mark_read",
-		Description: "Mark a message as read. The cache updates immediately; the server-side \\Seen flag is queued and delivered on the next connection or sync.",
+		Description: "Mark one or many messages as read. Pass either uid or uids. One batch updates the cache immediately and creates one queued server operation.",
 	}, func(ctx context.Context, req *sdk.CallToolRequest, args markReadArgs) (*sdk.CallToolResult, markReadResult, error) {
 		acct, err := s.resolveAccount(args.Account)
 		if err != nil {
 			return nil, markReadResult{}, err
 		}
-		m, _, ok := s.store.MessageByUID(acct, args.Folder, args.UID)
-		if !ok {
-			return nil, markReadResult{}, fmt.Errorf("message %d not found in %s/%s", args.UID, acct, args.Folder)
+		uids, err := normalizeUIDs(args.UID, args.UIDs)
+		if err != nil {
+			return nil, markReadResult{}, err
 		}
-		// Same path as the TUI: optimistic cache write (with cross-folder
-		// read-state cascade), then queue + attempt the IMAP op.
-		s.store.MarkRead(acct, args.Folder, m.ID)
+		if err := validateMessageUIDs(s.store, acct, args.Folder, uids); err != nil {
+			return nil, markReadResult{}, err
+		}
+		// Validate the whole batch before the transactional cache update, then
+		// queue and attempt one IMAP operation.
+		if err := s.store.MarkReadUIDs(acct, args.Folder, uids); err != nil {
+			return nil, markReadResult{}, err
+		}
 		if s.coord != nil {
-			s.coord.MarkRead(acct, args.Folder, args.UID)()
+			s.coord.MarkReadMessages(acct, args.Folder, uids)()
 		}
-		logging.Info("mcp", "mark_read", logging.Acct(acct), logging.Fld(args.Folder), logging.MsgUID(args.UID))
-		return nil, markReadResult{
-			Account: acct, Folder: args.Folder, UID: args.UID,
+		logging.Info("mcp", "mark_read", logging.Acct(acct), logging.Fld(args.Folder), logging.KV("count", len(uids)))
+		out := markReadResult{
+			Account: acct, Folder: args.Folder, UIDs: uids, Count: len(uids),
 			Note: "marked read in cache; server flag queued (delivered on next sync if offline)",
-		}, nil
+		}
+		if len(uids) == 1 {
+			out.UID = uids[0]
+		}
+		return nil, out, nil
 	})
 
 	sdk.AddTool(s.srv, &sdk.Tool{
 		Name:        "delete_message",
-		Description: "Move a message to Trash. Never expunges — deleted messages stay restorable from the TUI. The cache updates immediately; the server-side move is queued and delivered on the next connection or sync.",
+		Description: "Move one or many messages to Trash. Pass either uid or uids. Never expunges; one batch creates one queued server operation.",
 	}, func(ctx context.Context, req *sdk.CallToolRequest, args deleteMessageArgs) (*sdk.CallToolResult, deleteMessageResult, error) {
 		acct, err := s.resolveAccount(args.Account)
 		if err != nil {
@@ -176,21 +192,29 @@ func (s *Server) registerWriteTools() {
 		case "Drafts":
 			return nil, deleteMessageResult{}, fmt.Errorf("use delete_draft for drafts")
 		}
-		m, _, ok := s.store.MessageByUID(acct, args.Folder, args.UID)
-		if !ok {
-			return nil, deleteMessageResult{}, fmt.Errorf("message %d not found in %s/%s", args.UID, acct, args.Folder)
+		uids, err := normalizeUIDs(args.UID, args.UIDs)
+		if err != nil {
+			return nil, deleteMessageResult{}, err
 		}
-		// Same path as the TUI: tombstone + cache removal, then queue +
-		// attempt the IMAP move-to-Trash.
-		s.store.DeleteMessage(acct, args.Folder, m.ID)
+		ids, err := messageIDsForUIDs(s.store, acct, args.Folder, uids)
+		if err != nil {
+			return nil, deleteMessageResult{}, err
+		}
+		// Validate the whole batch before creating tombstones/removing cache
+		// rows, then queue and attempt one IMAP move.
+		s.store.DeleteMessages(acct, args.Folder, ids)
 		if s.coord != nil {
-			s.coord.DeleteMessage(acct, args.Folder, args.UID)()
+			s.coord.DeleteMessages(acct, args.Folder, uids)()
 		}
-		logging.Info("mcp", "delete_message", logging.Acct(acct), logging.Fld(args.Folder), logging.MsgUID(args.UID))
-		return nil, deleteMessageResult{
-			Account: acct, Folder: args.Folder, UID: args.UID,
+		logging.Info("mcp", "delete_message", logging.Acct(acct), logging.Fld(args.Folder), logging.KV("count", len(uids)))
+		out := deleteMessageResult{
+			Account: acct, Folder: args.Folder, UIDs: uids, Count: len(uids),
 			Note: "moved to Trash in cache; server move queued (delivered on next sync if offline)",
-		}, nil
+		}
+		if len(uids) == 1 {
+			out.UID = uids[0]
+		}
+		return nil, out, nil
 	})
 
 	sdk.AddTool(s.srv, &sdk.Tool{
@@ -234,4 +258,48 @@ func (s *Server) draftExists(acct, id string) bool {
 		}
 	}
 	return false
+}
+
+func normalizeUIDs(uid uint32, bulk []uint32) ([]uint32, error) {
+	if uid != 0 && len(bulk) > 0 {
+		return nil, fmt.Errorf("pass either uid or uids, not both")
+	}
+	uids := bulk
+	if uid != 0 {
+		uids = []uint32{uid}
+	}
+	if len(uids) == 0 {
+		return nil, fmt.Errorf("uid or uids is required")
+	}
+
+	seen := make(map[uint32]struct{}, len(uids))
+	normalized := make([]uint32, 0, len(uids))
+	for _, candidate := range uids {
+		if candidate == 0 {
+			return nil, fmt.Errorf("UIDs must be greater than zero")
+		}
+		if _, ok := seen[candidate]; ok {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		normalized = append(normalized, candidate)
+	}
+	return normalized, nil
+}
+
+func validateMessageUIDs(store *cache.SQLiteStore, account, folder string, uids []uint32) error {
+	_, err := messageIDsForUIDs(store, account, folder, uids)
+	return err
+}
+
+func messageIDsForUIDs(store *cache.SQLiteStore, account, folder string, uids []uint32) ([]string, error) {
+	ids := make([]string, 0, len(uids))
+	for _, uid := range uids {
+		msg, _, ok := store.MessageByUID(account, folder, uid)
+		if !ok {
+			return nil, fmt.Errorf("message %d not found in %s/%s", uid, account, folder)
+		}
+		ids = append(ids, msg.ID)
+	}
+	return ids, nil
 }

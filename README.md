@@ -298,7 +298,7 @@ Any tool that accepts a prompt as an argument and prints the response to stdout 
 }
 ```
 
-Reads (`list_accounts`, `list_folders`, `list_messages`, `read_message`, `search_messages`) are served from the local cache. Writes (`save_draft`, `delete_draft`, `mark_read`, `delete_message`) update the cache immediately and queue the server-side operation; `delete_message` only ever moves to Trash — permanent deletion stays in the TUI. The `sync` tool refreshes an account or folder on demand and delivers queued writes. The MCP server is safe to run alongside the TUI: queued operations are claimed exactly once and account syncs are serialized across processes.
+Reads (`list_accounts`, `list_folders`, `list_messages`, `read_message`, `search_messages`) are served from the local cache; search results expose usable folder/UID handles and a `truncated` flag. Writes (`save_draft`, `delete_draft`, `mark_read`, `delete_message`) update the cache immediately and queue the server-side operation. `mark_read` and `delete_message` accept either one `uid` or a batch in `uids`, producing one queue row per batch; deletion only ever moves to Trash, so permanent deletion stays in the TUI. The `sync` tool refreshes an account or folder on demand and delivers queued writes. The MCP server is safe to run alongside the TUI: queued operations are claimed exactly once and account syncs are serialized across processes.
 
 Sending email is **disabled by default**. Any connected MCP client can act as you, so outbound mail requires an explicit opt-in in `~/.config/vimail/config.toml`:
 

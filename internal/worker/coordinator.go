@@ -282,9 +282,14 @@ func (c *Coordinator) FetchBody(acctEmail, folder string, uid uint32) tea.Cmd {
 // MarkRead returns a tea.Cmd that marks a message as read on the IMAP server.
 // The operation is queued so it can be retried if the connection is lost.
 func (c *Coordinator) MarkRead(acctEmail, folder string, uid uint32) tea.Cmd {
+	return c.MarkReadMessages(acctEmail, folder, []uint32{uid})
+}
+
+// MarkReadMessages queues and executes one batched mark-read operation.
+func (c *Coordinator) MarkReadMessages(acctEmail, folder string, uids []uint32) tea.Cmd {
 	return func() tea.Msg {
-		logging.Debug("mark_read", "marking message read", logging.Acct(acctEmail), logging.Fld(folder), logging.MsgUID(uid))
-		opID, _ := c.store.QueueOp(cache.OpMarkRead, acctEmail, folder, cache.MarkReadPayload{UIDs: []uint32{uid}})
+		logging.Debug("mark_read", "marking messages read", logging.Acct(acctEmail), logging.Fld(folder), logging.KV("count", len(uids)))
+		opID, _ := c.store.QueueOp(cache.OpMarkRead, acctEmail, folder, cache.MarkReadPayload{UIDs: uids})
 		if !c.store.StartOp(opID) {
 			// Another process's drainer claimed the op — it will execute it.
 			return nil
@@ -298,14 +303,14 @@ func (c *Coordinator) MarkRead(acctEmail, folder string, uid uint32) tea.Cmd {
 		}
 		w, err := c.ensureIMAPWorkerForWrite(acct)
 		if err != nil {
-			logging.Warn("mark_read", "IMAP worker unavailable", logging.Acct(acctEmail), logging.Fld(folder), logging.MsgUID(uid), logging.Err(err))
+			logging.Warn("mark_read", "IMAP worker unavailable", logging.Acct(acctEmail), logging.Fld(folder), logging.KV("count", len(uids)), logging.Err(err))
 			c.store.FailOp(opID, err.Error())
 			return nil
 		}
-		if err := w.MarkRead(folder, uid); err != nil {
+		if err := w.MarkReadBatch(folder, uids); err != nil {
 			// Leave the op failed so a reconnect retry can pick it up;
 			// the optimistic cache update already reflects the read state.
-			logging.Warn("mark_read", "IMAP mark read failed", logging.Acct(acctEmail), logging.Fld(folder), logging.MsgUID(uid), logging.Err(err))
+			logging.Warn("mark_read", "IMAP mark read failed", logging.Acct(acctEmail), logging.Fld(folder), logging.KV("count", len(uids)), logging.Err(err))
 			c.store.FailOp(opID, err.Error())
 			return nil
 		}

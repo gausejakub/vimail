@@ -73,34 +73,66 @@ func (s *SQLiteStore) QueueOp(opType OpType, account, folder string, payload int
 	return res.LastInsertId()
 }
 
-// StartOp marks an operation as running.
-func (s *SQLiteStore) StartOp(id int64) {
-	now := time.Now().Format(time.RFC3339)
-	s.db.Exec(`UPDATE pending_ops SET status = ?, updated_at = ? WHERE id = ?`,
-		string(OpRunning), now, id)
+// opLeaseDuration is how long a claimed (running) op belongs to its owner.
+// If the owner crashes without completing or failing the op, another process
+// may reclaim it once the lease expires. Generous enough to cover slow batch
+// deletes and sends, short enough that crashed work is retried promptly.
+const opLeaseDuration = 10 * time.Minute
+
+// StartOp attempts to claim an operation for this process and reports
+// whether the claim succeeded. The claim is a compare-and-swap: it succeeds
+// only when the op is pending, failed (retry), or running with an expired
+// lease (crashed owner). A live owner's op is never stolen. Callers must
+// skip execution when StartOp returns false — another process owns the op.
+func (s *SQLiteStore) StartOp(id int64) bool {
+	now := time.Now().UTC()
+	res, err := s.db.Exec(`UPDATE pending_ops
+		SET status = ?, owner = ?, lease_until = ?, updated_at = ?
+		WHERE id = ? AND (status IN (?, ?) OR (status = ? AND (lease_until IS NULL OR lease_until < ?)))`,
+		string(OpRunning), s.procID,
+		now.Add(opLeaseDuration).Format(time.RFC3339), now.Format(time.RFC3339),
+		id,
+		string(OpPending), string(OpFailed),
+		string(OpRunning), now.Format(time.RFC3339))
+	if err != nil {
+		return false
+	}
+	n, err := res.RowsAffected()
+	return err == nil && n > 0
 }
 
-// CompleteOp marks an operation as completed.
+// CompleteOp marks an operation as completed. The update is a no-op if
+// another process reclaimed the op after our lease expired (owner mismatch),
+// so a late finisher cannot stomp the new owner's state.
 func (s *SQLiteStore) CompleteOp(id int64) {
-	now := time.Now().Format(time.RFC3339)
-	s.db.Exec(`UPDATE pending_ops SET status = ?, updated_at = ? WHERE id = ?`,
-		string(OpCompleted), now, id)
+	now := time.Now().UTC().Format(time.RFC3339)
+	s.db.Exec(`UPDATE pending_ops SET status = ?, owner = '', lease_until = NULL, updated_at = ?
+		WHERE id = ? AND (owner = ? OR owner = '')`,
+		string(OpCompleted), now, id, s.procID)
 }
 
-// FailOp marks an operation as failed with an error message.
+// FailOp marks an operation as failed with an error message. Failed ops
+// remain retryable via PendingOps. Owner-guarded like CompleteOp.
 func (s *SQLiteStore) FailOp(id int64, errMsg string) {
-	now := time.Now().Format(time.RFC3339)
-	s.db.Exec(`UPDATE pending_ops SET status = ?, error = ?, updated_at = ? WHERE id = ?`,
-		string(OpFailed), errMsg, now, id)
+	now := time.Now().UTC().Format(time.RFC3339)
+	s.db.Exec(`UPDATE pending_ops SET status = ?, owner = '', lease_until = NULL, error = ?, updated_at = ?
+		WHERE id = ? AND (owner = ? OR owner = '')`,
+		string(OpFailed), errMsg, now, id, s.procID)
 }
 
 // PendingOps returns all operations that still need execution: pending,
-// running (interrupted by a crash), and failed (eligible for retry on
-// reconnect). Failed ops stay retryable until CleanupOldOps ages them out.
+// failed (eligible for reconnect retry until CleanupOldOps ages them out),
+// and running ops whose lease expired (crashed owner). Running ops with a
+// live lease belong to another drainer and are excluded, so two processes
+// sharing the cache never re-pick each other's in-flight work.
 func (s *SQLiteStore) PendingOps() []QueuedOp {
+	now := time.Now().UTC().Format(time.RFC3339)
 	return s.queryOps(`SELECT id, type, status, account, folder, payload, error, created_at, updated_at
-		FROM pending_ops WHERE status IN (?, ?, ?) ORDER BY created_at`,
-		string(OpPending), string(OpRunning), string(OpFailed))
+		FROM pending_ops
+		WHERE status IN (?, ?)
+		   OR (status = ? AND (lease_until IS NULL OR lease_until < ?))
+		ORDER BY created_at`,
+		string(OpPending), string(OpFailed), string(OpRunning), now)
 }
 
 // RecentOps returns the most recent operations (for the :ops log view).

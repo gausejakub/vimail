@@ -15,11 +15,17 @@ type SQLiteStore struct {
 	db       *sql.DB
 	draftSeq atomic.Int64
 	encKey   []byte // AES-256 key for body encryption at rest (nil = disabled)
+
+	// procID identifies this process instance as the owner of claimed
+	// queue ops and sync locks, so two processes sharing the cache file
+	// (TUI + MCP server) never execute the same op twice.
+	procID  string
+	lockSeq atomic.Int64 // per-acquisition token counter for sync locks
 }
 
 // NewSQLiteStore creates a new SQLiteStore from an already-opened database.
 func NewSQLiteStore(db *sql.DB) *SQLiteStore {
-	return &SQLiteStore{db: db}
+	return &SQLiteStore{db: db, procID: newProcID()}
 }
 
 // SetEncryptionKey sets the AES-256 key used to encrypt email bodies at rest.

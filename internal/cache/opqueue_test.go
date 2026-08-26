@@ -38,10 +38,13 @@ func TestFailedOpsRemainRetryable(t *testing.T) {
 			t.Errorf("%s: pending op missing from PendingOps", tc.opType)
 		}
 
-		// running → still visible (crash recovery)
-		s.StartOp(id)
-		if findOp(s.PendingOps(), id) == nil {
-			t.Errorf("%s: running op missing from PendingOps", tc.opType)
+		// running with a live lease → owned by this drainer, hidden from
+		// the retry set so a second drainer cannot re-pick it
+		if !s.StartOp(id) {
+			t.Fatalf("%s: claim of pending op failed", tc.opType)
+		}
+		if findOp(s.PendingOps(), id) != nil {
+			t.Errorf("%s: claimed running op still visible in PendingOps", tc.opType)
 		}
 
 		// failed → must stay visible so a reconnect retry can pick it up

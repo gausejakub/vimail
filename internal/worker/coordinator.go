@@ -142,6 +142,16 @@ func (c *Coordinator) SyncFolder(acctEmail, folder string) tea.Cmd {
 			}
 		}
 
+		// Serialize with other processes syncing this account (e.g. the MCP
+		// server) — the HighestUID watermark and UIDVALIDITY purge race
+		// otherwise. Skipping is safe: the holder is refreshing the same data.
+		release, ok := c.store.TryAcquireSyncLock(acctEmail)
+		if !ok {
+			logging.Info("sync", "account sync locked by another process, skipping folder sync", logging.Acct(acctEmail), logging.Fld(folder))
+			return SyncResult{Account: acctEmail, Folder: folder}
+		}
+		defer release()
+
 		newCount, err := w.SyncFolder(folder)
 		if err != nil {
 			logging.Error("sync", "folder sync failed", logging.Acct(acctEmail), logging.Fld(folder), logging.Dur(time.Since(start)), logging.Err(err))
@@ -241,7 +251,10 @@ func (c *Coordinator) MarkRead(acctEmail, folder string, uid uint32) tea.Cmd {
 	return func() tea.Msg {
 		logging.Debug("mark_read", "marking message read", logging.Acct(acctEmail), logging.Fld(folder), logging.MsgUID(uid))
 		opID, _ := c.store.QueueOp(cache.OpMarkRead, acctEmail, folder, cache.MarkReadPayload{UIDs: []uint32{uid}})
-		c.store.StartOp(opID)
+		if !c.store.StartOp(opID) {
+			// Another process's drainer claimed the op — it will execute it.
+			return nil
+		}
 
 		w := c.getIMAPWorker(acctEmail)
 		if w == nil {
@@ -380,7 +393,12 @@ func (c *Coordinator) SendAndArchive(acctEmail string, req SendRequest) tea.Cmd 
 		opID, _ := c.store.QueueOp(cache.OpSend, acctEmail, "", cache.SendPayload{
 			From: req.From, To: req.To, Subject: req.Subject, Body: req.Body,
 		})
-		c.store.StartOp(opID)
+		if !c.store.StartOp(opID) {
+			// Another process's drainer claimed the send — executing here too
+			// would produce a duplicate outbound email.
+			logging.Warn("send", "send op claimed by another process", logging.Acct(acctEmail), logging.KV("op_id", opID))
+			return SendResult{MessageID: ""}
+		}
 
 		smtpW := c.getSMTPWorker(acctEmail)
 		if smtpW == nil {
@@ -444,7 +462,10 @@ func (c *Coordinator) DeleteMessages(acctEmail, folder string, uids []uint32) te
 		logging.Info("delete", "deleting messages", logging.Acct(acctEmail), logging.Fld(folder), logging.KV("count", len(uids)))
 		start := time.Now()
 		opID, _ := c.store.QueueOp(cache.OpDelete, acctEmail, folder, cache.DeletePayload{UIDs: uids})
-		c.store.StartOp(opID)
+		if !c.store.StartOp(opID) {
+			// Another process's drainer claimed the op — it will execute it.
+			return DeleteResult{Account: acctEmail, Folder: folder}
+		}
 
 		w := c.getIMAPWorker(acctEmail)
 		if w == nil {
@@ -647,7 +668,9 @@ func (c *Coordinator) RetryPendingOps() tea.Cmd {
 			logging.Info("retry", "retrying pending ops", logging.KV("count", len(ops)))
 		}
 		for _, op := range ops {
-			c.store.StartOp(op.ID)
+			if !c.store.StartOp(op.ID) {
+				continue // claimed by another drainer in the meantime
+			}
 			var err error
 			switch op.Type {
 			case cache.OpDelete:
@@ -756,6 +779,17 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig) error {
 		return fmt.Errorf("no credentials resolved")
 	}
 
+	// Cross-process advisory lock: only one process (TUI or MCP server) may
+	// sync an account at a time — the incremental-sync HighestUID watermark
+	// and the UIDVALIDITY purge race otherwise. Skipping is safe because the
+	// lock holder is refreshing the same account.
+	release, ok := c.store.TryAcquireSyncLock(acct.Email)
+	if !ok {
+		logging.Info("sync", "account sync locked by another process, skipping", logging.Acct(acct.Email))
+		return nil
+	}
+	defer release()
+
 	// Reuse existing healthy connection instead of tearing down every sync cycle.
 	// This avoids exhausting server connection limits.
 	c.mu.Lock()
@@ -797,7 +831,9 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig) error {
 		if op.Account != acct.Email {
 			continue
 		}
-		c.store.StartOp(op.ID)
+		if !c.store.StartOp(op.ID) {
+			continue // claimed by another drainer in the meantime
+		}
 		switch op.Type {
 		case cache.OpDelete:
 			var payload cache.DeletePayload

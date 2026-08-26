@@ -76,17 +76,26 @@ CREATE TABLE IF NOT EXISTS attachments (
 CREATE INDEX IF NOT EXISTS idx_attachments_msg ON attachments(folder_id, uid);
 
 CREATE TABLE IF NOT EXISTS pending_ops (
-	id         INTEGER PRIMARY KEY AUTOINCREMENT,
-	type       TEXT NOT NULL,
-	status     TEXT NOT NULL DEFAULT 'pending',
-	account    TEXT NOT NULL,
-	folder     TEXT NOT NULL DEFAULT '',
-	payload    TEXT NOT NULL DEFAULT '{}',
-	error      TEXT NOT NULL DEFAULT '',
-	created_at DATETIME NOT NULL,
-	updated_at DATETIME NOT NULL
+	id          INTEGER PRIMARY KEY AUTOINCREMENT,
+	type        TEXT NOT NULL,
+	status      TEXT NOT NULL DEFAULT 'pending',
+	account     TEXT NOT NULL,
+	folder      TEXT NOT NULL DEFAULT '',
+	payload     TEXT NOT NULL DEFAULT '{}',
+	error       TEXT NOT NULL DEFAULT '',
+	owner       TEXT NOT NULL DEFAULT '',
+	lease_until DATETIME,
+	created_at  DATETIME NOT NULL,
+	updated_at  DATETIME NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_pending_ops_status ON pending_ops(status);
+
+-- Cross-process advisory locks serializing per-account sync.
+CREATE TABLE IF NOT EXISTS sync_locks (
+	account    TEXT PRIMARY KEY,
+	owner      TEXT NOT NULL,
+	expires_at DATETIME NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS schema_version (
 	version INTEGER NOT NULL
@@ -160,15 +169,35 @@ func Open(path string) (*sql.DB, error) {
 	)`)
 	db.Exec(`CREATE INDEX IF NOT EXISTS idx_pending_ops_status ON pending_ops(status)`)
 
+	// Multi-process op claiming: owner + lease columns (migration for
+	// existing databases) and the cross-process sync lock table.
+	db.Exec(`ALTER TABLE pending_ops ADD COLUMN owner TEXT NOT NULL DEFAULT ''`)
+	db.Exec(`ALTER TABLE pending_ops ADD COLUMN lease_until DATETIME`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS sync_locks (
+		account    TEXT PRIMARY KEY,
+		owner      TEXT NOT NULL,
+		expires_at DATETIME NOT NULL
+	)`)
+
 	// Migrate existing pending_deletes into pending_ops.
 	migratePendingDeletes(db)
 
 	return db, nil
 }
 
-// migratePendingDeletes moves rows from the old pending_deletes table into pending_ops.
+// migratePendingDeletes moves rows from the old pending_deletes table into
+// pending_ops. It runs inside a single transaction so two processes racing
+// at startup serialize on the write lock: the loser's SELECT then sees an
+// already-emptied table, making the migration idempotent instead of
+// double-inserting delete ops.
 func migratePendingDeletes(db *sql.DB) {
-	rows, err := db.Query(`SELECT account, folder, uid FROM pending_deletes`)
+	tx, err := db.Begin()
+	if err != nil {
+		return
+	}
+	defer tx.Rollback() // no-op after a successful Commit
+
+	rows, err := tx.Query(`SELECT account, folder, uid FROM pending_deletes`)
 	if err != nil {
 		return // table may not exist
 	}
@@ -190,6 +219,7 @@ func migratePendingDeletes(db *sql.DB) {
 	rows.Close()
 
 	if len(grouped) == 0 {
+		tx.Commit()
 		return
 	}
 
@@ -201,12 +231,13 @@ func migratePendingDeletes(db *sql.DB) {
 			continue
 		}
 		payload, _ := json.Marshal(DeletePayload{UIDs: uids})
-		db.Exec(`INSERT INTO pending_ops (type, status, account, folder, payload, error, created_at, updated_at)
+		tx.Exec(`INSERT INTO pending_ops (type, status, account, folder, payload, error, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, '', ?, ?)`,
 			string(OpDelete), string(OpPending), parts[0], parts[1], string(payload), now, now)
 	}
 
-	db.Exec(`DELETE FROM pending_deletes`)
+	tx.Exec(`DELETE FROM pending_deletes`)
+	tx.Commit()
 }
 
 func splitNull(s string) []string {
@@ -217,4 +248,3 @@ func splitNull(s string) []string {
 	}
 	return []string{s}
 }
-

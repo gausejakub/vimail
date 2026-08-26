@@ -10,6 +10,16 @@ every merged PR lands here in the same pass that merges it.
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Security
+
+## [0.11.0] - 2026-08-26
+
+### Added
+
 - `vimail mcp` — a Model Context Protocol server on stdio, so local AI clients (Claude Code, Claude Desktop) can work with your mail. Read-only tools `list_accounts`, `list_folders`, `list_messages`, `read_message`, and `search_messages` are served from the local cache and never open IMAP connections; the MCP process logs to its own `vimail-mcp.log`. (#31)
 - MCP write tools `save_draft`, `delete_draft`, `mark_read`, and `delete_message` (moves to Trash only — Trash and Drafts are refused), plus an explicit `sync` tool that refreshes an account or folder and delivers queued writes. Writes update the cache immediately and go through the same offline queue as the TUI. (#32)
 - MCP `send_email` tool, available only with `allow_send = true` in a new `[mcp]` config section. Sending is off by default and the tool is not registered at all until you opt in. (#33)
@@ -42,6 +52,9 @@ every merged PR lands here in the same pass that merges it.
 
 - Go 1.26.6 and `golang.org/x/net` v0.58.0 in both modules, clearing all reachable govulncheck advisories (including GO-2026-5028/5029/5030); `SECURITY.md` now states the current scan. (#17)
 - Outbound mail over MCP is opt-in (`[mcp] allow_send`), because any connected MCP client can act as you. (#33)
+
+[Unreleased]: https://github.com/gausejakub/vimail/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/gausejakub/vimail/compare/v0.10.4...v0.11.0
 
 ---
 

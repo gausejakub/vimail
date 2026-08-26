@@ -57,6 +57,6 @@ If you discover a security vulnerability, please email **security@vimail.dev** i
 
 ## Dependencies
 
-- Dependencies are audited with `govulncheck ./...` (0 known vulnerabilities as of v0.10.1)
+- Dependencies are audited with `govulncheck ./...` in both Go modules (root and `pkg/vimtea`); last clean scan 2026-08-24 on Go 1.26.6 with `golang.org/x/net` v0.58.0
 - Checksums verified via `go mod verify`
 - Minimal dependency footprint — pure Go, no CGO

@@ -35,13 +35,13 @@ type Model struct {
 	width  int
 	height int
 
-	mode           keys.Mode
-	focusedPane    layout.Pane
-	showHelp       bool
-	showProcesses  bool
-	showOps        bool
-	attPicker      attachmentPicker
-	layout         layout.SplitPaneLayout
+	mode          keys.Mode
+	focusedPane   layout.Pane
+	showHelp      bool
+	showProcesses bool
+	showOps       bool
+	attPicker     attachmentPicker
+	layout        layout.SplitPaneLayout
 
 	mailbox mailbox.Model
 	msglist msglist.Model
@@ -430,20 +430,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			errText := msg.Err.Error()
 			isStaleUID := strings.Contains(errText, "not found in")
 			if isStaleUID {
-				// UID no longer exists on server — purge from cache and re-sync.
+				// UID no longer exists on server — purge it from the cache
+				// individually, but coalesce recovery so a burst of stale
+				// UIDs triggers exactly one folder sync.
 				if sqlStore, ok := m.store.(*cache.SQLiteStore); ok {
 					sqlStore.DeleteMessageByUID(msg.Account, msg.Folder, msg.UID)
 				}
-				cmds = append(cmds, func() tea.Msg {
-					return util.FolderSelectedMsg{Account: msg.Account, Folder: msg.Folder}
-				})
-				// Trigger re-sync to pick up fresh UIDs.
+				var syncCmd tea.Cmd
 				if m.coordinator != nil {
-					cmds = append(cmds, m.coordinator.SyncFolder(msg.Account, msg.Folder))
+					syncCmd = m.coordinator.SyncFolderIfIdle(msg.Account, msg.Folder)
 				}
-				cmds = append(cmds, func() tea.Msg {
-					return util.InfoMsg{Text: "Message moved/deleted on server — re-syncing…", IsError: false}
-				})
+				if m.coordinator == nil || syncCmd != nil {
+					// First stale UID for this folder: refresh the list once
+					// and start one recovery sync. Later stale UIDs arriving
+					// while it runs only purge the cache — the sync's own
+					// SyncResult refreshes the view when it completes.
+					cmds = append(cmds, func() tea.Msg {
+						return util.FolderSelectedMsg{Account: msg.Account, Folder: msg.Folder}
+					})
+					if syncCmd != nil {
+						cmds = append(cmds, syncCmd)
+					}
+					cmds = append(cmds, func() tea.Msg {
+						return util.InfoMsg{Text: "Message moved/deleted on server — re-syncing…", IsError: false}
+					})
+				}
 			} else {
 				// Generic fetch error.
 				errBody := util.FetchBodyCompleteMsg{

@@ -25,10 +25,10 @@ type Coordinator struct {
 	cfg   config.Config
 	store *cache.SQLiteStore
 
-	mu      sync.Mutex
-	imap    map[string]*IMAPWorker // keyed by email
-	smtp    map[string]*SMTPWorker // keyed by email
-	creds   map[string]*auth.Credentials
+	mu    sync.Mutex
+	imap  map[string]*IMAPWorker // keyed by email
+	smtp  map[string]*SMTPWorker // keyed by email
+	creds map[string]*auth.Credentials
 
 	program *tea.Program // set after bubbletea starts, for async progress messages
 }
@@ -215,7 +215,13 @@ func (c *Coordinator) MarkRead(acctEmail, folder string, uid uint32) tea.Cmd {
 			c.store.FailOp(opID, "no IMAP worker")
 			return nil
 		}
-		w.MarkRead(folder, uid)
+		if err := w.MarkRead(folder, uid); err != nil {
+			// Leave the op failed so a reconnect retry can pick it up;
+			// the optimistic cache update already reflects the read state.
+			logging.Warn("mark_read", "IMAP mark read failed", logging.Acct(acctEmail), logging.Fld(folder), logging.MsgUID(uid), logging.Err(err))
+			c.store.FailOp(opID, err.Error())
+			return nil
+		}
 		c.store.CompleteOp(opID)
 		return nil
 	}
@@ -661,9 +667,9 @@ func (c *Coordinator) RetryPendingOps() tea.Cmd {
 					c.store.FailOp(op.ID, "no IMAP worker")
 					continue
 				}
-				for _, uid := range payload.UIDs {
-					w.MarkRead(op.Folder, uid)
-				}
+				// Propagate the batch error so a failed mark-read stays
+				// retryable instead of being silently completed.
+				err = w.MarkReadBatch(op.Folder, payload.UIDs)
 			}
 
 			if err != nil {
@@ -674,6 +680,32 @@ func (c *Coordinator) RetryPendingOps() tea.Cmd {
 			}
 		}
 		return nil
+	}
+}
+
+// markReadBatch groups the queued mark-read ops targeting one folder.
+type markReadBatch struct {
+	uids  []uint32
+	opIDs []int64
+}
+
+// retryMarkReadBatches executes one batched mark-read per folder and settles
+// each queued op according to its own folder's outcome: ops whose folder batch
+// failed are marked failed (and stay retryable), ops whose batch succeeded are
+// completed. `do` is the IMAP batch call, injected for testability.
+func retryMarkReadBatches(store *cache.SQLiteStore, acctEmail string, batches map[string]*markReadBatch, do func(folder string, uids []uint32) error) {
+	for folder, b := range batches {
+		logging.Info("retry", "batched mark_read retry", logging.Acct(acctEmail), logging.Fld(folder), logging.KV("count", len(b.uids)))
+		if err := do(folder, b.uids); err != nil {
+			logging.Warn("retry", "batched mark_read failed", logging.Acct(acctEmail), logging.Fld(folder), logging.Err(err))
+			for _, id := range b.opIDs {
+				store.FailOp(id, err.Error())
+			}
+			continue
+		}
+		for _, id := range b.opIDs {
+			store.CompleteOp(id)
+		}
 	}
 }
 
@@ -726,8 +758,7 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig) error {
 	// Retry any pending operations for this account before syncing folders.
 	// Batch mark_read ops by folder to avoid flooding the server.
 	ops := c.store.PendingOps()
-	markReadByFolder := make(map[string][]uint32) // folder → UIDs
-	var markReadOpIDs []int64
+	markReadBatches := make(map[string]*markReadBatch) // folder → UIDs + op IDs
 	for _, op := range ops {
 		if op.Account != acct.Email {
 			continue
@@ -754,24 +785,22 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig) error {
 				c.store.FailOp(op.ID, "bad payload: "+err.Error())
 				continue
 			}
-			// Collect UIDs by folder for batching.
-			markReadByFolder[op.Folder] = append(markReadByFolder[op.Folder], payload.UIDs...)
-			markReadOpIDs = append(markReadOpIDs, op.ID)
+			// Collect UIDs and op IDs by folder so each op is settled by
+			// its own folder's batch outcome.
+			b := markReadBatches[op.Folder]
+			if b == nil {
+				b = &markReadBatch{}
+				markReadBatches[op.Folder] = b
+			}
+			b.uids = append(b.uids, payload.UIDs...)
+			b.opIDs = append(b.opIDs, op.ID)
 		default:
 			// Send ops are retried separately.
 			c.store.FailOp(op.ID, "skipped during sync")
 		}
 	}
 	// Execute batched mark_read — one SELECT+STORE per folder instead of per UID.
-	for folder, uids := range markReadByFolder {
-		logging.Info("retry", "batched mark_read retry", logging.Acct(acct.Email), logging.Fld(folder), logging.KV("count", len(uids)))
-		if err := w.MarkReadBatch(folder, uids); err != nil {
-			logging.Warn("retry", "batched mark_read failed", logging.Acct(acct.Email), logging.Fld(folder), logging.Err(err))
-		}
-	}
-	for _, opID := range markReadOpIDs {
-		c.store.CompleteOp(opID)
-	}
+	retryMarkReadBatches(c.store, acct.Email, markReadBatches, w.MarkReadBatch)
 
 	// List mailboxes.
 	folders, err := w.ListMailboxes()

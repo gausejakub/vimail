@@ -8,7 +8,7 @@ vimail brings the speed of Vim navigation to your inbox with a 3-pane layout, mo
 
 - **Vim-style modal editing** — Normal, Insert, Visual, and Command modes
 - **3-pane layout** — Mailbox sidebar, message list, and preview pane
-- **8 color themes** — vimail, tokyonight, catppuccin, kanagawa, gruvbox, nord, matrix, system
+- **10 color themes** — vimail, tokyonight, catppuccin, kanagawa, gruvbox, nord, matrix, cliamp, omarchy, system
 - **Hot-swappable themes** — Switch with `:theme <name>` at any time
 - **AI compose assistant** — `:ai` in the editor to draft or rewrite emails using any CLI agent
 - **Compose with Vim** — Full Vim keybindings in the message body editor
@@ -197,7 +197,11 @@ After adding accounts, run `vimail setup` to store credentials.
 
 ### Available themes
 
-`vimail` `tokyonight` `catppuccin` `kanagawa` `gruvbox` `nord` `matrix` `system`
+`vimail` `tokyonight` `catppuccin` `kanagawa` `gruvbox` `nord` `matrix` `cliamp` `omarchy` `system`
+
+- `cliamp` — retro Winamp-style palette: black background, hot-green accent, VU-meter status colors.
+- `omarchy` — adapts to the [Omarchy](https://omarchy.org) ecosystem. When Omarchy's active theme palette (`~/.local/state/omarchy/current/theme/colors.toml`) exists, vimail uses its exact semantic colors (accent, selection, muted, background shades); otherwise it falls back to the terminal's ANSI-16 palette, which Omarchy repaints on every theme switch anyway. After switching Omarchy themes, run `:theme omarchy` to re-read the palette.
+- `system` — plain terminal ANSI-16 colors; also matches any terminal-theming setup.
 
 ## AI Compose Assistant
 

@@ -27,7 +27,7 @@ type Theme interface {
 	BorderFocused() lipgloss.Color
 	BorderDim() lipgloss.Color
 
-	Selection() lipgloss.Color    // cursor/selection row background
+	Selection() lipgloss.Color     // cursor/selection row background
 	SelectionText() lipgloss.Color // text on selection row
 
 	NormalMode() lipgloss.Color
@@ -79,8 +79,16 @@ func Names() []string {
 	return names
 }
 
+// refresher is implemented by themes that derive their palette from the
+// environment (e.g. omarchy) and want to re-read it on activation.
+type refresher interface{ Refresh() }
+
 func SetCurrent(name string) {
-	currentTheme = Get(name)
+	t := Get(name)
+	if r, ok := t.(refresher); ok {
+		r.Refresh()
+	}
+	currentTheme = t
 }
 
 func Current() Theme {

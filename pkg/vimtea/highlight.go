@@ -14,7 +14,6 @@ import (
 // using the Chroma library for language detection and highlighting
 type syntaxHighlighter struct {
 	filename    string            // File name used to determine language
-	language    string            // Detected language
 	syntaxTheme string            // Chroma theme to use for highlighting
 	enabled     bool              // Whether highlighting is enabled
 	cache       map[string]string // Cache of highlighted lines for performance

@@ -73,7 +73,6 @@ type editorModel struct {
 	buffer     *buffer // Text buffer with undo/redo
 	cursor     Cursor  // Current cursor position
 	yankBuffer string  // Clipboard
-	lastOp     string  // Last operation performed (for repeating with .)
 	fullScreen bool    // Whether to use the full terminal screen
 
 	mode              EditorMode // Current mode

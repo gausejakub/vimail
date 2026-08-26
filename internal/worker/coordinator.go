@@ -807,6 +807,56 @@ func (c *Coordinator) ensureIMAPWorker(acct config.AccountConfig) (*IMAPWorker, 
 	return w, nil
 }
 
+// ensureSMTPWorker returns an SMTP worker for the account, creating one if
+// the coordinator has not synced yet (the sync path normally creates it).
+func (c *Coordinator) ensureSMTPWorker(acctEmail string) (*SMTPWorker, error) {
+	if w := c.getSMTPWorker(acctEmail); w != nil {
+		return w, nil
+	}
+	acct, ok := c.accountByEmail(acctEmail)
+	if !ok {
+		return nil, fmt.Errorf("no such account: %s", acctEmail)
+	}
+	if acct.SMTPHost == "" {
+		return nil, fmt.Errorf("no SMTP host configured for %s", acctEmail)
+	}
+	c.mu.Lock()
+	creds := c.creds[acctEmail]
+	c.mu.Unlock()
+	if creds == nil {
+		return nil, fmt.Errorf("no credentials resolved")
+	}
+	w := NewSMTPWorker(acct, creds)
+	c.mu.Lock()
+	c.smtp[acctEmail] = w
+	c.mu.Unlock()
+	return w, nil
+}
+
+// SendNow synchronously sends an email through the queued SendAndArchive
+// path, creating the SMTP worker (and, best-effort, the IMAP worker for the
+// Sent append) if needed. For callers without a bubbletea loop (the MCP
+// server). The queued op keeps a failed send retryable, and op claiming
+// guarantees it executes at most once across processes.
+func (c *Coordinator) SendNow(acctEmail string, req SendRequest) SendResult {
+	// Worker setup failure is not fatal here: SendAndArchive still queues
+	// the op and fails it retryably — the same state a TUI send leaves
+	// when offline.
+	if _, err := c.ensureSMTPWorker(acctEmail); err != nil {
+		logging.Warn("send", "SMTP worker unavailable, send will be queued for retry", logging.Acct(acctEmail), logging.Err(err))
+	}
+	// Without an IMAP connection the send still works — the sent message
+	// just isn't appended to the Sent folder until one exists.
+	if acct, ok := c.accountByEmail(acctEmail); ok && acct.IMAPHost != "" {
+		if _, err := c.ensureIMAPWorker(acct); err != nil {
+			logging.Warn("send", "IMAP unavailable, skipping Sent append", logging.Acct(acctEmail), logging.Err(err))
+		}
+	}
+	msg := c.SendAndArchive(acctEmail, req)()
+	res, _ := msg.(SendResult)
+	return res
+}
+
 // accountByEmail finds the config entry for an account email.
 func (c *Coordinator) accountByEmail(acctEmail string) (config.AccountConfig, bool) {
 	for _, acct := range c.cfg.Accounts {

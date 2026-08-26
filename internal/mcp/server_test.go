@@ -60,9 +60,14 @@ func seededStore(t *testing.T) *cache.SQLiteStore {
 // connect starts the server on an in-memory transport and returns a live
 // client session.
 func connect(t *testing.T, store *cache.SQLiteStore) *sdk.ClientSession {
+	return connectCfg(t, store, config.Config{})
+}
+
+// connectCfg is connect with a caller-supplied config (e.g. MCP options).
+func connectCfg(t *testing.T, store *cache.SQLiteStore, cfg config.Config) *sdk.ClientSession {
 	t.Helper()
 	ctx := context.Background()
-	srv := New(config.Config{}, store, worker.NewCoordinator(config.Config{}, store))
+	srv := New(cfg, store, worker.NewCoordinator(cfg, store))
 
 	serverT, clientT := sdk.NewInMemoryTransports()
 	if _, err := srv.Connect(ctx, serverT); err != nil {

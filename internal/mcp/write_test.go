@@ -9,6 +9,7 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/gausejakub/vimail/internal/cache"
+	"github.com/gausejakub/vimail/internal/config"
 	"github.com/gausejakub/vimail/internal/email"
 )
 
@@ -86,7 +87,7 @@ func TestMarkReadCacheAndQueue(t *testing.T) {
 
 	// The IMAP op is queued; with no connection it failed but stays
 	// retryable — the same state a TUI mark-read leaves when offline.
-	ops := store.PendingOps()
+	ops := store.RecentOps(10)
 	if len(ops) != 1 || ops[0].Type != cache.OpMarkRead || ops[0].Folder != "Inbox" {
 		t.Fatalf("queue after mark_read = %+v, want one retryable mark_read op", ops)
 	}
@@ -109,7 +110,7 @@ func TestDeleteMessageMovesToTrashOnly(t *testing.T) {
 	if len(tombstones) != 1 || len(tombstones[0].UIDs) != 1 || tombstones[0].UIDs[0] != 2 {
 		t.Errorf("tombstones = %+v, want UID 2", tombstones)
 	}
-	ops := store.PendingOps()
+	ops := store.RecentOps(10)
 	if len(ops) != 1 || ops[0].Type != cache.OpDelete {
 		t.Fatalf("queue after delete_message = %+v, want one retryable delete op", ops)
 	}
@@ -124,6 +125,21 @@ func TestSyncToolReportsFailureCleanly(t *testing.T) {
 	// The test coordinator has no account config, so sync must surface a
 	// clear error instead of succeeding silently.
 	session := connect(t, seededStore(t))
+	expectToolError(t, session, "sync", map[string]any{})
+}
+
+func TestSyncToolReportsLockContention(t *testing.T) {
+	store := seededStore(t)
+	release, ok := store.TryAcquireSyncLock(testAcct)
+	if !ok {
+		t.Fatal("acquire setup sync lock")
+	}
+	defer release()
+
+	cfg := config.Config{Accounts: []config.AccountConfig{{
+		Email: testAcct, IMAPHost: "imap.example.com",
+	}}}
+	session := connectCfg(t, store, cfg)
 	expectToolError(t, session, "sync", map[string]any{})
 }
 
@@ -163,13 +179,17 @@ func TestTwoProcessWritePath(t *testing.T) {
 	call(t, session, "delete_message", map[string]any{"folder": "Inbox", "uid": 1}, &out)
 
 	// The TUI process sees the queued op…
-	opsTUI := storeTUI.PendingOps()
+	opsTUI := storeTUI.RecentOps(10)
 	if len(opsTUI) != 1 || opsTUI[0].Type != cache.OpDelete {
 		t.Fatalf("TUI store queue = %+v, want the MCP-issued delete op", opsTUI)
 	}
 
-	// …and only one of the two processes can claim it.
+	// The failed immediate attempt is backed off. Make it due, then prove
+	// only one of the two processes can claim it.
 	id := opsTUI[0].ID
+	if _, err := dbMCP.Exec(`UPDATE pending_ops SET next_attempt_at = ? WHERE id = ?`, time.Now().UTC().Add(-time.Second).Format(time.RFC3339), id); err != nil {
+		t.Fatalf("make op retry due: %v", err)
+	}
 	tuiClaim := storeTUI.StartOp(id)
 	mcpClaim := storeMCP.StartOp(id)
 	if tuiClaim == mcpClaim {

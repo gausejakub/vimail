@@ -76,7 +76,7 @@ func TestSendFailureLeavesOpRetryable(t *testing.T) {
 	}
 
 	// TUI-consistent failure state: one queued send op, still retryable.
-	ops := store.PendingOps()
+	ops := store.RecentOps(10)
 	if len(ops) != 1 || ops[0].Type != cache.OpSend {
 		t.Fatalf("queue after failed send = %+v, want one retryable send op", ops)
 	}

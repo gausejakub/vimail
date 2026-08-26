@@ -11,6 +11,7 @@ package mcp
 import (
 	"context"
 	"sync"
+	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -21,6 +22,8 @@ import (
 
 // version identifies the vmail MCP server implementation to clients.
 const version = "0.1.0"
+
+const pendingOpsRetryInterval = time.Minute
 
 // Server wraps an MCP server over the vmail SQLite cache.
 type Server struct {
@@ -61,7 +64,29 @@ func New(cfg config.Config, store *cache.SQLiteStore, coord *worker.Coordinator)
 
 // Run serves MCP over stdio until the client disconnects or ctx is canceled.
 func (s *Server) Run(ctx context.Context) error {
+	retryCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go s.retryPendingOps(retryCtx)
 	return s.srv.Run(ctx, &sdk.StdioTransport{})
+}
+
+// retryPendingOps gives a standalone, long-running MCP process the same
+// self-healing behavior the TUI gets from its five-minute account sync. The
+// queue enforces per-op backoff and an attempt cap, so persistent failures do
+// not spin. Credentials and connections remain lazy until work is due.
+func (s *Server) retryPendingOps(ctx context.Context) {
+	ticker := time.NewTicker(pendingOpsRetryInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if s.coord != nil && len(s.store.RetryableOps()) > 0 {
+				s.coord.RetryPendingOps()()
+			}
+		}
+	}
 }
 
 // Connect attaches the server to an arbitrary transport. Tests use this with

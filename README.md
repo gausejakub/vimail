@@ -11,7 +11,8 @@ vimail brings the speed of Vim navigation to your inbox with a 3-pane layout, mo
 - **10 color themes** — vimail, tokyonight, catppuccin, kanagawa, gruvbox, nord, matrix, cliamp, omarchy, system
 - **Hot-swappable themes** — Switch with `:theme <name>` at any time
 - **AI compose assistant** — `:ai` in the editor to draft or rewrite emails using any CLI agent
-- **Compose with Vim** — Full Vim keybindings in the message body editor
+- **Compose with Vim** — Full Vim keybindings in the message body editor: operators with motions (`dw`, `cw`, `d$`), count prefixes (`2dd`, `3x`, `3J`), linewise visual delete (`V` + `d`), and `/` `?` `n` `N` search
+- **MCP server** — `vimail mcp` lets local AI clients (Claude Code, Claude Desktop) read, search, review, and manage your mail through the offline cache and queue — sending stays off unless you opt in
 - **Global search** — Press `/` to search across all accounts and folders
 - **Multiple accounts** — Manage several email accounts in one view
 - **Export to ZIP** — Press `E` to export messages with text, HTML, metadata, and attachments
@@ -20,12 +21,12 @@ vimail brings the speed of Vim navigation to your inbox with a 3-pane layout, mo
 - **HTML email rendering** — Clean text conversion via html2text, open raw HTML in browser with `o`
 - **JSON auto-format** — Pretty-prints JSON bodies in the preview pane
 - **Incremental sync** — Per-account IMAP sync with loading indicators
-- **Offline operation queue** — Deletes, sends, and mark-read ops are queued in SQLite and retried on reconnect
+- **Offline operation queue** — Deletes, sends, and mark-read ops are queued in SQLite and retried on reconnect with exponential backoff; safe to share between the TUI and the MCP server (each op runs exactly once)
 - **Pure Go** — No CGO required, single static binary
 
 ## Requirements
 
-- Go 1.24+
+- Go 1.26+ (only when building from source)
 - A terminal with truecolor support (`COLORTERM=truecolor`)
 
 ## Install
@@ -67,6 +68,15 @@ If built locally without moving to `$PATH`:
 ```
 
 vimail launches in fullscreen (alt-screen) mode. Press `q` or `:quit` to exit.
+
+Subcommands:
+
+| Command | Purpose |
+|---------|---------|
+| `vimail` | Launch the TUI |
+| `vimail setup` | Store account credentials in the OS keyring |
+| `vimail mcp` | Run the MCP server on stdio for AI clients (see [MCP server](#mcp-server-ai-clients)) |
+| `vimail help` | Show usage |
 
 ### Account Setup
 
@@ -298,7 +308,7 @@ Any tool that accepts a prompt as an argument and prints the response to stdout 
 }
 ```
 
-Reads (`list_accounts`, `list_folders`, `list_messages`, `read_message`, `search_messages`) are served from the local cache; search results expose usable folder/UID handles and a `truncated` flag. For natural review tasks, `list_recent_messages` can sync and list a time window across every account in one call, excluding non-received folders and collapsing Gmail label copies; `read_messages` then opens the selected bodies as one batch and can fetch missing bodies without marking messages read. Writes (`save_draft`, `delete_draft`, `mark_read`, `delete_message`) update the cache immediately and queue the server-side operation. `mark_read` and `delete_message` accept either one `uid` or a batch in `uids`, producing one queue row per batch; deletion only ever moves to Trash, so permanent deletion stays in the TUI. The `sync` tool refreshes an account or folder on demand and delivers queued writes. The MCP server is safe to run alongside the TUI: queued operations are claimed exactly once and account syncs are serialized across processes.
+Reads (`list_accounts`, `list_folders`, `list_messages`, `read_message`, `search_messages`) are served from the local cache; search results expose usable folder/UID handles and a `truncated` flag. For natural review tasks, `list_recent_messages` can sync and list a time window across every account in one call, excluding non-received folders and collapsing Gmail label copies; `read_messages` then opens the selected bodies as one batch and can fetch missing bodies without marking messages read. Writes (`save_draft`, `delete_draft`, `mark_read`, `delete_message`) update the cache immediately and queue the server-side operation. `mark_read` and `delete_message` accept either one `uid` or a batch in `uids`, producing one queue row per batch; deletion only ever moves to Trash, so permanent deletion stays in the TUI. The `sync` tool refreshes an account or folder on demand and delivers queued writes. The MCP server is safe to run alongside the TUI: queued operations are claimed exactly once, account syncs are serialized across processes, and the TUI refreshes its folder counts and message list on its own when the MCP process changes the cache. A standalone MCP process (no TUI running) connects to IMAP lazily on the first write and retries any queued operations every minute; the outcome of every operation is visible in the TUI's `:ops` view.
 
 A request such as “review yesterday's mail and tell me what matters” normally takes two MCP calls: `list_recent_messages` with `fresh=true`, followed by one `read_messages` batch with `fetch_missing=true`. Importance remains the AI client's judgment rather than a hard-coded sender or subject filter.
 
@@ -333,17 +343,18 @@ cat ~/.local/share/vimail/vimail.log | jq 'select(.op == "sync" and .account == 
 ## Project structure
 
 ```
-main.go                          Entry point, subcommands (setup, help)
+main.go                          Entry point, subcommands (setup, mcp, help)
 internal/
   config/                        TOML config loading
   auth/                          OS keyring, OAuth2 device flow, setup CLI
   email/                         Domain types (Account, Folder, Message), Store interface
   ai/                            AI agent CLI wrapper (claude, ollama, etc.)
   logging/                       Async structured JSON logger with rotation
-  cache/                         SQLite schema + Store implementation
+  cache/                         SQLite schema + Store implementation, multi-process op queue
   worker/                        IMAP worker, SMTP worker, Coordinator
+  mcp/                           MCP server (stdio) and its tools
   mock/                          Mock data for dev mode
-  theme/                         Theme engine + 8 themes
+  theme/                         Theme engine + 10 themes
   tui/
     app.go                       Root bubbletea model
     keys/                        Mode enum + keybinding maps
@@ -364,6 +375,7 @@ pkg/
 
 ```sh
 go test ./...
+(cd pkg/vimtea && go test ./...)   # the editor is a separate module; CI runs both
 ```
 
 ## Status

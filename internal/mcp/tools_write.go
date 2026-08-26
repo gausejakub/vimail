@@ -10,6 +10,7 @@ import (
 	"github.com/gausejakub/vimail/internal/cache"
 	"github.com/gausejakub/vimail/internal/email"
 	"github.com/gausejakub/vimail/internal/logging"
+	"github.com/gausejakub/vimail/internal/worker"
 )
 
 type saveDraftArgs struct {
@@ -68,16 +69,40 @@ type deleteMessageResult struct {
 	Note    string   `json:"note"`
 }
 
+type restoreMessagesArgs struct {
+	Account     string   `json:"account,omitempty" jsonschema:"account email; may be omitted when exactly one account is configured"`
+	UID         uint32   `json:"uid,omitempty" jsonschema:"one Trash UID; use either uid or uids"`
+	UIDs        []uint32 `json:"uids,omitempty" jsonschema:"Trash UIDs from list_messages or search_messages; use either uid or uids"`
+	Destination string   `json:"destination,omitempty" jsonschema:"folder to restore into (default Inbox)"`
+}
+
+type restoreMessagesResult struct {
+	Account       string   `json:"account"`
+	Source        string   `json:"source"`
+	Destination   string   `json:"destination"`
+	UIDs          []uint32 `json:"uids"`
+	Requested     int      `json:"requested"`
+	Delivered     int      `json:"delivered"`
+	ServerUpdated bool     `json:"server_updated"`
+	CacheUpdated  bool     `json:"cache_updated"`
+	Queued        bool     `json:"queued"`
+	OperationID   int64    `json:"operation_id,omitempty"`
+	Note          string   `json:"note"`
+}
+
 type syncArgs struct {
 	Account string `json:"account,omitempty" jsonschema:"account email; may be omitted when exactly one account is configured"`
 	Folder  string `json:"folder,omitempty" jsonschema:"sync only this folder; omit to sync the whole account"`
+	Full    bool   `json:"full,omitempty" jsonschema:"authoritatively rebuild cached headers to reconcile server-side moves/deletes; slower than incremental sync"`
 }
 
 type syncToolResult struct {
-	Account     string `json:"account"`
-	Folder      string `json:"folder,omitempty"`
-	NewMessages int    `json:"new_messages"`
-	DurationMs  int64  `json:"duration_ms"`
+	Account         string `json:"account"`
+	Folder          string `json:"folder,omitempty"`
+	NewMessages     int    `json:"new_messages"`
+	MessagesFetched int    `json:"messages_fetched,omitempty"`
+	DurationMs      int64  `json:"duration_ms"`
+	Full            bool   `json:"full"`
 }
 
 // resolveCreds resolves account credentials once, on first use, so server
@@ -218,8 +243,66 @@ func (s *Server) registerWriteTools() {
 	})
 
 	sdk.AddTool(s.srv, &sdk.Tool{
+		Name:        "restore_messages",
+		Description: "Restore one or many messages from Trash to Inbox (or another folder). Validates the whole batch, connects lazily, queues offline failures, and reconciles cache rows with server-assigned destination UIDs.",
+	}, func(ctx context.Context, req *sdk.CallToolRequest, args restoreMessagesArgs) (*sdk.CallToolResult, restoreMessagesResult, error) {
+		acct, err := s.resolveAccount(args.Account)
+		if err != nil {
+			return nil, restoreMessagesResult{}, err
+		}
+		uids, err := normalizeUIDs(args.UID, args.UIDs)
+		if err != nil {
+			return nil, restoreMessagesResult{}, err
+		}
+		if err := validateMessageUIDs(s.store, acct, "Trash", uids); err != nil {
+			return nil, restoreMessagesResult{}, err
+		}
+		destination := args.Destination
+		if destination == "" || destination == "INBOX" {
+			destination = "Inbox"
+		}
+		if destination == "Trash" {
+			return nil, restoreMessagesResult{}, fmt.Errorf("destination must differ from Trash")
+		}
+		if !folderExists(s.store, acct, destination) {
+			return nil, restoreMessagesResult{}, fmt.Errorf("destination folder %q not found for %s (see list_folders)", destination, acct)
+		}
+		if s.coord == nil {
+			return nil, restoreMessagesResult{}, fmt.Errorf("restore is unavailable: no coordinator configured")
+		}
+
+		restoreMsg := s.coord.RestoreFromTrash(acct, uids, destination)()
+		restore, ok := restoreMsg.(worker.RestoreResult)
+		if !ok {
+			return nil, restoreMessagesResult{}, fmt.Errorf("restore returned an unexpected result")
+		}
+		out := restoreMessagesResult{
+			Account: acct, Source: "Trash", Destination: destination, UIDs: uids,
+			Requested: len(uids), Delivered: restore.Count,
+			ServerUpdated: restore.Delivered, CacheUpdated: restore.Cached,
+			Queued: !restore.Delivered, OperationID: restore.OpID,
+		}
+		switch {
+		case restore.Delivered && restore.Cached:
+			out.Note = "restored on server and reconciled in cache"
+		case restore.Delivered:
+			out.Note = "restored on server; cache refresh needs attention"
+			if restore.Err != nil {
+				out.Note += ": " + restore.Err.Error()
+			}
+		default:
+			out.Note = "restore queued for retry; messages remain visible in Trash until server delivery"
+			if restore.Err != nil {
+				out.Note += ": " + restore.Err.Error()
+			}
+		}
+		logging.Info("mcp", "restore_messages", logging.Acct(acct), logging.Fld(destination), logging.KV("requested", len(uids)), logging.KV("delivered", restore.Count), logging.KV("queued", out.Queued))
+		return nil, out, nil
+	})
+
+	sdk.AddTool(s.srv, &sdk.Tool{
 		Name:        "sync",
-		Description: "Sync an account (or a single folder) with the IMAP server now, delivering any queued writes first. Reads are cache-first, so call this when fresh data matters.",
+		Description: "Sync an account (or a single folder) with the IMAP server now. Whole-account sync delivers queued writes first. Set full=true to rebuild cached headers authoritatively after server-side moves or deletes.",
 	}, func(ctx context.Context, req *sdk.CallToolRequest, args syncArgs) (*sdk.CallToolResult, syncToolResult, error) {
 		acct, err := s.resolveAccount(args.Account)
 		if err != nil {
@@ -233,20 +316,37 @@ func (s *Server) registerWriteTools() {
 		start := time.Now()
 		var newCount int
 		if args.Folder == "" {
-			newCount, err = s.coord.SyncAccountNow(acct)
+			if args.Full {
+				newCount, err = s.coord.SyncAccountFullNow(acct)
+			} else {
+				newCount, err = s.coord.SyncAccountNow(acct)
+			}
 		} else {
-			newCount, err = s.coord.SyncFolderNow(acct, args.Folder)
+			if !folderExists(s.store, acct, args.Folder) {
+				return nil, syncToolResult{}, fmt.Errorf("folder %q not found for %s (see list_folders)", args.Folder, acct)
+			}
+			if args.Full {
+				newCount, err = s.coord.SyncFolderFullNow(acct, args.Folder)
+			} else {
+				newCount, err = s.coord.SyncFolderNow(acct, args.Folder)
+			}
 		}
 		if err != nil {
 			return nil, syncToolResult{}, fmt.Errorf("sync failed: %w", err)
 		}
 		logging.Info("mcp", "sync complete", logging.Acct(acct), logging.Fld(args.Folder), logging.KV("new", newCount), logging.Dur(time.Since(start)))
-		return nil, syncToolResult{
-			Account:     acct,
-			Folder:      args.Folder,
-			NewMessages: newCount,
-			DurationMs:  time.Since(start).Milliseconds(),
-		}, nil
+		out := syncToolResult{
+			Account:    acct,
+			Folder:     args.Folder,
+			DurationMs: time.Since(start).Milliseconds(),
+			Full:       args.Full,
+		}
+		if args.Full {
+			out.MessagesFetched = newCount
+		} else {
+			out.NewMessages = newCount
+		}
+		return nil, out, nil
 	})
 }
 
@@ -302,4 +402,13 @@ func messageIDsForUIDs(store *cache.SQLiteStore, account, folder string, uids []
 		ids = append(ids, msg.ID)
 	}
 	return ids, nil
+}
+
+func folderExists(store *cache.SQLiteStore, account, folder string) bool {
+	for _, candidate := range store.FoldersFor(account) {
+		if candidate.Name == folder {
+			return true
+		}
+	}
+	return false
 }

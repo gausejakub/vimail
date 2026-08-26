@@ -25,6 +25,7 @@ func TestFailedOpsRemainRetryable(t *testing.T) {
 		{OpDelete, DeletePayload{UIDs: []uint32{1, 2}}},
 		{OpSend, SendPayload{From: "a@x.com", To: "b@x.com", Subject: "hi", Body: "text"}},
 		{OpMarkRead, MarkReadPayload{UIDs: []uint32{3}}},
+		{OpRestore, RestorePayload{UIDs: []uint32{4}, Destination: "Inbox"}},
 	}
 
 	for _, tc := range tests {
@@ -77,6 +78,10 @@ func TestFailedOpsRemainRetryable(t *testing.T) {
 		s.CompleteOp(id)
 		if findOp(s.PendingOps(), id) != nil {
 			t.Errorf("%s: completed op still in PendingOps", tc.opType)
+		}
+		completed := findOp(s.RecentOps(100), id)
+		if completed == nil || completed.Error != "" || !completed.NextAttemptAt.IsZero() {
+			t.Errorf("%s: completed op retained failure state: %+v", tc.opType, completed)
 		}
 	}
 }

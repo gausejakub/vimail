@@ -115,5 +115,17 @@ type RestoreResult struct {
 	Account   string
 	DstFolder string
 	Count     int
+	Remaining []uint32
+	OpID      int64
+	Delivered bool
+	Cached    bool
 	Err       error
+}
+
+// UIDMove maps a source mailbox UID to the UID assigned in the destination
+// mailbox by IMAP MOVE/COPYUID. Destination is zero when the server did not
+// report one.
+type UIDMove struct {
+	Source      uint32
+	Destination uint32
 }

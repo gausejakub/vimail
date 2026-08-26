@@ -2,11 +2,13 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/gausejakub/vimail/internal/cache"
 	"github.com/gausejakub/vimail/internal/email"
 	"github.com/gausejakub/vimail/internal/logging"
 )
@@ -48,6 +50,30 @@ type folderInfo struct {
 type listFoldersResult struct {
 	Account string       `json:"account"`
 	Folders []folderInfo `json:"folders"`
+}
+
+type listOperationsArgs struct {
+	Limit int `json:"limit,omitempty" jsonschema:"most recent operations to return (default 100, max 1000)"`
+}
+
+type operationInfo struct {
+	ID            int64  `json:"id"`
+	Type          string `json:"type"`
+	Status        string `json:"status"`
+	Account       string `json:"account"`
+	Folder        string `json:"folder,omitempty"`
+	Count         int    `json:"count,omitempty"`
+	Destination   string `json:"destination,omitempty"`
+	Attempts      int    `json:"attempts"`
+	Error         string `json:"error,omitempty"`
+	NextAttemptAt string `json:"next_attempt_at,omitempty"`
+	CreatedAt     string `json:"created_at"`
+	UpdatedAt     string `json:"updated_at"`
+}
+
+type listOperationsResult struct {
+	Limit      int             `json:"limit"`
+	Operations []operationInfo `json:"operations"`
 }
 
 type listMessagesArgs struct {
@@ -337,6 +363,54 @@ func (s *Server) registerReadTools() {
 			out.Accounts = append(out.Accounts, accountInfo{Email: a.Email, Name: a.Name})
 		}
 		logging.Debug("mcp", "list_accounts", logging.KV("count", len(out.Accounts)))
+		return nil, out, nil
+	})
+
+	sdk.AddTool(s.srv, &sdk.Tool{
+		Name:        "list_operations",
+		Description: "List recent mailbox write operations and their delivery state. Use this to verify whether mark-read, delete, restore, or send operations completed, remain queued/retrying, or failed.",
+	}, func(ctx context.Context, req *sdk.CallToolRequest, args listOperationsArgs) (*sdk.CallToolResult, listOperationsResult, error) {
+		limit := args.Limit
+		if limit <= 0 {
+			limit = 100
+		}
+		if limit > 1000 {
+			limit = 1000
+		}
+		out := listOperationsResult{Limit: limit}
+		for _, op := range s.store.RecentOps(limit) {
+			info := operationInfo{
+				ID: op.ID, Type: string(op.Type), Status: string(op.Status),
+				Account: op.Account, Folder: op.Folder, Attempts: op.Attempts,
+				CreatedAt: op.CreatedAt.Format(time.RFC3339), UpdatedAt: op.UpdatedAt.Format(time.RFC3339),
+			}
+			if op.Status != cache.OpCompleted {
+				info.Error = op.Error
+				if !op.NextAttemptAt.IsZero() {
+					info.NextAttemptAt = op.NextAttemptAt.Format(time.RFC3339)
+				}
+			}
+			switch op.Type {
+			case cache.OpDelete:
+				var payload cache.DeletePayload
+				if json.Unmarshal(op.Payload, &payload) == nil {
+					info.Count = len(payload.UIDs)
+				}
+			case cache.OpMarkRead:
+				var payload cache.MarkReadPayload
+				if json.Unmarshal(op.Payload, &payload) == nil {
+					info.Count = len(payload.UIDs)
+				}
+			case cache.OpRestore:
+				var payload cache.RestorePayload
+				if json.Unmarshal(op.Payload, &payload) == nil {
+					info.Count = len(payload.UIDs)
+					info.Destination = payload.Destination
+				}
+			}
+			out.Operations = append(out.Operations, info)
+		}
+		logging.Debug("mcp", "list_operations", logging.KV("returned", len(out.Operations)))
 		return nil, out, nil
 	})
 

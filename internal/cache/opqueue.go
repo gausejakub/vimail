@@ -13,6 +13,7 @@ const (
 	OpDelete   OpType = "delete"
 	OpSend     OpType = "send"
 	OpMarkRead OpType = "mark_read"
+	OpRestore  OpType = "restore"
 )
 
 // OpStatus tracks the lifecycle of a queued operation.
@@ -56,6 +57,12 @@ type SendPayload struct {
 // MarkReadPayload is the JSON payload for mark-read operations.
 type MarkReadPayload struct {
 	UIDs []uint32 `json:"uids"`
+}
+
+// RestorePayload is the JSON payload for restoring messages from Trash.
+type RestorePayload struct {
+	UIDs        []uint32 `json:"uids"`
+	Destination string   `json:"destination"`
 }
 
 // QueueOp persists a new operation and returns its ID.
@@ -132,9 +139,32 @@ func (s *SQLiteStore) startOp(id int64, forceRetry bool) bool {
 // so a late finisher cannot stomp the new owner's state.
 func (s *SQLiteStore) CompleteOp(id int64) {
 	now := time.Now().UTC().Format(time.RFC3339)
-	s.db.Exec(`UPDATE pending_ops SET status = ?, owner = '', lease_until = NULL, updated_at = ?
+	s.db.Exec(`UPDATE pending_ops SET status = ?, owner = '', lease_until = NULL, error = '', next_attempt_at = NULL, updated_at = ?
 		WHERE id = ? AND (owner = ? OR owner = '')`,
 		string(OpCompleted), now, id, s.procID)
+}
+
+// UpdateOpPayload replaces the payload of an operation currently claimed by
+// this process. Restore uses it after a partially successful chunked move so
+// retries contain only source UIDs that remain in Trash.
+func (s *SQLiteStore) UpdateOpPayload(id int64, payload interface{}) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	res, err := s.db.Exec(`UPDATE pending_ops SET payload = ?, updated_at = ? WHERE id = ? AND owner = ?`,
+		string(data), time.Now().UTC().Format(time.RFC3339), id, s.procID)
+	if err != nil {
+		return err
+	}
+	updated, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if updated != 1 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 // FailOp marks an operation as failed with an error message. Failed ops

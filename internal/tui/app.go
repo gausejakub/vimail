@@ -711,10 +711,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case util.RestoreRequestMsg:
 		logging.Info("restore", "single restore requested", logging.Acct(msg.Account), logging.MsgUID(msg.Message.UID))
 		acct := msg.Account
-		// Remove from local Trash cache.
-		m.store.DeleteMessage(acct, "Trash", msg.Message.ID)
 		if m.coordinator != nil && msg.Message.UID > 0 {
-			cmds = append(cmds, m.coordinator.RestoreFromTrash(acct, []uint32{msg.Message.UID}, "INBOX"))
+			cmds = append(cmds, m.coordinator.RestoreFromTrash(acct, []uint32{msg.Message.UID}, "Inbox"))
 			var cmd tea.Cmd
 			m.status, cmd = m.status.Update(util.ProcessStartMsg{ID: "restore", Label: fmt.Sprintf("↩ %s: restoring…", acct)})
 			cmds = append(cmds, cmd)
@@ -723,44 +721,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return util.InfoMsg{Text: "Message restored", IsError: false}
 			})
 		}
-		// Refresh: re-run search if active, otherwise refresh Trash folder.
-		if m.msglist.IsSearchActive() {
-			cmds = append(cmds, m.executeSearch(m.msglist.SearchQuery()))
-		} else {
-			cmds = append(cmds, func() tea.Msg {
-				return util.FolderRefreshMsg{Account: acct, Folder: "Trash"}
-			})
-		}
 		return m, tea.Batch(cmds...)
 
 	case util.BatchRestoreRequestMsg:
 		logging.Info("restore", "batch restore requested", logging.Acct(msg.Account), logging.KV("count", len(msg.Messages)), logging.KV("select_all", msg.SelectAll))
 		acct := msg.Account
-		var ids []string
 		var uids []uint32
 		if msg.SelectAll {
 			if cs, ok := m.store.(*cache.SQLiteStore); ok {
 				uids = cs.AllUIDs(acct, "Trash")
-				for _, uid := range uids {
-					ids = append(ids, fmt.Sprintf("%d", uid))
-				}
 			}
 		}
-		if len(ids) == 0 {
+		if len(uids) == 0 {
 			for _, message := range msg.Messages {
-				ids = append(ids, message.ID)
 				if message.UID > 0 {
 					uids = append(uids, message.UID)
 				}
 			}
 		}
-		m.store.DeleteMessages(acct, "Trash", ids)
 		n := len(msg.Messages)
 		if msg.SelectAll {
 			n = m.msglist.TotalCount()
 		}
 		if m.coordinator != nil && len(uids) > 0 {
-			cmds = append(cmds, m.coordinator.RestoreFromTrash(acct, uids, "INBOX"))
+			cmds = append(cmds, m.coordinator.RestoreFromTrash(acct, uids, "Inbox"))
 			var cmd tea.Cmd
 			m.status, cmd = m.status.Update(util.ProcessStartMsg{
 				ID:    "restore",
@@ -772,13 +756,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return util.InfoMsg{Text: fmt.Sprintf("%d messages restored", n), IsError: false}
 			})
 		}
-		if m.msglist.IsSearchActive() {
-			cmds = append(cmds, m.executeSearch(m.msglist.SearchQuery()))
-		} else {
-			cmds = append(cmds, func() tea.Msg {
-				return util.FolderRefreshMsg{Account: acct, Folder: "Trash"}
-			})
-		}
 		return m, tea.Batch(cmds...)
 
 	case worker.RestoreResult:
@@ -786,7 +763,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.status, cmd = m.status.Update(util.ProcessEndMsg{ID: "restore"})
 		cmds = append(cmds, cmd)
-		if msg.Err != nil {
+		if msg.Err != nil && msg.Delivered {
+			warning := "Restored on server, but cache refresh failed: " + msg.Err.Error()
+			cmds = append(cmds, func() tea.Msg {
+				return util.InfoMsg{Text: warning, IsError: true}
+			})
+		} else if msg.Err != nil && msg.OpID > 0 {
+			queued := "Restore queued for retry: " + msg.Err.Error()
+			cmds = append(cmds, func() tea.Msg {
+				return util.InfoMsg{Text: queued, IsError: false}
+			})
+		} else if msg.Err != nil {
 			errText := "Restore failed: " + msg.Err.Error()
 			cmds = append(cmds, func() tea.Msg {
 				return util.InfoMsg{Text: errText, IsError: true}
@@ -797,11 +784,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, func() tea.Msg {
 				return util.InfoMsg{Text: fmt.Sprintf("%d message(s) restored to %s", n, dst), IsError: false}
 			})
-			// Sync destination folder so restored messages appear.
-			acct := msg.Account
-			if m.coordinator != nil {
-				cmds = append(cmds, m.coordinator.SyncFolder(acct, msg.DstFolder))
-			}
+		}
+		acct := msg.Account
+		if m.msglist.IsSearchActive() {
+			cmds = append(cmds, m.executeSearch(m.msglist.SearchQuery()))
+		} else {
+			cmds = append(cmds, func() tea.Msg {
+				return util.FolderRefreshMsg{Account: acct, Folder: "Trash"}
+			})
 		}
 		return m, tea.Batch(cmds...)
 
@@ -1733,6 +1723,10 @@ func opDescription(op cache.QueuedOp) string {
 		var p cache.MarkReadPayload
 		json.Unmarshal(op.Payload, &p)
 		return fmt.Sprintf("mark read %d msgs  %s/%s", len(p.UIDs), op.Account, op.Folder)
+	case cache.OpRestore:
+		var p cache.RestorePayload
+		json.Unmarshal(op.Payload, &p)
+		return fmt.Sprintf("restore %d msgs  %s/Trash → %s", len(p.UIDs), op.Account, p.Destination)
 	default:
 		return string(op.Type)
 	}

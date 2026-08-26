@@ -208,6 +208,75 @@ func TestDeleteMessageBulkUsesOneQueuedOperation(t *testing.T) {
 	}
 }
 
+func TestRestoreMessagesQueuesWithoutConnectionAndKeepsCache(t *testing.T) {
+	store := seededStore(t)
+	if _, err := store.EnsureFolder(testAcct, "Trash"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertMessage(testAcct, "Trash", email.Message{
+		UID: 77, MessageID: "<restore@example.com>", From: "sender@example.com",
+		To: testAcct, Subject: "Restore me", Date: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	session := connect(t, store)
+
+	res, err := session.CallTool(context.Background(), &sdk.CallToolParams{
+		Name: "restore_messages",
+		Arguments: map[string]any{
+			"account": testAcct, "uids": []uint32{77}, "destination": "Inbox",
+		},
+	})
+	if err != nil {
+		t.Fatalf("restore_messages transport error: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("restore_messages returned tool error: %v", res.Content)
+	}
+	var out restoreMessagesResult
+	raw, err := json.Marshal(res.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !out.Queued || out.ServerUpdated || out.CacheUpdated || out.Requested != 1 || out.Delivered != 0 || out.OperationID == 0 {
+		t.Fatalf("restore result = %+v", out)
+	}
+	if _, _, ok := store.MessageByUID(testAcct, "Trash", 77); !ok {
+		t.Fatal("offline restore removed the Trash cache row before server success")
+	}
+	ops := store.RecentOps(10)
+	if len(ops) != 1 || string(ops[0].Type) != "restore" {
+		t.Fatalf("queue = %+v, want one retryable restore op", ops)
+	}
+	var payload cache.RestorePayload
+	if err := json.Unmarshal(ops[0].Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.UIDs) != 1 || payload.UIDs[0] != 77 || payload.Destination != "Inbox" {
+		t.Fatalf("restore payload = %+v", payload)
+	}
+}
+
+func TestRestoreMessagesValidatesWholeBatchBeforeQueue(t *testing.T) {
+	store := seededStore(t)
+	if _, err := store.EnsureFolder(testAcct, "Trash"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertMessage(testAcct, "Trash", email.Message{
+		UID: 77, From: "sender@example.com", To: testAcct, Subject: "Restore me", Date: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	session := connect(t, store)
+	expectToolError(t, session, "restore_messages", map[string]any{"uids": []uint32{77, 999}})
+	if ops := store.RecentOps(10); len(ops) != 0 {
+		t.Fatalf("invalid restore queued operations: %+v", ops)
+	}
+}
+
 func TestSyncToolReportsFailureCleanly(t *testing.T) {
 	// The test coordinator has no account config, so sync must surface a
 	// clear error instead of succeeding silently.

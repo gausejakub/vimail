@@ -18,6 +18,7 @@ import (
 	"github.com/gausejakub/vimail/internal/auth"
 	"github.com/gausejakub/vimail/internal/cache"
 	"github.com/gausejakub/vimail/internal/config"
+	"github.com/gausejakub/vimail/internal/email"
 )
 
 const (
@@ -378,6 +379,17 @@ func (w *IMAPWorker) FolderStatus(folder string) (uidNext uint32, uidValidity ui
 // SyncFolder syncs a single folder via IMAP FETCH.
 // If onProgress is non-nil, it is called periodically with the number of new messages fetched so far.
 func (w *IMAPWorker) SyncFolder(folder string, onProgress ...func(fetched int)) (int, error) {
+	return w.syncFolder(folder, false, onProgress...)
+}
+
+// SyncFolderFull fetches an authoritative folder snapshot and only then
+// replaces the cached headers. This reconciles server-side moves and deletes
+// that incremental UID fetching cannot observe.
+func (w *IMAPWorker) SyncFolderFull(folder string, onProgress ...func(fetched int)) (int, error) {
+	return w.syncFolder(folder, true, onProgress...)
+}
+
+func (w *IMAPWorker) syncFolder(folder string, full bool, onProgress ...func(fetched int)) (int, error) {
 	w.opMu.Lock()
 	defer w.opMu.Unlock()
 
@@ -397,17 +409,27 @@ func (w *IMAPWorker) SyncFolder(folder string, onProgress ...func(fetched int)) 
 
 	// Check UIDVALIDITY.
 	storedUV, _ := w.store.GetUIDValidity(w.acct.Email, folder)
-	if storedUV != 0 && storedUV != selData.UIDValidity {
-		w.store.PurgeFolder(w.acct.Email, folder)
+	if !full {
+		if storedUV != 0 && storedUV != selData.UIDValidity {
+			w.store.PurgeFolder(w.acct.Email, folder)
+		}
+		w.store.SetUIDValidity(w.acct.Email, folder, selData.UIDValidity)
 	}
-	w.store.SetUIDValidity(w.acct.Email, folder, selData.UIDValidity)
 
 	if selData.NumMessages == 0 {
+		if full {
+			if err := w.store.ReplaceFolderHeaders(w.acct.Email, folder, nil, selData.UIDValidity); err != nil {
+				return 0, fmt.Errorf("reset empty folder cache: %w", err)
+			}
+		}
 		return 0, nil
 	}
 
 	// Find highest stored UID for incremental sync.
 	highUID, _ := w.store.HighestUID(w.acct.Email, folder)
+	if full {
+		highUID = 0
+	}
 
 	var seqSet imap.UIDSet
 	if highUID > 0 {
@@ -424,6 +446,7 @@ func (w *IMAPWorker) SyncFolder(folder string, onProgress ...func(fetched int)) 
 
 	fetchCmd := w.client.Fetch(seqSet, fetchOptions)
 	newCount := 0
+	var snapshot []email.Message
 
 	for {
 		msgData := fetchCmd.Next()
@@ -442,9 +465,13 @@ func (w *IMAPWorker) SyncFolder(folder string, onProgress ...func(fetched int)) 
 		}
 
 		msg := ParseEnvelope(uint32(buf.UID), buf.Envelope, buf.Flags)
-		if err := w.store.UpsertMessage(w.acct.Email, folder, msg); err != nil {
-			log.Printf("upsert message uid=%d folder=%s: %v", buf.UID, folder, err)
-			continue
+		if full {
+			snapshot = append(snapshot, msg)
+		} else {
+			if err := w.store.UpsertMessage(w.acct.Email, folder, msg); err != nil {
+				log.Printf("upsert message uid=%d folder=%s: %v", buf.UID, folder, err)
+				continue
+			}
 		}
 		newCount++
 		if len(onProgress) > 0 && onProgress[0] != nil && newCount%100 == 0 {
@@ -454,6 +481,11 @@ func (w *IMAPWorker) SyncFolder(folder string, onProgress ...func(fetched int)) 
 
 	if err := fetchCmd.Close(); err != nil {
 		return newCount, fmt.Errorf("FETCH: %w", err)
+	}
+	if full {
+		if err := w.store.ReplaceFolderHeaders(w.acct.Email, folder, snapshot, selData.UIDValidity); err != nil {
+			return 0, fmt.Errorf("replace folder cache: %w", err)
+		}
 	}
 
 	return newCount, nil
@@ -1025,26 +1057,36 @@ func (w *IMAPWorker) MoveToFolder(srcFolder string, uid uint32, dstFolder string
 
 // MoveToFolderBatch moves multiple messages from one folder to another via IMAP.
 func (w *IMAPWorker) MoveToFolderBatch(srcFolder string, uids []uint32, dstFolder string) error {
+	_, err := w.MoveToFolderBatchWithUIDs(srcFolder, uids, dstFolder)
+	return err
+}
+
+// MoveToFolderBatchWithUIDs moves messages with native IMAP MOVE (or the
+// library's UID-safe fallback) and returns destination UID mappings when the
+// server advertises UIDPLUS/IMAP4rev2.
+func (w *IMAPWorker) MoveToFolderBatchWithUIDs(srcFolder string, uids []uint32, dstFolder string) ([]UIDMove, error) {
 	w.opMu.Lock()
 	defer w.opMu.Unlock()
 
 	if w.client == nil {
-		return fmt.Errorf("not connected")
+		return nil, fmt.Errorf("not connected")
 	}
 	if len(uids) == 0 {
-		return nil
+		return nil, nil
 	}
-	cancel := w.opTimer(syncDeadline)
-	defer cancel()
 
 	srcName := w.imapMailboxName(srcFolder)
 	dstName := w.imapMailboxName(dstFolder)
 
+	cancel := w.opTimer(w.commandDeadline)
 	selCmd := w.client.Select(srcName, nil)
-	if _, err := selCmd.Wait(); err != nil {
-		return fmt.Errorf("SELECT %s: %w", srcName, err)
+	_, err := selCmd.Wait()
+	cancel()
+	if err != nil {
+		return nil, fmt.Errorf("SELECT %s: %w", srcName, err)
 	}
 
+	moves := make([]UIDMove, 0, len(uids))
 	for i := 0; i < len(uids); i += imapUIDChunkSize {
 		end := i + imapUIDChunkSize
 		if end > len(uids) {
@@ -1056,26 +1098,32 @@ func (w *IMAPWorker) MoveToFolderBatch(srcFolder string, uids []uint32, dstFolde
 			seqSet.AddNum(imap.UID(uid))
 		}
 
-		copyCmd := w.client.Copy(seqSet, dstName)
-		if _, err := copyCmd.Wait(); err != nil {
-			return fmt.Errorf("COPY to %s: %w", dstName, err)
+		cancel = w.opTimer(w.commandDeadline)
+		moveData, moveErr := w.client.Move(seqSet, dstName).Wait()
+		cancel()
+		if moveErr != nil {
+			return moves, fmt.Errorf("MOVE to %s chunk %d-%d: %w", dstName, i, end-1, moveErr)
 		}
 
-		storeCmd := w.client.Store(seqSet, &imap.StoreFlags{
-			Op:    imap.StoreFlagsAdd,
-			Flags: []imap.Flag{imap.FlagDeleted},
-		}, nil)
-		if err := storeCmd.Close(); err != nil {
-			return fmt.Errorf("STORE +FLAGS \\Deleted: %w", err)
+		destinations := make(map[uint32]uint32)
+		if moveData != nil {
+			sourceSet, sourceOK := moveData.SourceUIDs.(imap.UIDSet)
+			destinationSet, destinationOK := moveData.DestUIDs.(imap.UIDSet)
+			if sourceOK && destinationOK {
+				sources, sourcesOK := sourceSet.Nums()
+				dests, destsOK := destinationSet.Nums()
+				if sourcesOK && destsOK && len(sources) == len(dests) {
+					for index := range sources {
+						destinations[uint32(sources[index])] = uint32(dests[index])
+					}
+				}
+			}
+		}
+		for _, source := range uids[i:end] {
+			moves = append(moves, UIDMove{Source: source, Destination: destinations[source]})
 		}
 	}
-
-	expungeCmd := w.client.Expunge()
-	if err := expungeCmd.Close(); err != nil {
-		return fmt.Errorf("EXPUNGE: %w", err)
-	}
-
-	return nil
+	return moves, nil
 }
 
 // DeleteMailbox deletes a mailbox on the IMAP server.

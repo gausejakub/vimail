@@ -28,9 +28,10 @@ import (
 )
 
 type Model struct {
-	cfg         config.Config
-	store       email.Store
-	coordinator *worker.Coordinator // nil when using mock data
+	cfg          config.Config
+	store        email.Store
+	coordinator  *worker.Coordinator // nil when using mock data
+	cacheVersion int64               // SQLite data_version last observed by this process
 
 	width  int
 	height int
@@ -57,6 +58,19 @@ type Model struct {
 
 // syncTickMsg triggers periodic sync refresh.
 type syncTickMsg struct{}
+
+// cacheVersionMsg reports SQLite's connection-local data version. A changed
+// value means another process committed to the shared cache.
+type cacheVersionMsg struct {
+	version int64
+	err     error
+}
+
+const cacheVersionPollInterval = 500 * time.Millisecond
+
+type cacheVersionStore interface {
+	DataVersion() (int64, error)
+}
 
 // showProcessesMsg opens the processes overlay.
 type showProcessesMsg struct{}
@@ -101,11 +115,26 @@ func New(cfg config.Config, store email.Store) Model {
 		compose:     compose.New(cfg.AI),
 		cmdInput:    cmdInput,
 	}
+	if store, ok := store.(cacheVersionStore); ok {
+		m.cacheVersion, _ = store.DataVersion()
+	}
 	return m
+}
+
+func pollCacheVersion(store email.Store) tea.Cmd {
+	versionStore, ok := store.(cacheVersionStore)
+	if !ok {
+		return nil
+	}
+	return tea.Tick(cacheVersionPollInterval, func(time.Time) tea.Msg {
+		version, err := versionStore.DataVersion()
+		return cacheVersionMsg{version: version, err: err}
+	})
 }
 
 func (m Model) Init() tea.Cmd {
 	var cmds []tea.Cmd
+	cmds = append(cmds, pollCacheVersion(m.store))
 
 	// Auto-select first message so preview isn't empty on launch.
 	accts := m.store.Accounts()
@@ -145,6 +174,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.layout.Resize(msg.Width, msg.Height, 1)
 		m = m.resizePanes()
 		m.status = m.status.SetWidth(msg.Width)
+
+	case cacheVersionMsg:
+		cmds = append(cmds, pollCacheVersion(m.store))
+		if msg.err != nil || msg.version == m.cacheVersion {
+			return m, tea.Batch(cmds...)
+		}
+		m.cacheVersion = msg.version
+		m.mailbox = m.mailbox.Reload()
+		account := m.msglist.CurrentAccount()
+		folder := m.msglist.CurrentFolder()
+		if account != "" && folder != "" {
+			cmds = append(cmds, func() tea.Msg {
+				return util.FolderRefreshMsg{Account: account, Folder: folder}
+			})
+		}
+		return m, tea.Batch(cmds...)
 
 	case util.FolderSelectedMsg:
 		logging.Info("nav", "folder selected", logging.Acct(msg.Account), logging.Fld(msg.Folder))

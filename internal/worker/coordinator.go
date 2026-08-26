@@ -720,12 +720,8 @@ func (c *Coordinator) RetryPendingOps() tea.Cmd {
 		}
 		logging.Info("retry", "retrying pending ops", logging.KV("count", len(ops)))
 
-		imapWorkers := make(map[string]*IMAPWorker)
 		imapErrors := make(map[string]error)
 		getIMAP := func(account string) (*IMAPWorker, error) {
-			if w, ok := imapWorkers[account]; ok {
-				return w, nil
-			}
 			if err, ok := imapErrors[account]; ok {
 				return nil, err
 			}
@@ -740,7 +736,6 @@ func (c *Coordinator) RetryPendingOps() tea.Cmd {
 				imapErrors[account] = err
 				return nil, err
 			}
-			imapWorkers[account] = w
 			return w, nil
 		}
 
@@ -872,11 +867,11 @@ func (c *Coordinator) ensureIMAPWorker(acct config.AccountConfig) (*IMAPWorker, 
 	return c.ensureIMAPWorkerMode(acct, true)
 }
 
-// ensureIMAPWorkerForWrite avoids a PING round trip before every individual
-// queued write. The write itself reports connection loss and remains
-// retryable; first-use connection creation is still serialized per account.
+// ensureIMAPWorkerForWrite verifies the connection before a queued write.
+// MCP writes are batched, so one PING per batch is cheap and prevents an idle
+// connection from poisoning every later queue operation.
 func (c *Coordinator) ensureIMAPWorkerForWrite(acct config.AccountConfig) (*IMAPWorker, error) {
-	return c.ensureIMAPWorkerMode(acct, false)
+	return c.ensureIMAPWorkerMode(acct, true)
 }
 
 func (c *Coordinator) ensureIMAPWorkerMode(acct config.AccountConfig, healthCheck bool) (*IMAPWorker, error) {
@@ -1065,6 +1060,12 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig) (int, error) {
 				continue
 			}
 			logging.Info("retry", "retrying pending delete", logging.Acct(acct.Email), logging.Fld(op.Folder), logging.KV("count", len(payload.UIDs)))
+			deleteWorker, workerErr := c.ensureIMAPWorker(acct)
+			if workerErr != nil {
+				c.store.FailOp(op.ID, workerErr.Error())
+				continue
+			}
+			w = deleteWorker
 			if err := w.MoveToTrashBatch(op.Folder, payload.UIDs, nil); err != nil {
 				logging.Warn("retry", "retry delete failed", logging.Acct(op.Account), logging.Fld(op.Folder), logging.Err(err))
 				c.store.FailOp(op.ID, err.Error())
@@ -1093,9 +1094,20 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig) (int, error) {
 		}
 	}
 	// Execute batched mark_read — one SELECT+STORE per folder instead of per UID.
-	retryMarkReadBatches(c.store, acct.Email, markReadBatches, w.MarkReadBatch)
+	retryMarkReadBatches(c.store, acct.Email, markReadBatches, func(folder string, uids []uint32) error {
+		markWorker, err := c.ensureIMAPWorker(acct)
+		if err != nil {
+			return err
+		}
+		w = markWorker
+		return w.MarkReadBatch(folder, uids)
+	})
 
 	// List mailboxes.
+	w, err = c.ensureIMAPWorker(acct)
+	if err != nil {
+		return 0, err
+	}
 	folders, err := w.ListMailboxes()
 	if err != nil {
 		logging.Error("sync", "list mailboxes failed", logging.Acct(acct.Email), logging.Err(err))

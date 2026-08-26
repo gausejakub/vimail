@@ -32,6 +32,18 @@ func withCountPrefix(model *editorModel, fn func()) {
 	model.countPrefix = 0
 }
 
+// takeCount consumes the pending numeric prefix for a command that
+// applies it in one shot (2dd, 3x, ...), defaulting to 1. Consuming the
+// count keeps it from leaking into a later command.
+func takeCount(model *editorModel) int {
+	count := model.countPrefix
+	model.countPrefix = 0
+	if count <= 0 {
+		return 1
+	}
+	return count
+}
+
 // switchMode changes the editor mode and performs necessary setup for the new mode
 // Different modes require different cursor handling and UI state
 func switchMode(model *editorModel, newMode EditorMode) tea.Cmd {
@@ -462,9 +474,14 @@ func commandBackspace(model *editorModel) tea.Cmd {
 }
 
 func moveToNextWordStart(model *editorModel) tea.Cmd {
+	withCountPrefix(model, func() { nextWordStartOnce(model) })
+	return nil
+}
+
+func nextWordStartOnce(model *editorModel) {
 	currRow := model.cursor.Row
 	if currRow >= model.buffer.lineCount() {
-		return nil
+		return
 	}
 
 	line := model.buffer.Line(currRow)
@@ -477,26 +494,30 @@ func moveToNextWordStart(model *editorModel) tea.Cmd {
 			model.ensureCursorVisible()
 		}
 		model.desiredCol = model.cursor.Col
-		return nil
+		return
 	}
 
 	for i := startPos; i < len(line); i++ {
 		if (i == 0 || isWordSeparator(line[i-1])) && !isWordSeparator(line[i]) {
 			model.cursor.Col = i
 			model.desiredCol = model.cursor.Col
-			return nil
+			return
 		}
 	}
 
 	model.cursor.Col = max(0, len(line)-1)
 	model.desiredCol = model.cursor.Col
-	return nil
 }
 
 func moveToPrevWordStart(model *editorModel) tea.Cmd {
+	withCountPrefix(model, func() { prevWordStartOnce(model) })
+	return nil
+}
+
+func prevWordStartOnce(model *editorModel) {
 	currRow := model.cursor.Row
 	if currRow >= model.buffer.lineCount() {
-		return nil
+		return
 	}
 
 	line := model.buffer.Line(currRow)
@@ -508,20 +529,19 @@ func moveToPrevWordStart(model *editorModel) tea.Cmd {
 			model.desiredCol = model.cursor.Col
 			model.ensureCursorVisible()
 		}
-		return nil
+		return
 	}
 
 	for i := model.cursor.Col - 1; i >= 0; i-- {
 		if (i == 0 || isWordSeparator(line[i-1])) && !isWordSeparator(line[i]) {
 			model.cursor.Col = i
 			model.desiredCol = model.cursor.Col
-			return nil
+			return
 		}
 	}
 
 	model.cursor.Col = 0
 	model.desiredCol = model.cursor.Col
-	return nil
 }
 
 func undo(model *editorModel) tea.Cmd {
@@ -535,10 +555,17 @@ func redo(model *editorModel) tea.Cmd {
 func deleteCharAtCursor(model *editorModel) tea.Cmd {
 	model.buffer.saveUndoState(model.cursor)
 
+	// [count]x deletes up to count characters, never past the end of the
+	// line, as one undoable operation.
+	count := takeCount(model)
 	lineLen := model.buffer.lineLength(model.cursor.Row)
 	if lineLen > 0 && model.cursor.Col < lineLen {
+		end := min(model.cursor.Col+count, lineLen)
 		// x yanks what it deletes into the unnamed register, like Vim.
-		model.yankBuffer = model.buffer.deleteAt(model.cursor.Row, model.cursor.Col, model.cursor.Row, model.cursor.Col)
+		model.yankBuffer = model.buffer.deleteCharRange(
+			Cursor{Row: model.cursor.Row, Col: model.cursor.Col},
+			Cursor{Row: model.cursor.Row, Col: end},
+		)
 
 		newLineLen := model.buffer.lineLength(model.cursor.Row)
 		if model.cursor.Col >= newLineLen && newLineLen > 0 {
@@ -559,13 +586,16 @@ func setupYankHighlight(model *editorModel, start, end Cursor, text string, isLi
 }
 
 func yankLine(model *editorModel) tea.Cmd {
-	line := model.buffer.Line(model.cursor.Row)
+	// [count]yy yanks count whole lines starting at the cursor.
+	count := takeCount(model)
+	row := model.cursor.Row
+	endRow := min(row+count-1, model.buffer.lineCount()-1)
 
 	setupYankHighlight(
 		model,
-		Cursor{model.cursor.Row, 0},
-		Cursor{model.cursor.Row, max(0, len(line)-1)},
-		"\n"+line,
+		Cursor{row, 0},
+		Cursor{endRow, max(0, model.buffer.lineLength(endRow)-1)},
+		"\n"+strings.Join(model.buffer.lines[row:endRow+1], "\n"),
 		true,
 	)
 
@@ -576,14 +606,16 @@ func yankLine(model *editorModel) tea.Cmd {
 func deleteLine(model *editorModel) tea.Cmd {
 	model.buffer.saveUndoState(model.cursor)
 
+	// [count]dd deletes count whole lines as one undoable operation and
+	// yanks them all linewise, as in Vim.
+	count := takeCount(model)
 	row := model.cursor.Row
-	lineContent := model.buffer.Line(row)
-	model.yankBuffer = "\n" + lineContent
+	count = min(count, model.buffer.lineCount()-row)
+	model.yankBuffer = "\n" + strings.Join(model.buffer.lines[row:row+count], "\n")
 
-	model.buffer.deleteLine(row)
-
-	if model.buffer.lineCount() == 0 {
-		model.buffer.insertLine(0, "")
+	for range count {
+		// deleteLine keeps at least one (empty) line in the buffer.
+		model.buffer.deleteLine(row)
 	}
 
 	if model.cursor.Row >= model.buffer.lineCount() {
@@ -603,10 +635,14 @@ func pasteAfter(model *editorModel) tea.Cmd {
 	}
 
 	model.buffer.saveUndoState(model.cursor)
+	// [count]p inserts the register count times (line blocks for a
+	// linewise register, repeated text for a single-line charwise one;
+	// multi-line charwise pastes are inserted once).
+	count := takeCount(model)
 
 	// Line-wise paste
 	if strings.HasPrefix(model.yankBuffer, "\n") {
-		return pasteLineAfter(model)
+		return pasteLineAfter(model, count)
 	}
 
 	// Character-wise paste
@@ -663,15 +699,16 @@ func pasteAfter(model *editorModel) tea.Cmd {
 			model.cursor.Col--
 		}
 	} else {
-		// Single-line paste - original behavior
+		// Single-line paste - original behavior, repeated count times
+		text := strings.Repeat(model.yankBuffer, count)
 		if insertPos >= len(currLine) {
-			model.buffer.setLine(model.cursor.Row, currLine+model.yankBuffer)
+			model.buffer.setLine(model.cursor.Row, currLine+text)
 		} else {
 			model.buffer.setLine(model.cursor.Row,
-				currLine[:insertPos+1]+model.yankBuffer+currLine[insertPos+1:])
+				currLine[:insertPos+1]+text+currLine[insertPos+1:])
 		}
 
-		model.cursor.Col = insertPos + len(model.yankBuffer) + 1
+		model.cursor.Col = insertPos + len(text) + 1
 		if model.mode != ModeInsert && model.cursor.Col > 0 {
 			model.cursor.Col--
 		}
@@ -687,10 +724,11 @@ func pasteBefore(model *editorModel) tea.Cmd {
 	}
 
 	model.buffer.saveUndoState(model.cursor)
+	count := takeCount(model)
 
 	// Line-wise paste
 	if strings.HasPrefix(model.yankBuffer, "\n") {
-		return pasteLineBefore(model)
+		return pasteLineBefore(model, count)
 	}
 
 	// Character-wise paste
@@ -736,19 +774,32 @@ func pasteBefore(model *editorModel) tea.Cmd {
 			model.cursor.Col--
 		}
 	} else {
-		// Single-line paste - original behavior
+		// Single-line paste - original behavior, repeated count times
+		text := strings.Repeat(model.yankBuffer, count)
 		model.buffer.setLine(model.cursor.Row,
-			currLine[:insertPos]+model.yankBuffer+currLine[insertPos:])
+			currLine[:insertPos]+text+currLine[insertPos:])
 
-		model.cursor.Col = max(insertPos+len(model.yankBuffer)-1, 0)
+		model.cursor.Col = max(insertPos+len(text)-1, 0)
 	}
 
 	model.ensureCursorVisible()
 	return nil
 }
 
-func pasteLineAfter(model *editorModel) tea.Cmd {
-	lines := strings.Split(model.yankBuffer[1:], "\n")
+// repeatLines returns lines repeated count times (count <= 1 returns it as is).
+func repeatLines(lines []string, count int) []string {
+	if count <= 1 {
+		return lines
+	}
+	out := make([]string, 0, len(lines)*count)
+	for range count {
+		out = append(out, lines...)
+	}
+	return out
+}
+
+func pasteLineAfter(model *editorModel, count int) tea.Cmd {
+	lines := repeatLines(strings.Split(model.yankBuffer[1:], "\n"), count)
 	row := model.cursor.Row
 
 	for i := range lines {
@@ -761,8 +812,8 @@ func pasteLineAfter(model *editorModel) tea.Cmd {
 	return nil
 }
 
-func pasteLineBefore(model *editorModel) tea.Cmd {
-	lines := strings.Split(model.yankBuffer[1:], "\n")
+func pasteLineBefore(model *editorModel, count int) tea.Cmd {
+	lines := repeatLines(strings.Split(model.yankBuffer[1:], "\n"), count)
 	row := model.cursor.Row
 
 	for i := range lines {
@@ -836,7 +887,7 @@ func replaceVisualSelectionWithYank(model *editorModel) tea.Cmd {
 	model.cursor = start
 
 	if strings.Contains(model.yankBuffer, "\n") {
-		pasteLineBefore(model)
+		pasteLineBefore(model, 1)
 	} else {
 		currLine := model.buffer.Line(model.cursor.Row)
 		insertPos := model.cursor.Col

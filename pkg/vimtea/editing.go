@@ -7,49 +7,71 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// joinCount converts a J/gJ count prefix into a number of join
+// operations: Vim's [count]J joins count lines (count-1 joins), and
+// both J and 2J perform a single join.
+func joinCount(m *editorModel) int {
+	return max(1, takeCount(m)-1)
+}
+
 // joinLines joins current line with next, adding a space and trimming leading whitespace (J).
 func joinLinesCmd(m *editorModel) tea.Cmd {
+	joins := joinCount(m)
 	if m.cursor.Row >= m.buffer.lineCount()-1 {
 		return nil
 	}
 	m.buffer.saveUndoState(m.cursor)
-	line := m.buffer.Line(m.cursor.Row)
-	nextLine := strings.TrimLeft(m.buffer.Line(m.cursor.Row+1), " \t")
-	joinCol := len(line)
-	if len(nextLine) > 0 {
-		m.buffer.setLine(m.cursor.Row, line+" "+nextLine)
-	} else {
-		m.buffer.setLine(m.cursor.Row, line)
+	for range joins {
+		if m.cursor.Row >= m.buffer.lineCount()-1 {
+			break
+		}
+		line := m.buffer.Line(m.cursor.Row)
+		nextLine := strings.TrimLeft(m.buffer.Line(m.cursor.Row+1), " \t")
+		joinCol := len(line)
+		if len(nextLine) > 0 {
+			m.buffer.setLine(m.cursor.Row, line+" "+nextLine)
+		} else {
+			m.buffer.setLine(m.cursor.Row, line)
+		}
+		m.buffer.deleteLine(m.cursor.Row + 1)
+		m.cursor.Col = joinCol
 	}
-	m.buffer.deleteLine(m.cursor.Row + 1)
-	m.cursor.Col = joinCol
 	m.desiredCol = m.cursor.Col
 	return nil
 }
 
 // joinLinesNoSpace joins current line with next without adding a space (gJ).
 func joinLinesNoSpace(m *editorModel) tea.Cmd {
+	joins := joinCount(m)
 	if m.cursor.Row >= m.buffer.lineCount()-1 {
 		return nil
 	}
 	m.buffer.saveUndoState(m.cursor)
-	line := m.buffer.Line(m.cursor.Row)
-	nextLine := m.buffer.Line(m.cursor.Row + 1)
-	joinCol := len(line)
-	m.buffer.setLine(m.cursor.Row, line+nextLine)
-	m.buffer.deleteLine(m.cursor.Row + 1)
-	m.cursor.Col = joinCol
+	for range joins {
+		if m.cursor.Row >= m.buffer.lineCount()-1 {
+			break
+		}
+		line := m.buffer.Line(m.cursor.Row)
+		nextLine := m.buffer.Line(m.cursor.Row + 1)
+		joinCol := len(line)
+		m.buffer.setLine(m.cursor.Row, line+nextLine)
+		m.buffer.deleteLine(m.cursor.Row + 1)
+		m.cursor.Col = joinCol
+	}
 	m.desiredCol = m.cursor.Col
 	return nil
 }
 
-// substituteChar deletes char at cursor and enters insert mode (s).
+// substituteChar deletes [count] chars at cursor and enters insert mode (s).
 func substituteChar(m *editorModel) tea.Cmd {
+	count := takeCount(m)
 	line := m.buffer.Line(m.cursor.Row)
 	saved := false
 	if len(line) > 0 && m.cursor.Col < len(line) {
 		m.buffer.saveUndoState(m.cursor)
-		m.buffer.setLine(m.cursor.Row, line[:m.cursor.Col]+line[m.cursor.Col+1:])
+		end := min(m.cursor.Col+count, len(line))
+		m.yankBuffer = line[m.cursor.Col:end]
+		m.buffer.setLine(m.cursor.Row, line[:m.cursor.Col]+line[end:])
 		saved = true
 	}
 	cmd := switchMode(m, ModeInsert)
@@ -62,22 +84,28 @@ func substituteLine(m *editorModel) tea.Cmd {
 	return changeLine(m)
 }
 
-// toggleCase toggles the case of the char at cursor and advances (~ in normal).
+// toggleCase toggles the case of [count] chars from the cursor,
+// advancing over each one and stopping at the end of the line (~).
 func toggleCase(m *editorModel) tea.Cmd {
+	count := takeCount(m)
 	line := m.buffer.Line(m.cursor.Row)
 	if len(line) == 0 || m.cursor.Col >= len(line) {
 		return nil
 	}
 	m.buffer.saveUndoState(m.cursor)
-	ch := rune(line[m.cursor.Col])
-	var toggled rune
-	if unicode.IsUpper(ch) {
-		toggled = unicode.ToLower(ch)
-	} else {
-		toggled = unicode.ToUpper(ch)
-	}
-	m.buffer.setLine(m.cursor.Row, line[:m.cursor.Col]+string(toggled)+line[m.cursor.Col+1:])
-	if m.cursor.Col < len(line)-1 {
+	for range count {
+		line = m.buffer.Line(m.cursor.Row)
+		ch := rune(line[m.cursor.Col])
+		var toggled rune
+		if unicode.IsUpper(ch) {
+			toggled = unicode.ToLower(ch)
+		} else {
+			toggled = unicode.ToUpper(ch)
+		}
+		m.buffer.setLine(m.cursor.Row, line[:m.cursor.Col]+string(toggled)+line[m.cursor.Col+1:])
+		if m.cursor.Col >= len(line)-1 {
+			break
+		}
 		m.cursor.Col++
 	}
 	m.desiredCol = m.cursor.Col
@@ -154,38 +182,47 @@ func uppercaseVisual(m *editorModel) tea.Cmd {
 	return switchMode(m, ModeNormal)
 }
 
-// indentLine prepends a tab to the current line (>>).
+// indentLine prepends a tab to [count] lines starting at the cursor (>>).
 func indentLine(m *editorModel) tea.Cmd {
+	count := takeCount(m)
 	m.buffer.saveUndoState(m.cursor)
-	line := m.buffer.Line(m.cursor.Row)
-	m.buffer.setLine(m.cursor.Row, "\t"+line)
+	endRow := min(m.cursor.Row+count-1, m.buffer.lineCount()-1)
+	for row := m.cursor.Row; row <= endRow; row++ {
+		m.buffer.setLine(row, "\t"+m.buffer.Line(row))
+	}
 	m.cursor.Col++
 	m.desiredCol = m.cursor.Col
 	m.keySequence = []string{}
 	return nil
 }
 
-// deindentLine removes leading tab or spaces from current line (<<).
+// deindentLine removes one level of leading indentation from [count]
+// lines starting at the cursor (<<).
 func deindentLine(m *editorModel) tea.Cmd {
-	line := m.buffer.Line(m.cursor.Row)
-	if len(line) == 0 {
-		m.keySequence = []string{}
-		return nil
-	}
+	count := takeCount(m)
 	m.buffer.saveUndoState(m.cursor)
-	if line[0] == '\t' {
-		m.buffer.setLine(m.cursor.Row, line[1:])
-		if m.cursor.Col > 0 {
-			m.cursor.Col--
+	endRow := min(m.cursor.Row+count-1, m.buffer.lineCount()-1)
+	for row := m.cursor.Row; row <= endRow; row++ {
+		line := m.buffer.Line(row)
+		if len(line) == 0 {
+			continue
 		}
-	} else if line[0] == ' ' {
-		// Remove up to tabWidth spaces
-		removed := 0
-		for removed < tabWidth && removed < len(line) && line[removed] == ' ' {
-			removed++
+		if line[0] == '\t' {
+			m.buffer.setLine(row, line[1:])
+			if row == m.cursor.Row && m.cursor.Col > 0 {
+				m.cursor.Col--
+			}
+		} else if line[0] == ' ' {
+			// Remove up to tabWidth spaces
+			removed := 0
+			for removed < tabWidth && removed < len(line) && line[removed] == ' ' {
+				removed++
+			}
+			m.buffer.setLine(row, line[removed:])
+			if row == m.cursor.Row {
+				m.cursor.Col = max(0, m.cursor.Col-removed)
+			}
 		}
-		m.buffer.setLine(m.cursor.Row, line[removed:])
-		m.cursor.Col = max(0, m.cursor.Col-removed)
 	}
 	m.desiredCol = m.cursor.Col
 	m.keySequence = []string{}

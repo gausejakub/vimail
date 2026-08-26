@@ -73,8 +73,14 @@ func Err(err error) Field {
 type Logger struct {
 	ch    chan Entry
 	file  *os.File
+	dir   string
 	done  chan struct{}
 	level atomic.Int32
+
+	// oldest is when the active file's first entry was written (zero if the
+	// file is empty). Owned by the drain goroutine after startup; drives
+	// age-based rotation in long-running sessions.
+	oldest time.Time
 
 	// closeMu guards ch against close-while-sending: emitters hold the read
 	// lock across the send, Close takes the write lock to flip closing before
@@ -115,9 +121,13 @@ func Init(logDir string, level Level) error {
 	l := &Logger{
 		ch:   make(chan Entry, chanSize),
 		file: f,
+		dir:  logDir,
 		done: make(chan struct{}),
 	}
 	l.level.Store(int32(level))
+	if info, err := f.Stat(); err == nil && info.Size() > 0 {
+		l.oldest = oldestEntryTime(path)
+	}
 
 	go l.drain()
 	defaultLogger.Store(l)
@@ -153,17 +163,83 @@ func SetLevel(level Level) {
 	}
 }
 
-// drain is the single writer goroutine.
+// fileWriter tracks the active file's size so the drain goroutine can rotate
+// at the size limit without a Stat per entry. Swapping f redirects the
+// long-lived json.Encoder to the freshly rotated file.
+type fileWriter struct {
+	f *os.File
+	n int64
+}
+
+func (w *fileWriter) Write(p []byte) (int, error) {
+	n, err := w.f.Write(p)
+	w.n += int64(n)
+	return n, err
+}
+
+// drain is the single writer goroutine. It exclusively owns the log file:
+// emitters only touch the channel, so rotation here never races a write.
 func (l *Logger) drain() {
 	defer close(l.done)
 
-	enc := json.NewEncoder(l.file)
+	w := &fileWriter{f: l.file}
+	if info, err := l.file.Stat(); err == nil {
+		w.n = info.Size()
+	}
+	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
 
-	for entry := range l.ch {
-		enc.Encode(entry)
+	ticker := time.NewTicker(retentionCheckInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case entry, ok := <-l.ch:
+			if !ok {
+				l.file.Sync()
+				return
+			}
+			if w.n == 0 {
+				l.oldest = time.Now()
+			}
+			enc.Encode(entry)
+			if w.n >= maxLogSize {
+				l.rotate(w)
+			}
+		case <-ticker.C:
+			pruneRotated(l.dir)
+			// A continuously running session never re-enters Init, so age
+			// enforcement has to happen here: once the oldest entry falls out
+			// of the retention window, rotate it away (pruneRotated then
+			// removes the rotated file when all its entries have expired).
+			if !l.oldest.IsZero() && time.Since(l.oldest) > maxLogAge && w.n > 0 {
+				l.rotate(w)
+			}
+		}
 	}
+}
+
+// rotate freezes the active file as vimail.log.1 and starts a fresh one.
+// Runs only on the drain goroutine.
+func (l *Logger) rotate(w *fileWriter) {
 	l.file.Sync()
+	l.file.Close()
+
+	path := logPath(l.dir)
+	old := rotatedPath(l.dir)
+	os.Remove(old)
+	os.Rename(path, old)
+
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		// Reopen failed: keep the closed handle so subsequent writes error
+		// silently instead of panicking; logging degrades, the app keeps going.
+		return
+	}
+	l.file = f
+	w.f = f
+	w.n = 0
+	l.oldest = time.Time{}
 }
 
 // emit sends an entry to the channel. Non-blocking: drops if full.

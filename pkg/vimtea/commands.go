@@ -38,6 +38,11 @@ func switchMode(model *editorModel, newMode EditorMode) tea.Cmd {
 	model.mode = newMode
 
 	switch newMode {
+	case ModeInsert:
+		// New insert session: the first buffer edit takes the undo
+		// snapshot (commands that already snapshotted set the flag
+		// back to true right after calling switchMode).
+		model.insertUndoSaved = false
 	case ModeNormal:
 		// In normal mode, cursor can't be at end of line
 		if model.buffer.lineLength(model.cursor.Row) > 0 &&
@@ -226,7 +231,9 @@ func openLineBelow(model *editorModel) tea.Cmd {
 	model.cursor.Row++
 	model.cursor.Col = 0
 	model.ensureCursorVisible()
-	return switchMode(model, ModeInsert)
+	cmd := switchMode(model, ModeInsert)
+	model.insertUndoSaved = true
+	return cmd
 }
 
 func openLineAbove(model *editorModel) tea.Cmd {
@@ -235,11 +242,22 @@ func openLineAbove(model *editorModel) tea.Cmd {
 	model.buffer.insertLine(model.cursor.Row, "")
 	model.cursor.Col = 0
 	model.ensureCursorVisible()
-	return switchMode(model, ModeInsert)
+	cmd := switchMode(model, ModeInsert)
+	model.insertUndoSaved = true
+	return cmd
+}
+
+// saveInsertUndo takes the single undo snapshot for the current insert
+// session (Vim treats one insert session as one undo unit).
+func saveInsertUndo(model *editorModel) {
+	if !model.insertUndoSaved {
+		model.buffer.saveUndoState(model.cursor)
+		model.insertUndoSaved = true
+	}
 }
 
 func insertCharacter(model *editorModel, char string) (tea.Model, tea.Cmd) {
-	model.buffer.saveUndoState(model.cursor)
+	saveInsertUndo(model)
 
 	if model.cursor.Col > model.buffer.lineLength(model.cursor.Row) {
 		model.cursor.Col = model.buffer.lineLength(model.cursor.Row)
@@ -254,7 +272,7 @@ func insertCharacter(model *editorModel, char string) (tea.Model, tea.Cmd) {
 }
 
 func handleInsertBackspace(model *editorModel) tea.Cmd {
-	model.buffer.saveUndoState(model.cursor)
+	saveInsertUndo(model)
 
 	if model.cursor.Col > 0 {
 
@@ -273,7 +291,7 @@ func handleInsertBackspace(model *editorModel) tea.Cmd {
 }
 
 func handleInsertTab(model *editorModel) tea.Cmd {
-	model.buffer.saveUndoState(model.cursor)
+	saveInsertUndo(model)
 
 	line := model.buffer.Line(model.cursor.Row)
 	newLine := line[:model.cursor.Col] + "\t" + line[model.cursor.Col:]
@@ -283,7 +301,7 @@ func handleInsertTab(model *editorModel) tea.Cmd {
 }
 
 func handleInsertEnterKey(m *editorModel) tea.Cmd {
-	m.buffer.saveUndoState(m.cursor)
+	saveInsertUndo(m)
 
 	currentLine := m.buffer.Line(m.cursor.Row)
 	newLine := ""
@@ -519,8 +537,8 @@ func deleteCharAtCursor(model *editorModel) tea.Cmd {
 
 	lineLen := model.buffer.lineLength(model.cursor.Row)
 	if lineLen > 0 && model.cursor.Col < lineLen {
-
-		model.buffer.deleteAt(model.cursor.Row, model.cursor.Col, model.cursor.Row, model.cursor.Col)
+		// x yanks what it deletes into the unnamed register, like Vim.
+		model.yankBuffer = model.buffer.deleteAt(model.cursor.Row, model.cursor.Col, model.cursor.Row, model.cursor.Col)
 
 		newLineLen := model.buffer.lineLength(model.cursor.Row)
 		if model.cursor.Col >= newLineLen && newLineLen > 0 {

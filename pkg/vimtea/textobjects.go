@@ -236,7 +236,9 @@ func changeTextObject(m *editorModel, rangeFn textObjectRange) tea.Cmd {
 	m.cursor = start
 	m.ensureCursorVisible()
 	m.keySequence = []string{}
-	return switchMode(m, ModeInsert)
+	cmd := switchMode(m, ModeInsert)
+	m.insertUndoSaved = true
+	return cmd
 }
 
 // yankTextObject yanks the range returned by a text object.

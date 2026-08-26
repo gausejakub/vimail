@@ -189,24 +189,35 @@ func executeOperatorFind(m *editorModel, ch byte, op, find string) {
 		return
 	}
 
-	start, end := orderCursors(
-		Cursor{Row: m.cursor.Row, Col: m.cursor.Col},
-		Cursor{Row: m.cursor.Row, Col: targetCol},
-	)
+	// Vim motion classes: f and t are inclusive (the target character is
+	// part of the operated range), F and T are exclusive (the range ends
+	// just before the starting cursor position). Spans below use the
+	// exclusive-end [start, end) convention of deleteCharRange.
+	var start, end Cursor
+	switch find {
+	case "f", "t":
+		start = Cursor{Row: m.cursor.Row, Col: m.cursor.Col}
+		end = Cursor{Row: m.cursor.Row, Col: targetCol + 1}
+	case "F", "T":
+		start = Cursor{Row: m.cursor.Row, Col: targetCol}
+		end = Cursor{Row: m.cursor.Row, Col: m.cursor.Col}
+	}
 
 	switch op {
 	case "d":
 		m.buffer.saveUndoState(m.cursor)
-		m.yankBuffer = m.buffer.deleteRange(start, end)
+		m.yankBuffer = m.buffer.deleteCharRange(start, end)
 		m.cursor = start
 	case "c":
 		m.buffer.saveUndoState(m.cursor)
-		m.yankBuffer = m.buffer.deleteRange(start, end)
+		m.yankBuffer = m.buffer.deleteCharRange(start, end)
 		m.cursor = start
 		switchMode(m, ModeInsert)
+		m.insertUndoSaved = true
 	case "y":
-		m.yankBuffer = m.buffer.getRange(start, end)
-		setupYankHighlight(m, start, end, m.yankBuffer, false)
+		text := m.buffer.getCharRange(start, end)
+		m.cursor = start
+		setupYankHighlight(m, start, Cursor{Row: end.Row, Col: end.Col - 1}, text, false)
 	}
 }
 

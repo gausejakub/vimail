@@ -455,8 +455,10 @@ func TestChangeOperator(t *testing.T) {
 		m := testEditor("hello world")
 		sendKeys(m, "c", "w")
 		assertMode(t, m, ModeInsert)
-		// Now type replacement
-		sendKeys(m, "g", "o", "o", "d", " ", "esc")
+		// Vim special case (:help cw): on a non-blank, cw changes only the
+		// word ("hello"), not the whitespace after it, so the replacement
+		// is typed without a trailing space.
+		sendKeys(m, "g", "o", "o", "d", "esc")
 		assertText(t, m, "good world")
 		assertMode(t, m, ModeNormal)
 	})
@@ -1161,9 +1163,9 @@ func TestScenarioUndoComplexEdits(t *testing.T) {
 	sendKeys(m, "d", "w")
 	assertText(t, m, "foo bar")
 
-	// Change word
+	// Change word (cw changes only "foo", keeping the space after it)
 	sendKeys(m, "c", "w")
-	for _, ch := range "baz " {
+	for _, ch := range "baz" {
 		sendKeys(m, string(ch))
 	}
 	sendKeys(m, "esc")

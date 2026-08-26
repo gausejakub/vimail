@@ -15,6 +15,7 @@ const (
 	defaultPageSize    = 50
 	maxPageSize        = 200
 	defaultSearchLimit = 50
+	maxSearchLimit     = 100000
 )
 
 // accountInfo is the wire shape of a configured account.
@@ -92,9 +93,11 @@ type searchMessagesArgs struct {
 }
 
 type searchMessagesResult struct {
-	Account  string          `json:"account"`
-	Query    string          `json:"query"`
-	Messages []messageHeader `json:"messages"`
+	Account   string          `json:"account"`
+	Query     string          `json:"query"`
+	Limit     int             `json:"limit"`
+	Truncated bool            `json:"truncated"`
+	Messages  []messageHeader `json:"messages"`
 }
 
 // resolveAccount validates the requested account against the cache, and lets
@@ -237,7 +240,7 @@ func (s *Server) registerReadTools() {
 
 	sdk.AddTool(s.srv, &sdk.Tool{
 		Name:        "search_messages",
-		Description: "Search the local cache across subject, sender, recipients, and cached bodies. Results include the folder each match was found in.",
+		Description: "Search the local cache across subject, sender, recipients, and cached bodies. Results contain real folder/UID handles and report when the requested limit truncated the result set.",
 	}, func(ctx context.Context, req *sdk.CallToolRequest, args searchMessagesArgs) (*sdk.CallToolResult, searchMessagesResult, error) {
 		acct, err := s.resolveAccount(args.Account)
 		if err != nil {
@@ -250,11 +253,19 @@ func (s *Server) registerReadTools() {
 		if limit <= 0 {
 			limit = defaultSearchLimit
 		}
-		out := searchMessagesResult{Account: acct, Query: args.Query}
-		for _, m := range s.store.SearchMessages(acct, args.Query, limit) {
+		if limit > maxSearchLimit {
+			limit = maxSearchLimit
+		}
+		matches := s.store.SearchMessages(acct, args.Query, limit+1)
+		out := searchMessagesResult{Account: acct, Query: args.Query, Limit: limit}
+		if len(matches) > limit {
+			out.Truncated = true
+			matches = matches[:limit]
+		}
+		for _, m := range matches {
 			out.Messages = append(out.Messages, header(m, true))
 		}
-		logging.Debug("mcp", "search_messages", logging.Acct(acct), logging.KV("query", args.Query), logging.KV("returned", len(out.Messages)))
+		logging.Debug("mcp", "search_messages", logging.Acct(acct), logging.KV("query", args.Query), logging.KV("returned", len(out.Messages)), logging.KV("truncated", out.Truncated))
 		return nil, out, nil
 	})
 }

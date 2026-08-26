@@ -210,6 +210,19 @@ func TestSearchMessages(t *testing.T) {
 	if out.Messages[0].Folder == "" {
 		t.Error("search hit missing folder context")
 	}
+	if out.Truncated || out.Limit != defaultSearchLimit {
+		t.Errorf("search metadata = limit %d truncated %v, want %d/false", out.Limit, out.Truncated, defaultSearchLimit)
+	}
+}
+
+func TestSearchMessagesReportsTruncation(t *testing.T) {
+	session := connect(t, seededStore(t))
+
+	var out searchMessagesResult
+	call(t, session, "search_messages", map[string]any{"query": "sender", "limit": 2}, &out)
+	if len(out.Messages) != 2 || out.Limit != 2 || !out.Truncated {
+		t.Fatalf("search = len %d limit %d truncated %v, want 2/2/true", len(out.Messages), out.Limit, out.Truncated)
+	}
 }
 
 func TestToolErrors(t *testing.T) {

@@ -115,8 +115,8 @@ func TestListTools(t *testing.T) {
 	sort.Strings(names)
 	want := []string{
 		"delete_draft", "delete_message",
-		"list_accounts", "list_folders", "list_messages",
-		"mark_read", "read_message", "save_draft", "search_messages", "sync",
+		"list_accounts", "list_folders", "list_messages", "list_recent_messages",
+		"mark_read", "read_message", "read_messages", "save_draft", "search_messages", "sync",
 	}
 	if fmt.Sprint(names) != fmt.Sprint(want) {
 		t.Errorf("tool list = %v, want %v", names, want)
@@ -199,6 +199,95 @@ func TestReadMessage(t *testing.T) {
 	}
 }
 
+func TestReadMessagesReturnsPartialBatch(t *testing.T) {
+	session := connect(t, seededStore(t))
+
+	var out readMessagesResult
+	call(t, session, "read_messages", map[string]any{"messages": []map[string]any{
+		{"account": testAcct, "folder": "Inbox", "uid": 3},
+		{"account": testAcct, "folder": "Inbox", "uid": 999},
+	}}, &out)
+	if len(out.Messages) != 1 || out.Messages[0].UID != 3 || !out.Messages[0].BodyCached {
+		t.Fatalf("messages = %+v, want cached UID 3", out.Messages)
+	}
+	if len(out.Errors) != 1 || out.Errors[0].UID != 999 || out.Errors[0].Error == "" {
+		t.Fatalf("errors = %+v, want one UID 999 error", out.Errors)
+	}
+}
+
+func TestReadMessagesTruncatesLongBodies(t *testing.T) {
+	store := seededStore(t)
+	if err := store.UpdateMessageBody(testAcct, "Inbox", 3, "åbcdef", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	session := connect(t, store)
+
+	var out readMessagesResult
+	call(t, session, "read_messages", map[string]any{
+		"messages":       []map[string]any{{"account": testAcct, "folder": "Inbox", "uid": 3}},
+		"max_body_chars": 3,
+	}, &out)
+	if len(out.Messages) != 1 || out.Messages[0].Body != "åbc" || !out.Messages[0].BodyTruncated || out.Messages[0].BodyChars != 6 {
+		t.Fatalf("truncated message = %+v, want three Unicode characters and original length 6", out.Messages)
+	}
+}
+
+func TestListRecentMessagesAcrossAccounts(t *testing.T) {
+	store := seededStore(t)
+	const secondAccount = "bob@example.com"
+	if err := store.SeedAccount("Bob", secondAccount, "imap.example.com", 993, "smtp.example.com", 587); err != nil {
+		t.Fatal(err)
+	}
+	for _, folder := range []string{"Inbox", "GitHub", "Trash"} {
+		if _, err := store.EnsureFolder(secondAccount, folder); err != nil {
+			t.Fatal(err)
+		}
+	}
+	date := time.Date(2026, 8, 25, 8, 0, 0, 0, time.UTC)
+	message := email.Message{UID: 10, MessageID: "<one@example.com>", From: "sender@example.com", To: secondAccount, Subject: "Important", Date: date, Unread: true}
+	if err := store.UpsertMessage(secondAccount, "GitHub", message); err != nil {
+		t.Fatal(err)
+	}
+	message.UID = 11
+	if err := store.UpsertMessage(secondAccount, "Inbox", message); err != nil {
+		t.Fatal(err)
+	}
+	message.UID = 12
+	message.MessageID = "<trash@example.com>"
+	if err := store.UpsertMessage(secondAccount, "Trash", message); err != nil {
+		t.Fatal(err)
+	}
+
+	session := connect(t, store)
+	var out listRecentMessagesResult
+	call(t, session, "list_recent_messages", map[string]any{
+		"since": "2026-08-01T00:00:00Z", "until": "2026-09-01T00:00:00Z",
+	}, &out)
+	if out.Truncated || out.Limit != defaultRecentLimit {
+		t.Fatalf("metadata = limit %d truncated %v", out.Limit, out.Truncated)
+	}
+	var found []messageHeader
+	for _, candidate := range out.Messages {
+		if candidate.Account == secondAccount {
+			found = append(found, candidate)
+		}
+	}
+	if len(found) != 1 || found[0].Folder != "Inbox" || found[0].UID != 11 {
+		t.Fatalf("second-account messages = %+v, want one deduplicated Inbox handle", found)
+	}
+}
+
+func TestListRecentMessagesReportsTruncation(t *testing.T) {
+	session := connect(t, seededStore(t))
+	var out listRecentMessagesResult
+	call(t, session, "list_recent_messages", map[string]any{
+		"since": "2026-08-01T00:00:00Z", "until": "2026-09-01T00:00:00Z", "limit": 2,
+	}, &out)
+	if len(out.Messages) != 2 || !out.Truncated || out.Limit != 2 {
+		t.Fatalf("recent = len %d truncated %v limit %d, want 2/true/2", len(out.Messages), out.Truncated, out.Limit)
+	}
+}
+
 func TestSearchMessages(t *testing.T) {
 	session := connect(t, seededStore(t))
 
@@ -235,6 +324,8 @@ func TestToolErrors(t *testing.T) {
 		{"list_folders", map[string]any{"account": "nobody@example.com"}},
 		{"list_messages", map[string]any{}}, // folder missing
 		{"read_message", map[string]any{"folder": "Inbox", "uid": 999}},
+		{"read_messages", map[string]any{}},
+		{"list_recent_messages", map[string]any{}},
 		{"search_messages", map[string]any{"query": ""}},
 	}
 	for _, tc := range cases {

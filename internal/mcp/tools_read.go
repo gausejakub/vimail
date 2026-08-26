@@ -16,6 +16,11 @@ const (
 	maxPageSize        = 200
 	defaultSearchLimit = 50
 	maxSearchLimit     = 100000
+	defaultRecentLimit = 500
+	maxRecentLimit     = 5000
+	maxBatchRead       = 50
+	defaultBodyChars   = 30000
+	maxBodyChars       = 200000
 )
 
 // accountInfo is the wire shape of a configured account.
@@ -53,6 +58,7 @@ type listMessagesArgs struct {
 }
 
 type messageHeader struct {
+	Account string `json:"account,omitempty"`
 	UID     uint32 `json:"uid"`
 	From    string `json:"from"`
 	To      string `json:"to,omitempty"`
@@ -80,10 +86,58 @@ type readMessageArgs struct {
 
 type readMessageResult struct {
 	messageHeader
-	Body        string   `json:"body,omitempty"`
-	BodyCached  bool     `json:"body_cached"`
-	Note        string   `json:"note,omitempty"`
-	Attachments []string `json:"attachments,omitempty"`
+	Body          string   `json:"body,omitempty"`
+	BodyCached    bool     `json:"body_cached"`
+	BodyChars     int      `json:"body_chars,omitempty"`
+	BodyTruncated bool     `json:"body_truncated,omitempty"`
+	Note          string   `json:"note,omitempty"`
+	Attachments   []string `json:"attachments,omitempty"`
+}
+
+type messageRef struct {
+	Account string `json:"account" jsonschema:"account email from list_recent_messages"`
+	Folder  string `json:"folder" jsonschema:"folder from list_recent_messages"`
+	UID     uint32 `json:"uid" jsonschema:"UID from list_recent_messages"`
+}
+
+type readMessagesArgs struct {
+	Messages     []messageRef `json:"messages" jsonschema:"message handles to read (max 50)"`
+	FetchMissing bool         `json:"fetch_missing,omitempty" jsonschema:"fetch uncached bodies from IMAP without marking messages read; recommended when reviewing message importance"`
+	MaxBodyChars int          `json:"max_body_chars,omitempty" jsonschema:"maximum characters returned per body (default 30000, max 200000); use read_message when the complete body is needed"`
+}
+
+type readMessageError struct {
+	messageRef
+	Error string `json:"error"`
+}
+
+type readMessagesResult struct {
+	Messages []readMessageResult `json:"messages"`
+	Errors   []readMessageError  `json:"errors,omitempty"`
+}
+
+type listRecentMessagesArgs struct {
+	Accounts []string `json:"accounts,omitempty" jsonschema:"account emails to include; omit for every configured account"`
+	Since    string   `json:"since" jsonschema:"inclusive RFC3339 start time, e.g. 2026-08-25T00:00:00+02:00"`
+	Until    string   `json:"until,omitempty" jsonschema:"exclusive RFC3339 end time; defaults to now"`
+	Fresh    bool     `json:"fresh,omitempty" jsonschema:"sync included accounts before listing; sync errors are reported without hiding cached mail"`
+	Limit    int      `json:"limit,omitempty" jsonschema:"maximum unique messages (default 500, max 5000)"`
+}
+
+type recentSyncResult struct {
+	Account     string `json:"account"`
+	NewMessages int    `json:"new_messages,omitempty"`
+	DurationMs  int64  `json:"duration_ms"`
+	Error       string `json:"error,omitempty"`
+}
+
+type listRecentMessagesResult struct {
+	Since     string             `json:"since"`
+	Until     string             `json:"until"`
+	Limit     int                `json:"limit"`
+	Truncated bool               `json:"truncated"`
+	Sync      []recentSyncResult `json:"sync,omitempty"`
+	Messages  []messageHeader    `json:"messages"`
 }
 
 type searchMessagesArgs struct {
@@ -123,6 +177,7 @@ func (s *Server) resolveAccount(requested string) (string, error) {
 
 func header(m email.Message, includeFolder bool) messageHeader {
 	h := messageHeader{
+		Account: m.Account,
 		UID:     m.UID,
 		From:    m.From,
 		To:      m.To,
@@ -137,9 +192,142 @@ func header(m email.Message, includeFolder bool) messageHeader {
 	return h
 }
 
-// registerReadTools registers the read-only v1 tool set. Every handler reads
-// from the SQLite cache only — never from the network.
+func (s *Server) recentAccounts(requested []string) ([]string, error) {
+	configured := s.store.Accounts()
+	if len(configured) == 0 {
+		return nil, fmt.Errorf("no accounts configured — run `vimail setup` first")
+	}
+	if len(requested) == 0 {
+		accounts := make([]string, 0, len(configured))
+		for _, account := range configured {
+			accounts = append(accounts, account.Email)
+		}
+		return accounts, nil
+	}
+
+	known := make(map[string]struct{}, len(configured))
+	for _, account := range configured {
+		known[account.Email] = struct{}{}
+	}
+	seen := make(map[string]struct{}, len(requested))
+	accounts := make([]string, 0, len(requested))
+	for _, account := range requested {
+		if _, ok := known[account]; !ok {
+			return nil, fmt.Errorf("unknown account %q (see list_accounts)", account)
+		}
+		if _, duplicate := seen[account]; duplicate {
+			continue
+		}
+		seen[account] = struct{}{}
+		accounts = append(accounts, account)
+	}
+	return accounts, nil
+}
+
+func (s *Server) readCachedMessage(account, folder string, uid uint32) (readMessageResult, error) {
+	if folder == "" {
+		return readMessageResult{}, fmt.Errorf("folder is required")
+	}
+	m, bodyCached, ok := s.store.MessageByUID(account, folder, uid)
+	if !ok {
+		return readMessageResult{}, fmt.Errorf("message %d not found in %s/%s", uid, account, folder)
+	}
+	out := readMessageResult{
+		messageHeader: header(m, true),
+		Body:          m.Body,
+		BodyCached:    bodyCached,
+	}
+	if !bodyCached {
+		out.Note = "body not cached yet — use read_messages with fetch_missing=true or open it in the TUI"
+	}
+	for _, attachment := range m.Attachments {
+		out.Attachments = append(out.Attachments, attachment.Filename)
+	}
+	return out, nil
+}
+
+func truncateBody(message *readMessageResult, maxChars int) {
+	if message.Body == "" {
+		return
+	}
+	runes := []rune(message.Body)
+	message.BodyChars = len(runes)
+	if len(runes) > maxChars {
+		message.Body = string(runes[:maxChars])
+		message.BodyTruncated = true
+	}
+}
+
+// registerReadTools registers cache-first read tools. Network access is
+// explicit through list_recent_messages fresh=true or read_messages
+// fetch_missing=true.
 func (s *Server) registerReadTools() {
+	sdk.AddTool(s.srv, &sdk.Tool{
+		Name:        "list_recent_messages",
+		Description: "List unique received messages in a time window across all accounts in one call. Excludes Sent, Drafts, and Trash; collapses Gmail label copies; set fresh=true to sync every included account first. Use read_messages to inspect selected bodies in one batch.",
+	}, func(ctx context.Context, req *sdk.CallToolRequest, args listRecentMessagesArgs) (*sdk.CallToolResult, listRecentMessagesResult, error) {
+		accounts, err := s.recentAccounts(args.Accounts)
+		if err != nil {
+			return nil, listRecentMessagesResult{}, err
+		}
+		if args.Since == "" {
+			return nil, listRecentMessagesResult{}, fmt.Errorf("since is required and must be RFC3339")
+		}
+		since, err := time.Parse(time.RFC3339, args.Since)
+		if err != nil {
+			return nil, listRecentMessagesResult{}, fmt.Errorf("invalid since time: %w", err)
+		}
+		until := time.Now()
+		if args.Until != "" {
+			until, err = time.Parse(time.RFC3339, args.Until)
+			if err != nil {
+				return nil, listRecentMessagesResult{}, fmt.Errorf("invalid until time: %w", err)
+			}
+		}
+		if !since.Before(until) {
+			return nil, listRecentMessagesResult{}, fmt.Errorf("since must be before until")
+		}
+		limit := args.Limit
+		if limit <= 0 {
+			limit = defaultRecentLimit
+		}
+		if limit > maxRecentLimit {
+			limit = maxRecentLimit
+		}
+
+		out := listRecentMessagesResult{
+			Since: since.Format(time.RFC3339), Until: until.Format(time.RFC3339), Limit: limit,
+		}
+		if args.Fresh {
+			if s.coord == nil {
+				for _, account := range accounts {
+					out.Sync = append(out.Sync, recentSyncResult{Account: account, Error: "sync unavailable: no coordinator configured"})
+				}
+			} else {
+				for _, account := range accounts {
+					started := time.Now()
+					newCount, syncErr := s.coord.SyncAccountNow(account)
+					status := recentSyncResult{Account: account, NewMessages: newCount, DurationMs: time.Since(started).Milliseconds()}
+					if syncErr != nil {
+						status.Error = syncErr.Error()
+					}
+					out.Sync = append(out.Sync, status)
+				}
+			}
+		}
+
+		matches := s.store.RecentMessages(accounts, since, until, limit+1)
+		if len(matches) > limit {
+			out.Truncated = true
+			matches = matches[:limit]
+		}
+		for _, message := range matches {
+			out.Messages = append(out.Messages, header(message, true))
+		}
+		logging.Debug("mcp", "list_recent_messages", logging.KV("accounts", len(accounts)), logging.KV("returned", len(out.Messages)), logging.KV("fresh", args.Fresh), logging.KV("truncated", out.Truncated))
+		return nil, out, nil
+	})
+
 	sdk.AddTool(s.srv, &sdk.Tool{
 		Name:        "list_accounts",
 		Description: "List the configured email accounts.",
@@ -219,22 +407,62 @@ func (s *Server) registerReadTools() {
 		if args.Folder == "" {
 			return nil, readMessageResult{}, fmt.Errorf("folder is required (see list_folders)")
 		}
-		m, bodyCached, ok := s.store.MessageByUID(acct, args.Folder, args.UID)
-		if !ok {
-			return nil, readMessageResult{}, fmt.Errorf("message %d not found in %s/%s", args.UID, acct, args.Folder)
+		out, err := s.readCachedMessage(acct, args.Folder, args.UID)
+		if err != nil {
+			return nil, readMessageResult{}, err
 		}
-		out := readMessageResult{
-			messageHeader: header(m, true),
-			Body:          m.Body,
-			BodyCached:    bodyCached,
+		logging.Debug("mcp", "read_message", logging.Acct(acct), logging.Fld(args.Folder), logging.MsgUID(args.UID), logging.KV("body_cached", out.BodyCached))
+		return nil, out, nil
+	})
+
+	sdk.AddTool(s.srv, &sdk.Tool{
+		Name:        "read_messages",
+		Description: "Read body excerpts and attachment names for up to 50 message handles in one call. Set fetch_missing=true when details matter; uncached bodies are fetched from IMAP without marking messages read. Reports truncation and per-message errors; use read_message for a complete long body.",
+	}, func(ctx context.Context, req *sdk.CallToolRequest, args readMessagesArgs) (*sdk.CallToolResult, readMessagesResult, error) {
+		if len(args.Messages) == 0 {
+			return nil, readMessagesResult{}, fmt.Errorf("messages is required")
 		}
-		if !bodyCached {
-			out.Note = "body not cached yet — it is fetched lazily when the message is opened in the TUI or once a sync tool is available"
+		if len(args.Messages) > maxBatchRead {
+			return nil, readMessagesResult{}, fmt.Errorf("too many messages: maximum is %d", maxBatchRead)
 		}
-		for _, a := range m.Attachments {
-			out.Attachments = append(out.Attachments, a.Filename)
+		bodyChars := args.MaxBodyChars
+		if bodyChars <= 0 {
+			bodyChars = defaultBodyChars
 		}
-		logging.Debug("mcp", "read_message", logging.Acct(acct), logging.Fld(args.Folder), logging.MsgUID(args.UID), logging.KV("body_cached", bodyCached))
+		if bodyChars > maxBodyChars {
+			bodyChars = maxBodyChars
+		}
+		out := readMessagesResult{}
+		for _, ref := range args.Messages {
+			account, err := s.resolveAccount(ref.Account)
+			if err != nil {
+				out.Errors = append(out.Errors, readMessageError{messageRef: ref, Error: err.Error()})
+				continue
+			}
+			message, err := s.readCachedMessage(account, ref.Folder, ref.UID)
+			if err != nil {
+				out.Errors = append(out.Errors, readMessageError{messageRef: ref, Error: err.Error()})
+				continue
+			}
+			if args.FetchMissing && !message.BodyCached {
+				if s.coord == nil {
+					message.Note = "body fetch unavailable: no coordinator configured"
+					out.Errors = append(out.Errors, readMessageError{messageRef: ref, Error: message.Note})
+				} else if _, fetchErr := s.coord.PeekBodyNow(account, ref.Folder, ref.UID); fetchErr != nil {
+					message.Note = "body fetch failed: " + fetchErr.Error()
+					out.Errors = append(out.Errors, readMessageError{messageRef: ref, Error: fetchErr.Error()})
+				} else {
+					message, err = s.readCachedMessage(account, ref.Folder, ref.UID)
+					if err != nil {
+						out.Errors = append(out.Errors, readMessageError{messageRef: ref, Error: err.Error()})
+						continue
+					}
+				}
+			}
+			truncateBody(&message, bodyChars)
+			out.Messages = append(out.Messages, message)
+		}
+		logging.Debug("mcp", "read_messages", logging.KV("requested", len(args.Messages)), logging.KV("returned", len(out.Messages)), logging.KV("errors", len(out.Errors)), logging.KV("fetch_missing", args.FetchMissing))
 		return nil, out, nil
 	})
 

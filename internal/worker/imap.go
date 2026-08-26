@@ -543,6 +543,17 @@ func (w *IMAPWorker) SetWantedFetchUID(uid uint32) {
 // If a newer fetch has been requested (wantedFetchUID changed), this fetch
 // returns early to avoid blocking the one the user actually wants.
 func (w *IMAPWorker) FetchBodyDirect(folder string, uid uint32) (BodyResult, error) {
+	return w.fetchBodyDirect(folder, uid, false)
+}
+
+// PeekBodyDirect fetches and caches a message body without setting the IMAP
+// \Seen flag. It is used for background/MCP review where reading must not
+// change mailbox state.
+func (w *IMAPWorker) PeekBodyDirect(folder string, uid uint32) (BodyResult, error) {
+	return w.fetchBodyDirect(folder, uid, true)
+}
+
+func (w *IMAPWorker) fetchBodyDirect(folder string, uid uint32, peek bool) (BodyResult, error) {
 	w.fetchMu.Lock()
 	defer w.fetchMu.Unlock()
 
@@ -584,7 +595,7 @@ func (w *IMAPWorker) FetchBodyDirect(folder string, uid uint32) (BodyResult, err
 	seqSet.AddNum(imap.UID(uid))
 
 	fetchCmd := client.Fetch(seqSet, &imap.FetchOptions{
-		BodySection: []*imap.FetchItemBodySection{{}},
+		BodySection: []*imap.FetchItemBodySection{{Peek: peek}},
 	})
 
 	var result BodyResult
@@ -629,7 +640,7 @@ func (w *IMAPWorker) FetchBodyDirect(folder string, uid uint32) (BodyResult, err
 					var seqSet2 imap.UIDSet
 					seqSet2.AddNum(imap.UID(uid))
 					fetchCmd2 := w.client.Fetch(seqSet2, &imap.FetchOptions{
-						BodySection: []*imap.FetchItemBodySection{{}},
+						BodySection: []*imap.FetchItemBodySection{{Peek: peek}},
 					})
 					for {
 						msgData := fetchCmd2.Next()

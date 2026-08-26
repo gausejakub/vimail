@@ -1,11 +1,9 @@
 // Package mcp exposes vmail's local email cache to Model Context Protocol
 // clients (Claude Code, Claude Desktop) over stdio.
 //
-// v1 is read-only and serves entirely from the SQLite cache: tool calls never
-// open IMAP connections, which makes them safe alongside a running TUI (WAL
-// mode allows the concurrent reads) and functional with no TUI running at
-// all. Data is as fresh as the last sync — that staleness is the documented
-// contract until an explicit sync tool lands.
+// Reads are cache-first and writes use the durable offline queue. Explicitly
+// fresh reads and missing-body fetches can open IMAP connections; cross-process
+// locks and WAL mode keep them safe alongside a running TUI.
 package mcp
 
 import (

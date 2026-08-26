@@ -246,22 +246,7 @@ func (c *Coordinator) FetchBody(acctEmail, folder string, uid uint32) tea.Cmd {
 		}()
 		logging.Debug("fetch", "fetching body", logging.Acct(acctEmail), logging.Fld(folder), logging.MsgUID(uid))
 		start := time.Now()
-		w := c.getIMAPWorker(acctEmail)
-		if w == nil {
-			logging.Error("fetch", "no IMAP worker", logging.Acct(acctEmail), logging.Fld(folder), logging.MsgUID(uid))
-			return FetchBodyResult{
-				Account: acctEmail,
-				Folder:  folder,
-				UID:     uid,
-				Err:     fmt.Errorf("no IMAP worker for %s", acctEmail),
-			}
-		}
-
-		// Mark this UID as the one the user wants — stale fetches will skip.
-		w.SetWantedFetchUID(uid)
-
-		// Use dedicated fetch connection to avoid blocking behind sync.
-		res, err := w.FetchBodyDirect(folder, uid)
+		res, err := c.FetchBodyNow(acctEmail, folder, uid)
 		if err != nil {
 			logging.Error("fetch", "body fetch failed", logging.Acct(acctEmail), logging.Fld(folder), logging.MsgUID(uid), logging.Dur(time.Since(start)), logging.Err(err))
 		} else {
@@ -277,6 +262,40 @@ func (c *Coordinator) FetchBody(acctEmail, folder string, uid uint32) tea.Cmd {
 			Err:         err,
 		}
 	}
+}
+
+// FetchBodyNow synchronously fetches and caches one message body, connecting
+// lazily when this coordinator has not synced the account yet. This is the
+// non-Bubble Tea seam used by MCP batch reads.
+func (c *Coordinator) FetchBodyNow(acctEmail, folder string, uid uint32) (BodyResult, error) {
+	return c.fetchBodyNow(acctEmail, folder, uid, false)
+}
+
+// PeekBodyNow synchronously fetches and caches one message body without
+// setting its IMAP \Seen flag. MCP review uses this path to remain read-only.
+func (c *Coordinator) PeekBodyNow(acctEmail, folder string, uid uint32) (BodyResult, error) {
+	return c.fetchBodyNow(acctEmail, folder, uid, true)
+}
+
+func (c *Coordinator) fetchBodyNow(acctEmail, folder string, uid uint32, peek bool) (BodyResult, error) {
+	acct, ok := c.accountByEmail(acctEmail)
+	if !ok {
+		return BodyResult{}, fmt.Errorf("no such account: %s", acctEmail)
+	}
+	// Body fetches use their own reconnecting connection, so an existing
+	// worker does not need an extra PING for every message in a batch.
+	w, err := c.ensureIMAPWorkerMode(acct, false)
+	if err != nil {
+		return BodyResult{}, err
+	}
+	// Mark this UID as wanted before taking the worker's fetch lock. A newer
+	// request can supersede a stale TUI fetch, while sequential MCP reads set
+	// and fetch each UID together.
+	w.SetWantedFetchUID(uid)
+	if peek {
+		return w.PeekBodyDirect(folder, uid)
+	}
+	return w.FetchBodyDirect(folder, uid)
 }
 
 // MarkRead returns a tea.Cmd that marks a message as read on the IMAP server.

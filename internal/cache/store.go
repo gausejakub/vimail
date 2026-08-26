@@ -209,6 +209,83 @@ func (s *SQLiteStore) MessageByUID(acctEmail, folder string, uid uint32) (msg em
 	return msgs[0], fetched != 0, true
 }
 
+// RecentMessages returns received messages in a time window across the
+// requested accounts. Sent, Drafts, and Trash are excluded, and label copies
+// are collapsed by Message-ID so callers see one logical message with a real
+// account/folder/UID handle.
+func (s *SQLiteStore) RecentMessages(accounts []string, since, until time.Time, limit int) []email.Message {
+	if !since.Before(until) || limit <= 0 {
+		return nil
+	}
+
+	query := `
+		SELECT m.uid, f.name, f.account, m.message_id, m.from_addr, m.to_addr,
+		       m.subject, m.date, m.unread, m.flagged
+		FROM messages m
+		JOIN folders f ON m.folder_id = f.id
+		WHERE julianday(m.date) >= julianday(?)
+		  AND julianday(m.date) < julianday(?)
+		  AND lower(f.name) NOT IN ('sent', 'drafts', 'trash')`
+	args := []interface{}{since.Format(time.RFC3339), until.Format(time.RFC3339)}
+	if len(accounts) > 0 {
+		query += ` AND f.account IN (` + strings.TrimRight(strings.Repeat("?,", len(accounts)), ",") + `)`
+		for _, account := range accounts {
+			args = append(args, account)
+		}
+	}
+	// Prefer Inbox as the surviving handle for messages that also have Gmail
+	// label copies. Spam remains searchable, but loses to any non-Spam copy.
+	query += ` ORDER BY julianday(m.date) DESC, f.account,
+		CASE lower(f.name) WHEN 'inbox' THEN 0 WHEN 'spam' THEN 2 ELSE 1 END,
+		f.name, m.uid DESC`
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	type dedupKey struct {
+		Account   string
+		MessageID string
+		Folder    string
+		UID       uint32
+	}
+	seen := make(map[dedupKey]struct{})
+	msgs := make([]email.Message, 0, limit)
+	for rows.Next() {
+		var m email.Message
+		var dateStr string
+		var unread, flagged int
+		if err := rows.Scan(&m.UID, &m.Folder, &m.Account, &m.MessageID, &m.From, &m.To, &m.Subject, &dateStr, &unread, &flagged); err != nil {
+			continue
+		}
+		key := dedupKey{Account: m.Account, MessageID: m.MessageID}
+		if m.MessageID == "" {
+			// Without a stable identity, preserving every row is safer than
+			// silently collapsing distinct same-second notifications. Modern
+			// synced messages normally have Message-ID, so this is a legacy
+			// cache fallback rather than the common label-copy path.
+			key.Folder = m.Folder
+			key.UID = m.UID
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+
+		m.ID = fmt.Sprintf("%d", m.UID)
+		m.Date, _ = time.Parse(time.RFC3339, dateStr)
+		m.Unread = unread != 0
+		m.Flagged = flagged != 0
+		msgs = append(msgs, m)
+		if len(msgs) >= limit {
+			break
+		}
+	}
+	return msgs
+}
+
 func (s *SQLiteStore) MessagesFor(acctEmail, folder string) []email.Message {
 	if folder == "Drafts" {
 		return s.draftsFor(acctEmail)

@@ -136,8 +136,14 @@ func runMCP() {
 	}
 	defer db.Close()
 
+	// The MCP process gets its own coordinator so writes and syncs work with
+	// no TUI running; op claiming and the sync lock keep it safe when the
+	// TUI runs alongside. Credentials are resolved lazily on first sync.
+	coord := worker.NewCoordinator(cfg, store)
+	defer coord.DisconnectAll()
+
 	logging.Info("mcp", "vimail mcp server starting", logging.KV("accounts", len(cfg.Accounts)))
-	srv := vmcp.New(cfg, store)
+	srv := vmcp.New(cfg, store, coord)
 	if err := srv.Run(context.Background()); err != nil && !errors.Is(err, context.Canceled) {
 		logging.Error("mcp", "server exited with error", logging.Err(err))
 		fmt.Fprintf(os.Stderr, "vimail: mcp server: %v\n", err)

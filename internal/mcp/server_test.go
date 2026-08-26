@@ -13,6 +13,7 @@ import (
 	"github.com/gausejakub/vimail/internal/cache"
 	"github.com/gausejakub/vimail/internal/config"
 	"github.com/gausejakub/vimail/internal/email"
+	"github.com/gausejakub/vimail/internal/worker"
 )
 
 const testAcct = "alice@example.com"
@@ -61,7 +62,7 @@ func seededStore(t *testing.T) *cache.SQLiteStore {
 func connect(t *testing.T, store *cache.SQLiteStore) *sdk.ClientSession {
 	t.Helper()
 	ctx := context.Background()
-	srv := New(config.Config{}, store)
+	srv := New(config.Config{}, store, worker.NewCoordinator(config.Config{}, store))
 
 	serverT, clientT := sdk.NewInMemoryTransports()
 	if _, err := srv.Connect(ctx, serverT); err != nil {
@@ -95,7 +96,7 @@ func call(t *testing.T, session *sdk.ClientSession, tool string, args map[string
 	}
 }
 
-func TestListToolsIsReadOnlySet(t *testing.T) {
+func TestListTools(t *testing.T) {
 	session := connect(t, seededStore(t))
 
 	res, err := session.ListTools(context.Background(), nil)
@@ -107,7 +108,11 @@ func TestListToolsIsReadOnlySet(t *testing.T) {
 		names = append(names, tool.Name)
 	}
 	sort.Strings(names)
-	want := []string{"list_accounts", "list_folders", "list_messages", "read_message", "search_messages"}
+	want := []string{
+		"delete_draft", "delete_message",
+		"list_accounts", "list_folders", "list_messages",
+		"mark_read", "read_message", "save_draft", "search_messages", "sync",
+	}
 	if fmt.Sprint(names) != fmt.Sprint(want) {
 		t.Errorf("tool list = %v, want %v", names, want)
 	}

@@ -101,7 +101,8 @@ func (c *Coordinator) SyncAll() tea.Cmd {
 			}
 			ch := make(chan syncResult, 1)
 			go func() {
-				ch <- syncResult{err: c.syncAccount(acct)}
+				_, err := c.syncAccount(acct)
+				ch <- syncResult{err: err}
 			}()
 
 			var syncErr error
@@ -766,17 +767,93 @@ func retryMarkReadBatches(store *cache.SQLiteStore, acctEmail string, batches ma
 	}
 }
 
-// syncAccount connects and syncs all folders for a single account.
-func (c *Coordinator) syncAccount(acct config.AccountConfig) error {
-	if acct.IMAPHost == "" {
-		return nil // No IMAP configured, skip.
-	}
-
+// ensureIMAPWorker returns a healthy, connected IMAP worker for the account,
+// reusing the existing connection when possible instead of tearing down every
+// cycle (avoids exhausting server connection limits).
+func (c *Coordinator) ensureIMAPWorker(acct config.AccountConfig) (*IMAPWorker, error) {
 	c.mu.Lock()
 	creds := c.creds[acct.Email]
+	existing := c.imap[acct.Email]
 	c.mu.Unlock()
 	if creds == nil {
-		return fmt.Errorf("no credentials resolved")
+		return nil, fmt.Errorf("no credentials resolved")
+	}
+
+	if existing != nil && existing.Ping() {
+		logging.Debug("connect", "reusing healthy IMAP connection", logging.Acct(acct.Email))
+		return existing, nil
+	}
+
+	// Connection is dead or doesn't exist — disconnect old and create new.
+	if existing != nil {
+		c.mu.Lock()
+		delete(c.imap, acct.Email)
+		c.mu.Unlock()
+		existing.Disconnect()
+	}
+
+	logging.Info("connect", "connecting IMAP", logging.Acct(acct.Email), logging.KV("host", acct.IMAPHost))
+	connectStart := time.Now()
+	w := NewIMAPWorker(acct, creds, c.store)
+	if err := w.Connect(); err != nil {
+		logging.Error("connect", "IMAP connect failed", logging.Acct(acct.Email), logging.Dur(time.Since(connectStart)), logging.Err(err))
+		return nil, err
+	}
+	logging.Info("connect", "IMAP connected", logging.Acct(acct.Email), logging.Dur(time.Since(connectStart)))
+
+	c.mu.Lock()
+	c.imap[acct.Email] = w
+	c.mu.Unlock()
+	return w, nil
+}
+
+// accountByEmail finds the config entry for an account email.
+func (c *Coordinator) accountByEmail(acctEmail string) (config.AccountConfig, bool) {
+	for _, acct := range c.cfg.Accounts {
+		if acct.Email == acctEmail {
+			return acct, true
+		}
+	}
+	return config.AccountConfig{}, false
+}
+
+// SyncAccountNow synchronously connects (if needed), drains the account's
+// queued ops, and syncs all its folders, returning the number of newly
+// fetched messages. For callers without a bubbletea loop (the MCP server).
+func (c *Coordinator) SyncAccountNow(acctEmail string) (int, error) {
+	acct, ok := c.accountByEmail(acctEmail)
+	if !ok {
+		return 0, fmt.Errorf("no such account: %s", acctEmail)
+	}
+	return c.syncAccount(acct)
+}
+
+// SyncFolderNow synchronously syncs a single folder, connecting if needed,
+// and returns the number of newly fetched messages. It honors the same
+// cross-process sync lock as full account syncs.
+func (c *Coordinator) SyncFolderNow(acctEmail, folder string) (int, error) {
+	acct, ok := c.accountByEmail(acctEmail)
+	if !ok {
+		return 0, fmt.Errorf("no such account: %s", acctEmail)
+	}
+	release, lockOK := c.store.TryAcquireSyncLock(acctEmail)
+	if !lockOK {
+		return 0, fmt.Errorf("account %s is being synced by another process — try again shortly", acctEmail)
+	}
+	defer release()
+
+	w, err := c.ensureIMAPWorker(acct)
+	if err != nil {
+		return 0, err
+	}
+	return w.SyncFolder(folder)
+}
+
+// syncAccount connects and syncs all folders for a single account, returning
+// the number of newly fetched messages.
+func (c *Coordinator) syncAccount(acct config.AccountConfig) (int, error) {
+	if acct.IMAPHost == "" {
+		return 0, nil // No IMAP configured, skip.
 	}
 
 	// Cross-process advisory lock: only one process (TUI or MCP server) may
@@ -786,41 +863,13 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig) error {
 	release, ok := c.store.TryAcquireSyncLock(acct.Email)
 	if !ok {
 		logging.Info("sync", "account sync locked by another process, skipping", logging.Acct(acct.Email))
-		return nil
+		return 0, nil
 	}
 	defer release()
 
-	// Reuse existing healthy connection instead of tearing down every sync cycle.
-	// This avoids exhausting server connection limits.
-	c.mu.Lock()
-	existing := c.imap[acct.Email]
-	c.mu.Unlock()
-
-	var w *IMAPWorker
-	if existing != nil && existing.Ping() {
-		logging.Debug("connect", "reusing healthy IMAP connection", logging.Acct(acct.Email))
-		w = existing
-	} else {
-		// Connection is dead or doesn't exist — disconnect old and create new.
-		if existing != nil {
-			c.mu.Lock()
-			delete(c.imap, acct.Email)
-			c.mu.Unlock()
-			existing.Disconnect()
-		}
-
-		logging.Info("connect", "connecting IMAP", logging.Acct(acct.Email), logging.KV("host", acct.IMAPHost))
-		connectStart := time.Now()
-		w = NewIMAPWorker(acct, creds, c.store)
-		if err := w.Connect(); err != nil {
-			logging.Error("connect", "IMAP connect failed", logging.Acct(acct.Email), logging.Dur(time.Since(connectStart)), logging.Err(err))
-			return err
-		}
-		logging.Info("connect", "IMAP connected", logging.Acct(acct.Email), logging.Dur(time.Since(connectStart)))
-
-		c.mu.Lock()
-		c.imap[acct.Email] = w
-		c.mu.Unlock()
+	w, err := c.ensureIMAPWorker(acct)
+	if err != nil {
+		return 0, err
 	}
 
 	// Retry any pending operations for this account before syncing folders.
@@ -876,7 +925,7 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig) error {
 	folders, err := w.ListMailboxes()
 	if err != nil {
 		logging.Error("sync", "list mailboxes failed", logging.Acct(acct.Email), logging.Err(err))
-		return fmt.Errorf("list mailboxes: %w", err)
+		return 0, fmt.Errorf("list mailboxes: %w", err)
 	}
 	logging.Debug("sync", "mailboxes listed", logging.Acct(acct.Email), logging.KV("folders", len(folders)))
 
@@ -890,6 +939,7 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig) error {
 	// Sync each folder with progress reporting.
 	// Use STATUS pre-check to skip folders with no new messages.
 	synced := 0
+	newTotal := 0
 	for i, folder := range folders {
 		if c.program != nil {
 			c.program.Send(SyncProgressMsg{
@@ -931,9 +981,10 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig) error {
 				})
 			}
 		}
-		if _, err := w.SyncFolder(folder, onProgress); err != nil {
+		if n, err := w.SyncFolder(folder, onProgress); err != nil {
 			logging.Warn("sync", "folder sync error", logging.Acct(acct.Email), logging.Fld(folder), logging.Dur(time.Since(folderStart)), logging.Err(err))
 		} else {
+			newTotal += n
 			logging.Debug("sync", "folder synced", logging.Acct(acct.Email), logging.Fld(folder), logging.Dur(time.Since(folderStart)))
 		}
 	}
@@ -941,13 +992,16 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig) error {
 
 	// Also set up SMTP worker if configured.
 	if acct.SMTPHost != "" {
+		c.mu.Lock()
+		creds := c.creds[acct.Email]
+		c.mu.Unlock()
 		smtpW := NewSMTPWorker(acct, creds)
 		c.mu.Lock()
 		c.smtp[acct.Email] = smtpW
 		c.mu.Unlock()
 	}
 
-	return nil
+	return newTotal, nil
 }
 
 func (c *Coordinator) getIMAPWorker(acctEmail string) *IMAPWorker {

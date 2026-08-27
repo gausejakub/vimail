@@ -440,6 +440,10 @@ func TestMsgListJKNavigation(t *testing.T) {
 
 func TestMsgListGAndShiftG(t *testing.T) {
 	m := testApp()
+	initial := m.msglist.SelectedMessage()
+	if initial == nil {
+		t.Fatal("expected an initially selected message")
+	}
 
 	// G goes to bottom
 	send(&m, "G")
@@ -447,15 +451,18 @@ func TestMsgListGAndShiftG(t *testing.T) {
 	if sel == nil {
 		t.Fatal("expected selected message after G")
 	}
+	if sel.ID == initial.ID {
+		t.Fatal("G should move away from the first message")
+	}
 
-	// g goes to top
-	send(&m, "g")
+	// gg goes to top
+	sendKeys(&m, "g", "g")
 	top := m.msglist.SelectedMessage()
 	if top == nil {
-		t.Fatal("expected selected message after g")
+		t.Fatal("expected selected message after gg")
 	}
-	if top.ID != m.msglist.SelectedMessage().ID {
-		t.Fatal("g should return to first message")
+	if top.ID != initial.ID {
+		t.Fatal("gg should return to first message")
 	}
 }
 
@@ -473,6 +480,78 @@ func TestMailboxNavigation(t *testing.T) {
 	send(&m, "j")
 	// Navigate a few times to ensure no panic
 	sendKeys(&m, "j", "j", "k")
+}
+
+func TestMailboxVimCountAndJumpNavigation(t *testing.T) {
+	m := testApp()
+	send(&m, "h")
+	if m.focusedPane != layout.PaneMailbox {
+		t.Fatalf("focus = %v, want PaneMailbox", m.focusedPane)
+	}
+
+	// The sidebar is a flat list of account headers and their folders. Item 6
+	// is the Work account's Inbox.
+	sendKeys(&m, "6", "j")
+	if m.msglist.CurrentAccount() != "alice@acme.corp" || m.msglist.CurrentFolder() != "Inbox" {
+		t.Fatalf("6j selected %s/%s, want alice@acme.corp/Inbox", m.msglist.CurrentAccount(), m.msglist.CurrentFolder())
+	}
+
+	// Vim line jumps are one-based when prefixed with a count.
+	sendKeys(&m, "g", "g", "2", "G")
+	if m.msglist.CurrentAccount() != "alice@example.com" || m.msglist.CurrentFolder() != "Inbox" {
+		t.Fatalf("2G selected %s/%s, want alice@example.com/Inbox", m.msglist.CurrentAccount(), m.msglist.CurrentFolder())
+	}
+
+	send(&m, "G")
+	if m.msglist.CurrentAccount() != "alice@myapp.dev" || m.msglist.CurrentFolder() != "Trash" {
+		t.Fatalf("G selected %s/%s, want alice@myapp.dev/Trash", m.msglist.CurrentAccount(), m.msglist.CurrentFolder())
+	}
+}
+
+func TestMailboxVimMotionFromCoalescedTerminalInput(t *testing.T) {
+	m := testApp()
+
+	// Bubble Tea may deliver adjacent printable characters read together from
+	// the terminal as one KeyMsg. This models typing h6j quickly: focus the
+	// mailbox, then move six rows to the Work account's Inbox.
+	sendMsg(&m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("h6j")})
+
+	if m.focusedPane != layout.PaneMailbox {
+		t.Fatalf("focus = %v, want PaneMailbox", m.focusedPane)
+	}
+	if m.msglist.CurrentAccount() != "alice@acme.corp" || m.msglist.CurrentFolder() != "Inbox" {
+		t.Fatalf("h6j selected %s/%s, want alice@acme.corp/Inbox", m.msglist.CurrentAccount(), m.msglist.CurrentFolder())
+	}
+}
+
+func TestTerminalInputReaderPreservesVimCounts(t *testing.T) {
+	m := New(config.DefaultConfig(), email.NewMockStore())
+	p := tea.NewProgram(m, tea.WithInput(strings.NewReader("h6jq")), tea.WithoutRenderer())
+
+	final, err := p.Run()
+	if err != nil {
+		t.Fatalf("run program: %v", err)
+	}
+	got := final.(Model)
+	if got.focusedPane != layout.PaneMailbox {
+		t.Fatalf("focus = %v, want PaneMailbox", got.focusedPane)
+	}
+	if got.msglist.CurrentAccount() != "alice@acme.corp" || got.msglist.CurrentFolder() != "Inbox" {
+		t.Fatalf("terminal h6j selected %s/%s, want alice@acme.corp/Inbox", got.msglist.CurrentAccount(), got.msglist.CurrentFolder())
+	}
+}
+
+func TestPastedRunesDoNotTriggerNormalModeCommands(t *testing.T) {
+	m := testApp()
+
+	sendMsg(&m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("h6j"), Paste: true})
+
+	if m.focusedPane != layout.PaneMsgList {
+		t.Fatalf("pasted commands changed focus to %v", m.focusedPane)
+	}
+	if m.msglist.CurrentAccount() != "alice@example.com" || m.msglist.CurrentFolder() != "Inbox" {
+		t.Fatalf("pasted commands selected %s/%s", m.msglist.CurrentAccount(), m.msglist.CurrentFolder())
+	}
 }
 
 // --- Command execution ---

@@ -18,7 +18,7 @@ var bindings = []binding{
 	{"Navigation", sectionMarker},
 	{"j/k", "Up/down in current pane"},
 	{"h/l", "Switch pane left/right"},
-	{"g/G", "Jump to top/bottom"},
+	{"gg/G", "Jump to top/bottom"},
 	{"Ctrl+D/U", "Half-page scroll (preview)"},
 	{"Tab", "Next pane"},
 	{"Shift+Tab", "Previous pane"},

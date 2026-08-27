@@ -901,6 +901,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case tea.KeyMsg:
+		// Bubble Tea may group adjacent printable characters from one terminal
+		// read into a single KeyMsg (for example, typing "5j" quickly). Replay
+		// those runes through the full dispatcher so Vim sequences see the same
+		// input regardless of how the terminal chunks it. Bracketed paste must
+		// remain atomic so pasted text can never trigger normal-mode commands.
+		if msg.Type == tea.KeyRunes && len(msg.Runes) > 1 && !msg.Paste {
+			for _, r := range msg.Runes {
+				single := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}, Alt: msg.Alt}
+				updated, cmd := m.Update(single)
+				m = updated.(Model)
+				cmds = append(cmds, cmd)
+			}
+			return m, tea.Sequence(cmds...)
+		}
+
 		// Compose overlay eats all keys when visible
 		if m.compose.Visible() {
 			var cmd tea.Cmd

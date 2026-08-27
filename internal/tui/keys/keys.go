@@ -85,7 +85,7 @@ var Normal = NormalKeyMap{
 	Compose:  key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "compose")),
 	Refresh:  key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "refresh")),
 	Escape:   key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "escape")),
-	GoTop:    key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "go to top")),
+	GoTop:    key.NewBinding(key.WithKeys("g"), key.WithHelp("gg", "go to top")),
 	GoBottom: key.NewBinding(key.WithKeys("G"), key.WithHelp("G", "go to bottom")),
 	Search:   key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "search")),
 }

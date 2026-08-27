@@ -26,11 +26,13 @@ type Model struct {
 	folders    map[string][]email.Folder // keyed by email
 	items      []item
 	cursor     int
-	pendingKey string // for multi-key sequences (dd)
+	offset     int             // first visible item
+	pendingKey string          // for multi-key sequences (dd, gg)
+	countBuf   string          // numeric prefix for commands (e.g. 5j, 3G)
 	syncing    map[string]bool // accounts currently syncing
 
 	// Confirmation state for folder deletion.
-	confirmDelete       bool   // true when waiting for y/n
+	confirmDelete       bool // true when waiting for y/n
 	confirmDeleteAcct   string
 	confirmDeleteFolder string
 }
@@ -81,6 +83,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	case util.FolderRefreshMsg:
 		m.folders[msg.Account] = m.store.FoldersFor(msg.Account)
 		m.items = m.buildItems()
+		m.clampCursor()
 	}
 	return m, nil
 }
@@ -92,6 +95,7 @@ func (m Model) Reload() Model {
 		m.folders[a.Email] = m.store.FoldersFor(a.Email)
 	}
 	m.items = m.buildItems()
+	m.clampCursor()
 	return m
 }
 
@@ -112,41 +116,132 @@ func (m Model) HandleKey(key string) (Model, tea.Cmd) {
 		}
 	}
 
-	// Handle pending key sequences (dd).
+	// Handle pending key sequences (dd, gg).
 	if m.pendingKey != "" {
 		pending := m.pendingKey
 		m.pendingKey = ""
-		if pending == "d" && key == "d" {
+		switch {
+		case pending == "d" && key == "d":
+			m.countBuf = ""
 			cmd := m.emitDeleteFolder()
 			return m, cmd
+		case pending == "g" && key == "g":
+			count := m.consumeCount()
+			if count > 0 {
+				return m.jumpTo(count - 1)
+			}
+			return m.jumpTo(0)
 		}
+		m.countBuf = ""
 		// Pending cancelled; fall through.
+	}
+
+	// Accumulate Vim-style numeric prefixes (for example 5j and 3G).
+	if len(key) == 1 && key[0] >= '0' && key[0] <= '9' {
+		if m.countBuf != "" || key != "0" {
+			m.countBuf += key
+			return m, nil
+		}
+	}
+
+	if len(m.items) == 0 {
+		switch key {
+		case "d", "g":
+			m.pendingKey = key
+		default:
+			m.countBuf = ""
+		}
+		return m, nil
 	}
 
 	switch key {
 	case "j", "down":
-		if m.cursor < len(m.items)-1 {
-			m.cursor++
-			return m, m.emitIfFolder()
+		count := m.consumeCount()
+		if count == 0 {
+			count = 1
 		}
+		return m.jumpTo(m.cursor + count)
 	case "k", "up":
-		if m.cursor > 0 {
-			m.cursor--
-			return m, m.emitIfFolder()
+		count := m.consumeCount()
+		if count == 0 {
+			count = 1
 		}
+		return m.jumpTo(m.cursor - count)
 	case "g":
-		m.cursor = 0
-		return m, m.emitIfFolder()
+		m.pendingKey = "g"
+		return m, nil
 	case "G":
-		if len(m.items) > 0 {
-			m.cursor = len(m.items) - 1
-			return m, m.emitIfFolder()
+		count := m.consumeCount()
+		if count > 0 {
+			return m.jumpTo(count - 1)
 		}
+		return m.jumpTo(len(m.items) - 1)
 	case "d":
 		m.pendingKey = "d"
 		return m, nil
+	default:
+		m.countBuf = ""
 	}
 	return m, nil
+}
+
+func (m Model) jumpTo(target int) (Model, tea.Cmd) {
+	if target < 0 {
+		target = 0
+	}
+	if target >= len(m.items) {
+		target = len(m.items) - 1
+	}
+	m.cursor = target
+	m.ensureVisible()
+	return m, m.emitIfFolder()
+}
+
+func (m *Model) consumeCount() int {
+	count := 0
+	for _, digit := range m.countBuf {
+		count = count*10 + int(digit-'0')
+	}
+	m.countBuf = ""
+	return count
+}
+
+func (m *Model) clampCursor() {
+	if len(m.items) == 0 {
+		m.cursor = 0
+		m.offset = 0
+		return
+	}
+	if m.cursor >= len(m.items) {
+		m.cursor = len(m.items) - 1
+	}
+	if m.cursor < 0 {
+		m.cursor = 0
+	}
+	m.ensureVisible()
+}
+
+func (m *Model) ensureVisible() {
+	visibleRows := m.height
+	if visibleRows < 1 {
+		visibleRows = 1
+	}
+	if m.cursor < m.offset {
+		m.offset = m.cursor
+	}
+	if m.cursor >= m.offset+visibleRows {
+		m.offset = m.cursor - visibleRows + 1
+	}
+	maxOffset := len(m.items) - visibleRows
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if m.offset > maxOffset {
+		m.offset = maxOffset
+	}
+	if m.offset < 0 {
+		m.offset = 0
+	}
 }
 
 // emitDeleteFolder prompts for confirmation if the cursor is on a deletable folder.
@@ -208,7 +303,12 @@ func (m Model) View() string {
 	t := theme.Current()
 	var lines []string
 
-	for i, it := range m.items {
+	end := m.offset + m.height
+	if end > len(m.items) {
+		end = len(m.items)
+	}
+	for i := m.offset; i < end; i++ {
+		it := m.items[i]
 		isCursor := i == m.cursor && m.focused
 
 		if it.isAccount {
@@ -327,6 +427,7 @@ func (m Model) Blur() Model {
 func (m Model) SetSize(w, h int) Model {
 	m.width = w
 	m.height = h
+	m.ensureVisible()
 	return m
 }
 
@@ -380,6 +481,7 @@ func (m Model) SelectFolder(email, folder string) Model {
 		folders := m.folders[acct.Email]
 		if it.folderIdx >= 0 && it.folderIdx < len(folders) && folders[it.folderIdx].Name == folder {
 			m.cursor = i
+			m.ensureVisible()
 			return m
 		}
 	}

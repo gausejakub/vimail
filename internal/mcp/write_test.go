@@ -151,6 +151,84 @@ func TestMarkReadBulkValidatesBeforeMutation(t *testing.T) {
 	expectToolError(t, session, "mark_read", map[string]any{"folder": "Inbox", "uids": []uint32{}})
 }
 
+func TestMarkAllReadCoversInboxSpamAndTrashWithOneBatchEach(t *testing.T) {
+	store := seededStore(t)
+	for _, folder := range []string{"Spam", "Trash"} {
+		if _, err := store.EnsureFolder(testAcct, folder); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, item := range []struct {
+		folder string
+		uid    uint32
+	}{
+		{"Spam", 20}, {"Trash", 30}, {"Trash", 31},
+	} {
+		if err := store.UpsertMessage(testAcct, item.folder, email.Message{
+			UID: item.uid, From: "sender@example.com", To: testAcct,
+			Subject: "unread", Date: time.Now(), Unread: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	session := connect(t, store)
+
+	var out markAllReadResult
+	call(t, session, "mark_all_read", nil, &out)
+	if out.Total != 4 || out.BatchCount != 4 || out.Queued != 4 || out.Delivered != 0 || out.QueuedBatches != 4 {
+		t.Fatalf("mark_all_read result = %+v", out)
+	}
+	wantCounts := map[string]int{"Inbox": 1, "Sent": 0, "Spam": 1, "Trash": 2}
+	for _, batch := range out.Batches {
+		if batch.Count != wantCounts[batch.Folder] || batch.OperationID == 0 || !batch.Queued {
+			t.Errorf("batch = %+v", batch)
+		}
+	}
+	for folder, count := range wantCounts {
+		if got := store.FoldersFor(testAcct); len(got) == 0 {
+			t.Fatal("account folders disappeared")
+		}
+		for _, msg := range store.MessagesForPage(testAcct, folder, 0, count+5) {
+			if msg.Unread {
+				t.Errorf("%s/%d remains unread", folder, msg.UID)
+			}
+		}
+	}
+	ops := store.RecentOps(10)
+	if len(ops) != 4 {
+		t.Fatalf("queued ops = %+v, want one authoritative op per server folder", ops)
+	}
+	for _, op := range ops {
+		var payload cache.MarkReadPayload
+		if err := json.Unmarshal(op.Payload, &payload); err != nil || !payload.All || len(payload.UIDs) != 0 {
+			t.Errorf("op payload = %s, want all=true without UIDs (err=%v)", op.Payload, err)
+		}
+	}
+}
+
+func TestMarkAllReadCanScopeOneFolder(t *testing.T) {
+	store := seededStore(t)
+	if _, err := store.EnsureFolder(testAcct, "Trash"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertMessage(testAcct, "Trash", email.Message{
+		UID: 30, From: "sender@example.com", Subject: "trash", Date: time.Now(), Unread: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	session := connect(t, store)
+
+	var out markAllReadResult
+	call(t, session, "mark_all_read", map[string]any{"folder": "Trash"}, &out)
+	if out.Total != 1 || out.BatchCount != 1 || out.Batches[0].Folder != "Trash" {
+		t.Fatalf("scoped result = %+v", out)
+	}
+	inbox, _, _ := store.MessageByUID(testAcct, "Inbox", 3)
+	if !inbox.Unread {
+		t.Fatal("folder-scoped mark_all_read changed Inbox")
+	}
+}
+
 func TestDeleteMessageMovesToTrashOnly(t *testing.T) {
 	store := seededStore(t)
 	session := connect(t, store)
@@ -205,6 +283,75 @@ func TestDeleteMessageBulkUsesOneQueuedOperation(t *testing.T) {
 	}
 	if len(payload.UIDs) != 2 {
 		t.Fatalf("queued UIDs = %v, want one 2-UID payload", payload.UIDs)
+	}
+}
+
+func TestRestoreMessagesQueuesWithoutConnectionAndKeepsCache(t *testing.T) {
+	store := seededStore(t)
+	if _, err := store.EnsureFolder(testAcct, "Trash"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertMessage(testAcct, "Trash", email.Message{
+		UID: 77, MessageID: "<restore@example.com>", From: "sender@example.com",
+		To: testAcct, Subject: "Restore me", Date: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	session := connect(t, store)
+
+	res, err := session.CallTool(context.Background(), &sdk.CallToolParams{
+		Name: "restore_messages",
+		Arguments: map[string]any{
+			"account": testAcct, "uids": []uint32{77}, "destination": "Inbox",
+		},
+	})
+	if err != nil {
+		t.Fatalf("restore_messages transport error: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("restore_messages returned tool error: %v", res.Content)
+	}
+	var out restoreMessagesResult
+	raw, err := json.Marshal(res.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !out.Queued || out.ServerUpdated || out.CacheUpdated || out.Requested != 1 || out.Delivered != 0 || out.OperationID == 0 {
+		t.Fatalf("restore result = %+v", out)
+	}
+	if _, _, ok := store.MessageByUID(testAcct, "Trash", 77); !ok {
+		t.Fatal("offline restore removed the Trash cache row before server success")
+	}
+	ops := store.RecentOps(10)
+	if len(ops) != 1 || string(ops[0].Type) != "restore" {
+		t.Fatalf("queue = %+v, want one retryable restore op", ops)
+	}
+	var payload cache.RestorePayload
+	if err := json.Unmarshal(ops[0].Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.UIDs) != 1 || payload.UIDs[0] != 77 || payload.Destination != "Inbox" {
+		t.Fatalf("restore payload = %+v", payload)
+	}
+}
+
+func TestRestoreMessagesValidatesWholeBatchBeforeQueue(t *testing.T) {
+	store := seededStore(t)
+	if _, err := store.EnsureFolder(testAcct, "Trash"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertMessage(testAcct, "Trash", email.Message{
+		UID: 77, From: "sender@example.com", To: testAcct, Subject: "Restore me", Date: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	session := connect(t, store)
+	expectToolError(t, session, "restore_messages", map[string]any{"uids": []uint32{77, 999}})
+	if ops := store.RecentOps(10); len(ops) != 0 {
+		t.Fatalf("invalid restore queued operations: %+v", ops)
 	}
 }
 

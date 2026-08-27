@@ -134,7 +134,7 @@ func (c *Coordinator) SyncAll() tea.Cmd {
 			}
 			ch := make(chan syncResult, 1)
 			go func() {
-				_, err := c.syncAccount(acct)
+				_, err := c.syncAccount(acct, false)
 				ch <- syncResult{err: err}
 			}()
 
@@ -307,35 +307,76 @@ func (c *Coordinator) MarkRead(acctEmail, folder string, uid uint32) tea.Cmd {
 // MarkReadMessages queues and executes one batched mark-read operation.
 func (c *Coordinator) MarkReadMessages(acctEmail, folder string, uids []uint32) tea.Cmd {
 	return func() tea.Msg {
-		logging.Debug("mark_read", "marking messages read", logging.Acct(acctEmail), logging.Fld(folder), logging.KV("count", len(uids)))
-		opID, _ := c.store.QueueOp(cache.OpMarkRead, acctEmail, folder, cache.MarkReadPayload{UIDs: uids})
-		if !c.store.StartOp(opID) {
-			// Another process's drainer claimed the op — it will execute it.
-			return nil
-		}
-
-		acct, ok := c.accountByEmail(acctEmail)
-		if !ok {
-			err := fmt.Errorf("no such account: %s", acctEmail)
-			c.store.FailOp(opID, err.Error())
-			return nil
-		}
-		w, err := c.ensureIMAPWorkerForWrite(acct)
-		if err != nil {
-			logging.Warn("mark_read", "IMAP worker unavailable", logging.Acct(acctEmail), logging.Fld(folder), logging.KV("count", len(uids)), logging.Err(err))
-			c.store.FailOp(opID, err.Error())
-			return nil
-		}
-		if err := w.MarkReadBatch(folder, uids); err != nil {
-			// Leave the op failed so a reconnect retry can pick it up;
-			// the optimistic cache update already reflects the read state.
-			logging.Warn("mark_read", "IMAP mark read failed", logging.Acct(acctEmail), logging.Fld(folder), logging.KV("count", len(uids)), logging.Err(err))
-			c.store.FailOp(opID, err.Error())
-			return nil
-		}
-		c.store.CompleteOp(opID)
+		c.MarkReadMessagesNow(acctEmail, folder, uids)
 		return nil
 	}
+}
+
+// MarkReadMessagesNow is the synchronous seam used by MCP. It keeps the same
+// durable queue semantics as the TUI command while returning delivery state.
+func (c *Coordinator) MarkReadMessagesNow(acctEmail, folder string, uids []uint32) MarkReadResult {
+	return c.markReadNow(acctEmail, folder, cache.MarkReadPayload{UIDs: uids})
+}
+
+// MarkAllRead returns the TUI command form of the authoritative whole-folder
+// operation.
+func (c *Coordinator) MarkAllRead(acctEmail, folder string) tea.Cmd {
+	return func() tea.Msg {
+		c.MarkAllReadNow(acctEmail, folder)
+		return nil
+	}
+}
+
+// MarkAllReadNow queues one authoritative whole-folder IMAP operation. Unlike
+// UID batches, it also covers messages absent from a stale local cache.
+func (c *Coordinator) MarkAllReadNow(acctEmail, folder string) MarkReadResult {
+	return c.markReadNow(acctEmail, folder, cache.MarkReadPayload{All: true})
+}
+
+func (c *Coordinator) markReadNow(acctEmail, folder string, payload cache.MarkReadPayload) MarkReadResult {
+	count := len(payload.UIDs)
+	if payload.All {
+		logging.Debug("mark_read", "marking all messages read", logging.Acct(acctEmail), logging.Fld(folder))
+	} else {
+		logging.Debug("mark_read", "marking messages read", logging.Acct(acctEmail), logging.Fld(folder), logging.KV("count", count))
+	}
+	opID, err := c.store.QueueOp(cache.OpMarkRead, acctEmail, folder, payload)
+	result := MarkReadResult{OpID: opID}
+	if err != nil {
+		result.Err = fmt.Errorf("queue mark-read: %w", err)
+		return result
+	}
+	if !c.store.StartOp(opID) {
+		return result // another process owns the durable operation
+	}
+
+	acct, ok := c.accountByEmail(acctEmail)
+	if !ok {
+		result.Err = fmt.Errorf("no such account: %s", acctEmail)
+		c.store.FailOp(opID, result.Err.Error())
+		return result
+	}
+	w, err := c.ensureIMAPWorkerForWrite(acct)
+	if err != nil {
+		result.Err = err
+		logging.Warn("mark_read", "IMAP worker unavailable", logging.Acct(acctEmail), logging.Fld(folder), logging.KV("count", count), logging.Err(err))
+		c.store.FailOp(opID, err.Error())
+		return result
+	}
+	if payload.All {
+		err = w.MarkAllRead(folder)
+	} else {
+		err = w.MarkReadBatch(folder, payload.UIDs)
+	}
+	if err != nil {
+		result.Err = err
+		logging.Warn("mark_read", "IMAP mark read failed", logging.Acct(acctEmail), logging.Fld(folder), logging.KV("count", count), logging.Err(err))
+		c.store.FailOp(opID, err.Error())
+		return result
+	}
+	c.store.CompleteOp(opID)
+	result.Delivered = true
+	return result
 }
 
 // SaveAttachments fetches the raw message and saves the specified attachments to ~/Downloads.
@@ -699,35 +740,136 @@ func writeToZip(zw *zip.Writer, name string, data []byte) {
 	w.Write(data)
 }
 
-// RestoreFromTrash moves messages from Trash back to the destination folder via IMAP.
+// RestoreFromTrash queues and attempts a server-first restore. Cache rows stay
+// in Trash until IMAP confirms the move, then they are reconciled using the
+// destination UIDs returned by MOVE/COPYUID.
 func (c *Coordinator) RestoreFromTrash(acctEmail string, uids []uint32, dstFolder string) tea.Cmd {
 	return func() tea.Msg {
 		logging.Info("restore", "restoring from trash", logging.Acct(acctEmail), logging.Fld(dstFolder), logging.KV("count", len(uids)))
 		start := time.Now()
-
-		w := c.getIMAPWorker(acctEmail)
-		if w == nil {
-			return RestoreResult{
-				Account:   acctEmail,
-				DstFolder: dstFolder,
-				Count:     len(uids),
-				Err:       fmt.Errorf("no IMAP worker for %s", acctEmail),
-			}
+		if strings.EqualFold(dstFolder, "INBOX") {
+			dstFolder = "Inbox"
 		}
-
-		err := w.MoveToFolderBatch("Trash", uids, dstFolder)
+		opID, err := c.store.QueueOp(cache.OpRestore, acctEmail, "Trash", cache.RestorePayload{UIDs: uids, Destination: dstFolder})
+		result := RestoreResult{Account: acctEmail, DstFolder: dstFolder, OpID: opID}
 		if err != nil {
-			logging.Error("restore", "restore failed", logging.Acct(acctEmail), logging.Fld(dstFolder), logging.KV("count", len(uids)), logging.Dur(time.Since(start)), logging.Err(err))
-		} else {
-			logging.Info("restore", "messages restored", logging.Acct(acctEmail), logging.Fld(dstFolder), logging.KV("count", len(uids)), logging.Dur(time.Since(start)))
+			result.Err = fmt.Errorf("queue restore: %w", err)
+			return result
 		}
-		return RestoreResult{
-			Account:   acctEmail,
-			DstFolder: dstFolder,
-			Count:     len(uids),
-			Err:       err,
+		if !c.store.StartOp(opID) {
+			return result // another process owns the queued operation
+		}
+
+		acct, ok := c.accountByEmail(acctEmail)
+		if !ok {
+			err = fmt.Errorf("no such account: %s", acctEmail)
+			c.store.FailOp(opID, err.Error())
+			result.Err = err
+			return result
+		}
+		w, err := c.ensureIMAPWorkerForWrite(acct)
+		if err != nil {
+			c.store.FailOp(opID, err.Error())
+			result.Err = err
+			return result
+		}
+
+		result = c.executeRestore(w, acctEmail, uids, dstFolder)
+		result.OpID = opID
+		if result.Delivered {
+			// Never retry a server-confirmed restore, even when local cache
+			// reconciliation reported a warning: retrying could duplicate mail.
+			c.store.CompleteOp(opID)
+		} else {
+			if len(result.Remaining) > 0 && result.Count > 0 {
+				_ = c.store.UpdateOpPayload(opID, cache.RestorePayload{UIDs: result.Remaining, Destination: dstFolder})
+			}
+			if result.Err == nil {
+				result.Err = fmt.Errorf("restore was not delivered")
+			}
+			c.store.FailOp(opID, result.Err.Error())
+		}
+		if result.Err != nil {
+			logging.Error("restore", "restore failed", logging.Acct(acctEmail), logging.Fld(dstFolder), logging.KV("count", len(uids)), logging.Dur(time.Since(start)), logging.Err(result.Err))
+		} else {
+			logging.Info("restore", "messages restored", logging.Acct(acctEmail), logging.Fld(dstFolder), logging.KV("count", result.Count), logging.Dur(time.Since(start)))
+		}
+		return result
+	}
+}
+
+func (c *Coordinator) executeRestore(w *IMAPWorker, acctEmail string, uids []uint32, dstFolder string) RestoreResult {
+	result := RestoreResult{Account: acctEmail, DstFolder: dstFolder}
+	moves, moveErr := w.MoveToFolderBatchWithUIDs("Trash", uids, dstFolder)
+	result.Count = len(moves)
+	result.Remaining = remainingRestoreUIDs(uids, moves)
+	if len(moves) > 0 {
+		result.Cached, result.Err = c.reconcileRestoreCache(w, acctEmail, dstFolder, moves)
+		if result.Err != nil {
+			// The server move is authoritative. Surface the cache warning but
+			// mark delivery complete so callers never repeat the server write.
+			result.Delivered = moveErr == nil && len(moves) == len(uids)
+			return result
 		}
 	}
+	if moveErr != nil {
+		result.Err = moveErr
+		return result
+	}
+	result.Delivered = len(moves) == len(uids)
+	result.Cached = result.Delivered && result.Cached
+	return result
+}
+
+// remainingRestoreUIDs derives retry work from confirmed source UIDs instead
+// of assuming the IMAP worker always returns a successful prefix.
+func remainingRestoreUIDs(requested []uint32, moves []UIDMove) []uint32 {
+	moved := make(map[uint32]struct{}, len(moves))
+	for _, move := range moves {
+		moved[move.Source] = struct{}{}
+	}
+	remaining := make([]uint32, 0, len(requested)-len(moved))
+	for _, uid := range requested {
+		if _, ok := moved[uid]; !ok {
+			remaining = append(remaining, uid)
+		}
+	}
+	return remaining
+}
+
+func (c *Coordinator) reconcileRestoreCache(w *IMAPWorker, acctEmail, dstFolder string, moves []UIDMove) (bool, error) {
+	cacheMoves := make([]cache.UIDMove, 0, len(moves))
+	allMapped := true
+	for _, move := range moves {
+		if move.Destination == 0 {
+			allMapped = false
+			break
+		}
+		cacheMoves = append(cacheMoves, cache.UIDMove{Source: move.Source, Destination: move.Destination})
+	}
+	if allMapped {
+		if err := c.store.RestoreMessages(acctEmail, "Trash", dstFolder, cacheMoves); err == nil {
+			return true, nil
+		}
+	}
+
+	// Servers without UIDPLUS cannot report destination UIDs. Remove only the
+	// server-confirmed Trash rows, then rebuild destination headers so restored
+	// messages below the old incremental high-water mark are still discovered.
+	sources := make([]uint32, 0, len(moves))
+	for _, move := range moves {
+		sources = append(sources, move.Source)
+	}
+	if err := c.store.RemoveMessagesByUID(acctEmail, "Trash", sources); err != nil {
+		return false, fmt.Errorf("server restore succeeded but source cache cleanup failed: %w", err)
+	}
+	if err := c.store.PurgeFolder(acctEmail, dstFolder); err != nil {
+		return false, fmt.Errorf("server restore succeeded but destination cache reset failed: %w", err)
+	}
+	if _, err := w.SyncFolder(dstFolder); err != nil {
+		return false, fmt.Errorf("server restore succeeded but destination cache refresh failed: %w", err)
+	}
+	return true, nil
 }
 
 // RetryPendingOps retries any pending or failed operations from the queue.
@@ -811,6 +953,15 @@ func (c *Coordinator) RetryPendingOps() tea.Cmd {
 					c.store.FailOp(op.ID, "bad payload: "+e.Error())
 					continue
 				}
+				if payload.All {
+					w, workerErr := getIMAP(op.Account)
+					if workerErr != nil {
+						err = workerErr
+					} else {
+						err = w.MarkAllRead(op.Folder)
+					}
+					break
+				}
 				byFolder := markReadBatches[op.Account]
 				if byFolder == nil {
 					byFolder = make(map[string]*markReadBatch)
@@ -824,6 +975,34 @@ func (c *Coordinator) RetryPendingOps() tea.Cmd {
 				batch.uids = append(batch.uids, payload.UIDs...)
 				batch.opIDs = append(batch.opIDs, op.ID)
 				continue
+
+			case cache.OpRestore:
+				var payload cache.RestorePayload
+				if e := json.Unmarshal(op.Payload, &payload); e != nil {
+					c.store.FailOp(op.ID, "bad payload: "+e.Error())
+					continue
+				}
+				w, workerErr := getIMAP(op.Account)
+				if workerErr != nil {
+					err = workerErr
+					break
+				}
+				restore := c.executeRestore(w, op.Account, payload.UIDs, payload.Destination)
+				if restore.Delivered {
+					if restore.Err != nil {
+						logging.Warn("retry", "restore delivered with cache warning", logging.Acct(op.Account), logging.Err(restore.Err))
+					}
+					err = nil
+				} else {
+					if restore.Count > 0 && len(restore.Remaining) > 0 {
+						payload.UIDs = restore.Remaining
+						_ = c.store.UpdateOpPayload(op.ID, payload)
+					}
+					err = restore.Err
+					if err == nil {
+						err = fmt.Errorf("restore was not delivered")
+					}
+				}
 
 			default:
 				err = fmt.Errorf("unsupported queued op type %q", op.Type)
@@ -1013,13 +1192,35 @@ func (c *Coordinator) SyncAccountNow(acctEmail string) (int, error) {
 	if !ok {
 		return 0, fmt.Errorf("no such account: %s", acctEmail)
 	}
-	return c.syncAccount(acct)
+	return c.syncAccount(acct, false)
+}
+
+// SyncAccountFullNow synchronously rebuilds every server folder in the local
+// cache. Use this explicit recovery path when incremental UID watermarks can no
+// longer reconcile moved or removed messages.
+func (c *Coordinator) SyncAccountFullNow(acctEmail string) (int, error) {
+	acct, ok := c.accountByEmail(acctEmail)
+	if !ok {
+		return 0, fmt.Errorf("no such account: %s", acctEmail)
+	}
+	return c.syncAccount(acct, true)
 }
 
 // SyncFolderNow synchronously syncs a single folder, connecting if needed,
 // and returns the number of newly fetched messages. It honors the same
 // cross-process sync lock as full account syncs.
 func (c *Coordinator) SyncFolderNow(acctEmail, folder string) (int, error) {
+	return c.syncFolderNow(acctEmail, folder, false)
+}
+
+// SyncFolderFullNow replaces one cached folder with an authoritative snapshot
+// fetched from IMAP. The remote fetch completes before existing rows are
+// removed, so a network failure leaves the old cache intact.
+func (c *Coordinator) SyncFolderFullNow(acctEmail, folder string) (int, error) {
+	return c.syncFolderNow(acctEmail, folder, true)
+}
+
+func (c *Coordinator) syncFolderNow(acctEmail, folder string, full bool) (int, error) {
 	acct, ok := c.accountByEmail(acctEmail)
 	if !ok {
 		return 0, fmt.Errorf("no such account: %s", acctEmail)
@@ -1034,12 +1235,15 @@ func (c *Coordinator) SyncFolderNow(acctEmail, folder string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	if full {
+		return w.SyncFolderFull(folder)
+	}
 	return w.SyncFolder(folder)
 }
 
 // syncAccount connects and syncs all folders for a single account, returning
 // the number of newly fetched messages.
-func (c *Coordinator) syncAccount(acct config.AccountConfig) (int, error) {
+func (c *Coordinator) syncAccount(acct config.AccountConfig, full bool) (int, error) {
 	if acct.IMAPHost == "" {
 		return 0, nil // No IMAP configured, skip.
 	}
@@ -1098,6 +1302,15 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig) (int, error) {
 				c.store.FailOp(op.ID, "bad payload: "+err.Error())
 				continue
 			}
+			if payload.All {
+				if err := w.MarkAllRead(op.Folder); err != nil {
+					logging.Warn("retry", "retry mark-all-read failed", logging.Acct(op.Account), logging.Fld(op.Folder), logging.Err(err))
+					c.store.FailOp(op.ID, err.Error())
+				} else {
+					c.store.CompleteOp(op.ID)
+				}
+				continue
+			}
 			// Collect UIDs and op IDs by folder so each op is settled by
 			// its own folder's batch outcome.
 			b := markReadBatches[op.Folder]
@@ -1107,6 +1320,28 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig) (int, error) {
 			}
 			b.uids = append(b.uids, payload.UIDs...)
 			b.opIDs = append(b.opIDs, op.ID)
+		case cache.OpRestore:
+			var payload cache.RestorePayload
+			if err := json.Unmarshal(op.Payload, &payload); err != nil {
+				c.store.FailOp(op.ID, "bad payload: "+err.Error())
+				continue
+			}
+			restore := c.executeRestore(w, op.Account, payload.UIDs, payload.Destination)
+			if restore.Delivered {
+				c.store.CompleteOp(op.ID)
+				if restore.Err != nil {
+					logging.Warn("retry", "restore delivered with cache warning", logging.Acct(op.Account), logging.Err(restore.Err))
+				}
+			} else {
+				if restore.Count > 0 && len(restore.Remaining) > 0 {
+					payload.UIDs = restore.Remaining
+					_ = c.store.UpdateOpPayload(op.ID, payload)
+				}
+				if restore.Err == nil {
+					restore.Err = fmt.Errorf("restore was not delivered")
+				}
+				c.store.FailOp(op.ID, restore.Err.Error())
+			}
 		default:
 			// Send ops are retried separately.
 			c.store.FailOp(op.ID, "skipped during sync")
@@ -1145,6 +1380,7 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig) (int, error) {
 	// Use STATUS pre-check to skip folders with no new messages.
 	synced := 0
 	newTotal := 0
+	var syncErrors []error
 	for i, folder := range folders {
 		if c.program != nil {
 			c.program.Send(SyncProgressMsg{
@@ -1156,17 +1392,19 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig) (int, error) {
 			})
 		}
 
-		// Quick STATUS check: skip folder if UIDNEXT hasn't changed.
-		uidNext, uidValidity, err := w.FolderStatus(folder)
-		if err != nil {
-			logging.Warn("sync", "folder STATUS failed", logging.Acct(acct.Email), logging.Fld(folder), logging.Err(err))
-			continue
-		}
-		storedUV, _ := c.store.GetUIDValidity(acct.Email, folder)
-		highUID, _ := c.store.HighestUID(acct.Email, folder)
-		if storedUV == uidValidity && highUID > 0 && uidNext <= highUID+1 {
-			logging.Debug("sync", "folder skipped, no new messages", logging.Acct(acct.Email), logging.Fld(folder), logging.KV("uidnext", uidNext), logging.KV("high_uid", highUID))
-			continue
+		if !full {
+			// Quick STATUS check: skip folder if UIDNEXT hasn't changed.
+			uidNext, uidValidity, err := w.FolderStatus(folder)
+			if err != nil {
+				logging.Warn("sync", "folder STATUS failed", logging.Acct(acct.Email), logging.Fld(folder), logging.Err(err))
+				continue
+			}
+			storedUV, _ := c.store.GetUIDValidity(acct.Email, folder)
+			highUID, _ := c.store.HighestUID(acct.Email, folder)
+			if storedUV == uidValidity && highUID > 0 && uidNext <= highUID+1 {
+				logging.Debug("sync", "folder skipped, no new messages", logging.Acct(acct.Email), logging.Fld(folder), logging.KV("uidnext", uidNext), logging.KV("high_uid", highUID))
+				continue
+			}
 		}
 
 		synced++
@@ -1186,14 +1424,26 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig) (int, error) {
 				})
 			}
 		}
-		if n, err := w.SyncFolder(folder, onProgress); err != nil {
+		var n int
+		if full {
+			n, err = w.SyncFolderFull(folder, onProgress)
+		} else {
+			n, err = w.SyncFolder(folder, onProgress)
+		}
+		if err != nil {
 			logging.Warn("sync", "folder sync error", logging.Acct(acct.Email), logging.Fld(folder), logging.Dur(time.Since(folderStart)), logging.Err(err))
+			if full {
+				syncErrors = append(syncErrors, fmt.Errorf("%s: %w", folder, err))
+			}
 		} else {
 			newTotal += n
 			logging.Debug("sync", "folder synced", logging.Acct(acct.Email), logging.Fld(folder), logging.Dur(time.Since(folderStart)))
 		}
 	}
 	logging.Info("sync", "account folders synced", logging.Acct(acct.Email), logging.KV("synced", synced), logging.KV("total", len(folders)))
+	if len(syncErrors) > 0 {
+		return newTotal, fmt.Errorf("full sync incomplete: %w", errors.Join(syncErrors...))
+	}
 
 	// Also set up SMTP worker if configured.
 	if acct.SMTPHost != "" {

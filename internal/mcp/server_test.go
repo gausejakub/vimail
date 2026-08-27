@@ -115,8 +115,8 @@ func TestListTools(t *testing.T) {
 	sort.Strings(names)
 	want := []string{
 		"delete_draft", "delete_message",
-		"list_accounts", "list_folders", "list_messages", "list_recent_messages",
-		"mark_read", "read_message", "read_messages", "save_draft", "search_messages", "sync",
+		"list_accounts", "list_folders", "list_messages", "list_operations", "list_recent_messages",
+		"mark_all_read", "mark_read", "read_message", "read_messages", "restore_messages", "save_draft", "search_messages", "sync",
 	}
 	if fmt.Sprint(names) != fmt.Sprint(want) {
 		t.Errorf("tool list = %v, want %v", names, want)
@@ -152,6 +152,39 @@ func TestListFoldersCounts(t *testing.T) {
 	}
 	if sent, ok := byName["Sent"]; !ok || sent.Total != 0 {
 		t.Errorf("Sent = %+v, want present with total 0", sent)
+	}
+}
+
+func TestListOperationsReportsDeliveryState(t *testing.T) {
+	store := seededStore(t)
+	id, err := store.QueueOp(cache.OpRestore, testAcct, "Trash", cache.RestorePayload{UIDs: []uint32{7, 8}, Destination: "Inbox"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !store.StartOp(id) {
+		t.Fatal("claim restore op")
+	}
+	store.FailOp(id, "offline")
+	session := connect(t, store)
+
+	var out listOperationsResult
+	call(t, session, "list_operations", nil, &out)
+	if len(out.Operations) != 1 {
+		t.Fatalf("operations = %+v", out.Operations)
+	}
+	op := out.Operations[0]
+	if op.Type != "restore" || op.Status != "failed" || op.Count != 2 || op.Destination != "Inbox" || op.Error != "offline" || op.Attempts != 1 {
+		t.Fatalf("operation = %+v", op)
+	}
+	if !store.StartOpNow(id) {
+		t.Fatal("reclaim failed restore op")
+	}
+	store.CompleteOp(id)
+	out = listOperationsResult{}
+	call(t, session, "list_operations", nil, &out)
+	op = out.Operations[0]
+	if op.Status != "completed" || op.Error != "" || op.NextAttemptAt != "" {
+		t.Fatalf("completed operation retained failure state: %+v", op)
 	}
 }
 

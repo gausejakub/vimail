@@ -189,9 +189,9 @@ func (s *SQLiteStore) MessageByUID(acctEmail, folder string, uid uint32) (msg em
 	var dateStr string
 	var unread, flagged, fetched int
 	err := s.db.QueryRow(`
-		SELECT uid, from_addr, to_addr, subject, body, html_body, date, unread, flagged, body_fetched
+		SELECT uid, message_id, from_addr, to_addr, subject, body, html_body, date, unread, flagged, body_fetched
 		FROM messages WHERE folder_id = ? AND uid = ?
-	`, folderID, uid).Scan(&m.UID, &m.From, &m.To, &m.Subject, &m.Body, &m.HTMLBody, &dateStr, &unread, &flagged, &fetched)
+	`, folderID, uid).Scan(&m.UID, &m.MessageID, &m.From, &m.To, &m.Subject, &m.Body, &m.HTMLBody, &dateStr, &unread, &flagged, &fetched)
 	if err != nil {
 		return email.Message{}, false, false
 	}
@@ -449,29 +449,51 @@ func (s *SQLiteStore) syncReadAcrossFolders(acctEmail string, folderID int, uid 
 	`, messageID, acctEmail)
 }
 
-// MarkAllRead marks all messages in a folder as read.
-func (s *SQLiteStore) MarkAllRead(acctEmail, folder string) {
-	var folderID int
-	err := s.db.QueryRow(`SELECT id FROM folders WHERE account = ? AND name = ?`, acctEmail, folder).Scan(&folderID)
+// MarkAllRead atomically marks every cached message in a folder read, cascades
+// Gmail label copies, and returns the number that changed in the selected
+// folder. Server delivery is handled independently by the operation queue.
+func (s *SQLiteStore) MarkAllRead(acctEmail, folder string) (int, error) {
+	tx, err := s.db.Begin()
 	if err != nil {
-		return
+		return 0, err
 	}
-	// Collect message_ids for cross-folder sync.
-	rows, err2 := s.db.Query(`SELECT message_id FROM messages WHERE folder_id = ? AND unread = 1 AND message_id != ''`, folderID)
-	if err2 == nil {
-		var mids []string
-		for rows.Next() {
-			var mid string
-			rows.Scan(&mid)
-			mids = append(mids, mid)
+	defer tx.Rollback()
+	var folderID int
+	if err := tx.QueryRow(`SELECT id FROM folders WHERE account = ? AND name = ?`, acctEmail, folder).Scan(&folderID); err != nil {
+		return 0, fmt.Errorf("folder %q not found for %s: %w", folder, acctEmail, err)
+	}
+	rows, err := tx.Query(`SELECT message_id FROM messages WHERE folder_id = ? AND unread = 1 AND message_id != ''`, folderID)
+	if err != nil {
+		return 0, err
+	}
+	var messageIDs []string
+	for rows.Next() {
+		var messageID string
+		if err := rows.Scan(&messageID); err != nil {
+			rows.Close()
+			return 0, err
 		}
-		rows.Close()
-		// Mark read in all folders for these message_ids.
-		for _, mid := range mids {
-			s.db.Exec(`UPDATE messages SET unread = 0 WHERE message_id = ? AND folder_id IN (SELECT id FROM folders WHERE account = ?)`, mid, acctEmail)
+		messageIDs = append(messageIDs, messageID)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	var count int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM messages WHERE folder_id = ? AND unread = 1`, folderID).Scan(&count); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(`UPDATE messages SET unread = 0 WHERE folder_id = ? AND unread = 1`, folderID); err != nil {
+		return 0, err
+	}
+	for _, messageID := range messageIDs {
+		if _, err := tx.Exec(`UPDATE messages SET unread = 0 WHERE message_id = ? AND folder_id IN (SELECT id FROM folders WHERE account = ?)`, messageID, acctEmail); err != nil {
+			return 0, err
 		}
 	}
-	s.db.Exec(`UPDATE messages SET unread = 0 WHERE folder_id = ? AND unread = 1`, folderID)
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 // SearchMessages searches messages across all folders for an account (or all accounts if acctEmail is empty).
@@ -639,6 +661,118 @@ func (s *SQLiteStore) DeleteMessageByUID(acctEmail, folder string, uid uint32) {
 	s.db.Exec(`DELETE FROM attachments WHERE folder_id = ? AND uid = ?`, folderID, uid)
 }
 
+// UIDMove maps a message UID in a source folder to its server-assigned UID in
+// a destination folder.
+type UIDMove struct {
+	Source      uint32
+	Destination uint32
+}
+
+// RestoreMessages moves cached message rows and attachment metadata to their
+// server-assigned destination UIDs in one transaction. It intentionally does
+// not create deletion tombstones: the server move has already succeeded.
+func (s *SQLiteStore) RestoreMessages(acctEmail, sourceFolder, destinationFolder string, moves []UIDMove) error {
+	if len(moves) == 0 {
+		return nil
+	}
+	if sourceFolder == destinationFolder {
+		return fmt.Errorf("source and destination folders must differ")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var sourceID, destinationID int
+	if err := tx.QueryRow(`SELECT id FROM folders WHERE account = ? AND name = ?`, acctEmail, sourceFolder).Scan(&sourceID); err != nil {
+		return fmt.Errorf("source folder %q not found for %s: %w", sourceFolder, acctEmail, err)
+	}
+	if err := tx.QueryRow(`SELECT id FROM folders WHERE account = ? AND name = ?`, acctEmail, destinationFolder).Scan(&destinationID); err != nil {
+		return fmt.Errorf("destination folder %q not found for %s: %w", destinationFolder, acctEmail, err)
+	}
+
+	for _, move := range moves {
+		if move.Source == 0 || move.Destination == 0 {
+			return fmt.Errorf("restore UID mapping must be non-zero")
+		}
+		var messageID, from, to, subject, body, htmlBody, date string
+		var bodyFetched, unread, flagged, attachmentsCached int
+		if err := tx.QueryRow(`
+			SELECT message_id, from_addr, to_addr, subject, body, html_body,
+			       body_fetched, date, unread, flagged, attachments_cached
+			FROM messages WHERE folder_id = ? AND uid = ?
+		`, sourceID, move.Source).Scan(
+			&messageID, &from, &to, &subject, &body, &htmlBody,
+			&bodyFetched, &date, &unread, &flagged, &attachmentsCached,
+		); err != nil {
+			return fmt.Errorf("source message %d not found in %s/%s: %w", move.Source, acctEmail, sourceFolder, err)
+		}
+
+		// A previous label copy of the same logical message must not survive
+		// beside the restored row in the destination folder.
+		if messageID != "" {
+			if _, err := tx.Exec(`DELETE FROM messages WHERE folder_id = ? AND message_id = ?`, destinationID, messageID); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.Exec(`DELETE FROM messages WHERE folder_id = ? AND uid = ?`, destinationID, move.Destination); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`
+			INSERT INTO messages (
+				uid, folder_id, message_id, from_addr, to_addr, subject, body,
+				html_body, body_fetched, date, unread, flagged, attachments_cached
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, move.Destination, destinationID, messageID, from, to, subject, body,
+			htmlBody, bodyFetched, date, unread, flagged, attachmentsCached); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`
+			INSERT INTO attachments (folder_id, uid, filename, content_type, size, part_num)
+			SELECT ?, ?, filename, content_type, size, part_num
+			FROM attachments WHERE folder_id = ? AND uid = ?
+		`, destinationID, move.Destination, sourceID, move.Source); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DELETE FROM messages WHERE folder_id = ? AND uid = ?`, sourceID, move.Source); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DELETE FROM pending_deletes WHERE (folder_id = ? AND uid = ?) OR (folder_id = ? AND uid = ?)`,
+			sourceID, move.Source, destinationID, move.Destination); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// RemoveMessagesByUID removes exact cache rows without creating server-write
+// tombstones. It is the fallback after a server-confirmed move whose
+// destination UIDs could not be reported.
+func (s *SQLiteStore) RemoveMessagesByUID(acctEmail, folder string, uids []uint32) error {
+	if len(uids) == 0 {
+		return nil
+	}
+	var folderID int
+	if err := s.db.QueryRow(`SELECT id FROM folders WHERE account = ? AND name = ?`, acctEmail, folder).Scan(&folderID); err != nil {
+		return err
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, uid := range uids {
+		if _, err := tx.Exec(`DELETE FROM messages WHERE folder_id = ? AND uid = ?`, folderID, uid); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DELETE FROM pending_deletes WHERE folder_id = ? AND uid = ?`, folderID, uid); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 // DeleteMessages batch-deletes messages by ID in a single transaction.
 func (s *SQLiteStore) DeleteMessages(acctEmail, folder string, ids []string) {
 	if len(ids) == 0 {
@@ -788,6 +922,82 @@ func (s *SQLiteStore) PurgeFolder(acctEmail, folder string) error {
 	}
 	_, err = s.db.Exec(`DELETE FROM messages WHERE folder_id = ?`, folderID)
 	return err
+}
+
+// ReplaceFolderHeaders atomically reconciles one folder with an authoritative
+// IMAP snapshot. Existing rows with the same UID keep their cached bodies and
+// attachments; stale UIDs are removed, and pending local deletes stay hidden.
+func (s *SQLiteStore) ReplaceFolderHeaders(acctEmail, folder string, messages []email.Message, uidValidity uint32) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var folderID int
+	if err := tx.QueryRow(`SELECT id FROM folders WHERE account = ? AND name = ?`, acctEmail, folder).Scan(&folderID); err != nil {
+		return fmt.Errorf("folder %q not found for %s: %w", folder, acctEmail, err)
+	}
+	// A temporary UID table avoids SQLite's parameter-count limit for large
+	// folders and makes stale-row removal part of the same transaction.
+	if _, err := tx.Exec(`CREATE TEMP TABLE IF NOT EXISTS sync_snapshot_uids (uid INTEGER PRIMARY KEY)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM sync_snapshot_uids`); err != nil {
+		return err
+	}
+	uidStmt, err := tx.Prepare(`INSERT OR IGNORE INTO sync_snapshot_uids (uid) VALUES (?)`)
+	if err != nil {
+		return err
+	}
+	defer uidStmt.Close()
+	upsertStmt, err := tx.Prepare(`
+		INSERT INTO messages (uid, folder_id, message_id, from_addr, to_addr, subject, body, date, unread, flagged)
+		SELECT ?, ?, ?, ?, ?, ?, '', ?, ?, ?
+		WHERE NOT EXISTS (
+			SELECT 1 FROM pending_deletes WHERE folder_id = ? AND uid = ?
+		)
+		ON CONFLICT(folder_id, uid) DO UPDATE SET
+			message_id = CASE WHEN excluded.message_id != '' THEN excluded.message_id ELSE messages.message_id END,
+			from_addr = excluded.from_addr,
+			to_addr = excluded.to_addr,
+			subject = excluded.subject,
+			date = excluded.date,
+			unread = excluded.unread,
+			flagged = excluded.flagged
+	`)
+	if err != nil {
+		return err
+	}
+	defer upsertStmt.Close()
+	for _, msg := range messages {
+		if _, err := uidStmt.Exec(msg.UID); err != nil {
+			return err
+		}
+		unread, flagged := 0, 0
+		if msg.Unread {
+			unread = 1
+		}
+		if msg.Flagged {
+			flagged = 1
+		}
+		if _, err := upsertStmt.Exec(
+			msg.UID, folderID, msg.MessageID, msg.From, msg.To, msg.Subject,
+			msg.Date.Format(time.RFC3339), unread, flagged, folderID, msg.UID,
+		); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`
+		DELETE FROM messages
+		WHERE folder_id = ? AND uid NOT IN (SELECT uid FROM sync_snapshot_uids)
+	`, folderID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE folders SET uidvalidity = ? WHERE id = ?`, uidValidity, folderID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // HighestUID returns the highest UID stored for a folder.

@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"math"
 	"net"
 	"strconv"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"github.com/emersion/go-imap/v2/imapserver/imapmemserver"
 	"github.com/gausejakub/vimail/internal/auth"
 	"github.com/gausejakub/vimail/internal/config"
+	"github.com/gausejakub/vimail/internal/email"
 )
 
 type delayedCopySession struct {
@@ -170,5 +172,183 @@ func TestEnsureIMAPWorkerForWriteReconnectsClosedConnection(t *testing.T) {
 	}
 	if !got.Ping() {
 		t.Fatal("replacement IMAP worker is not healthy")
+	}
+}
+
+func TestRestoreUsesDestinationUIDBelowCacheHighWatermark(t *testing.T) {
+	acct, creds, user := newIMAPTestEndpoint(t)
+	store := testQueueStore(t)
+	if err := store.SeedAccount("Alice", acct.Email, acct.IMAPHost, acct.IMAPPort, "", 587); err != nil {
+		t.Fatal(err)
+	}
+	for _, folder := range []string{"Inbox", "Trash"} {
+		if _, err := store.EnsureFolder(acct.Email, folder); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w := NewIMAPWorker(acct, creds, store)
+	if err := w.Connect(); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(w.Disconnect)
+
+	raw := []byte("Message-ID: <restore@example.com>\r\nFrom: sender@example.com\r\nTo: alice@example.com\r\nSubject: restore\r\n\r\nbody")
+	appendCmd := w.client.Append("Deleted Items", int64(len(raw)), nil)
+	if _, err := appendCmd.Write(raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := appendCmd.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := appendCmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertMessage(acct.Email, "Trash", email.Message{
+		UID: 1, MessageID: "<restore@example.com>", From: "sender@example.com",
+		To: acct.Email, Subject: "restore", Date: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// An incremental sync would start above this stale high-water mark and
+	// miss the server-assigned destination UID 1.
+	if err := store.UpsertMessage(acct.Email, "Inbox", email.Message{
+		UID: 100, MessageID: "<stale@example.com>", From: "old@example.com",
+		To: acct.Email, Subject: "stale", Date: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	coord := NewCoordinator(config.Config{Accounts: []config.AccountConfig{acct}}, store)
+	coord.creds[acct.Email] = creds
+	coord.imap[acct.Email] = w
+	result := coord.executeRestore(w, acct.Email, []uint32{1}, "Inbox")
+	if result.Err != nil || !result.Delivered || !result.Cached || result.Count != 1 {
+		t.Fatalf("restore result = %+v", result)
+	}
+	if _, _, ok := store.MessageByUID(acct.Email, "Trash", 1); ok {
+		t.Fatal("restored message remains in Trash cache")
+	}
+	restored, _, ok := store.MessageByUID(acct.Email, "Inbox", 1)
+	if !ok || restored.Subject != "restore" {
+		t.Fatalf("restored Inbox message = %+v found=%v", restored, ok)
+	}
+	for folder, want := range map[string]uint32{"Deleted Items": 0, "INBOX": 1} {
+		status, err := user.Status(folder, &imap.StatusOptions{NumMessages: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status.NumMessages == nil || *status.NumMessages != want {
+			t.Fatalf("%s message count = %v, want %d", folder, status.NumMessages, want)
+		}
+	}
+}
+
+func TestSyncFolderFullReplacesStaleCacheSnapshot(t *testing.T) {
+	acct, creds, _ := newIMAPTestEndpoint(t)
+	store := testQueueStore(t)
+	if err := store.SeedAccount("Alice", acct.Email, acct.IMAPHost, acct.IMAPPort, "", 587); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.EnsureFolder(acct.Email, "Inbox"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertMessage(acct.Email, "Inbox", email.Message{
+		UID: 100, MessageID: "<stale@example.com>", From: "old@example.com",
+		To: acct.Email, Subject: "stale", Date: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	w := NewIMAPWorker(acct, creds, store)
+	if err := w.Connect(); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(w.Disconnect)
+	raw := []byte("Message-ID: <current@example.com>\r\nFrom: sender@example.com\r\nTo: alice@example.com\r\nSubject: current\r\n\r\nbody")
+	appendCmd := w.client.Append("INBOX", int64(len(raw)), nil)
+	if _, err := appendCmd.Write(raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := appendCmd.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := appendCmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := w.SyncFolderFull("Inbox")
+	if err != nil {
+		t.Fatalf("full sync: %v", err)
+	}
+	if got != 1 {
+		t.Fatalf("full sync fetched %d messages, want 1", got)
+	}
+	if _, _, ok := store.MessageByUID(acct.Email, "Inbox", 100); ok {
+		t.Fatal("stale cache UID survived full sync")
+	}
+	msg, _, ok := store.MessageByUID(acct.Email, "Inbox", 1)
+	if !ok || msg.Subject != "current" {
+		t.Fatalf("current message = %+v found=%v", msg, ok)
+	}
+}
+
+func TestRemainingRestoreUIDsUsesConfirmedSources(t *testing.T) {
+	got := remainingRestoreUIDs([]uint32{10, 20, 30}, []UIDMove{{Source: 20, Destination: 2}})
+	if len(got) != 2 || got[0] != 10 || got[1] != 30 {
+		t.Fatalf("remaining UIDs = %v, want [10 30]", got)
+	}
+}
+
+func TestMarkAllReadCoversMessagesMissingFromCache(t *testing.T) {
+	acct, creds, _ := newIMAPTestEndpoint(t)
+	w := NewIMAPWorker(acct, creds, testQueueStore(t))
+	if err := w.Connect(); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(w.Disconnect)
+	for i := 0; i < 2; i++ {
+		raw := []byte("From: sender@example.com\r\nTo: alice@example.com\r\nSubject: unread\r\n\r\nbody")
+		cmd := w.client.Append("INBOX", int64(len(raw)), nil)
+		if _, err := cmd.Write(raw); err != nil {
+			t.Fatal(err)
+		}
+		if err := cmd.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := cmd.Wait(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.MarkAllRead("Inbox"); err != nil {
+		t.Fatalf("MarkAllRead: %v", err)
+	}
+	if _, err := w.client.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatal(err)
+	}
+	var all imap.UIDSet
+	all.AddRange(1, imap.UID(math.MaxUint32))
+	fetch := w.client.Fetch(all, &imap.FetchOptions{UID: true, Flags: true})
+	seen := 0
+	for {
+		data := fetch.Next()
+		if data == nil {
+			break
+		}
+		message, err := data.Collect()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, flag := range message.Flags {
+			if flag == imap.FlagSeen {
+				seen++
+				break
+			}
+		}
+	}
+	if err := fetch.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if seen != 2 {
+		t.Fatalf("seen server messages = %d, want 2", seen)
 	}
 }

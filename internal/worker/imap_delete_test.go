@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"math"
 	"net"
 	"strconv"
 	"testing"
@@ -295,5 +296,59 @@ func TestRemainingRestoreUIDsUsesConfirmedSources(t *testing.T) {
 	got := remainingRestoreUIDs([]uint32{10, 20, 30}, []UIDMove{{Source: 20, Destination: 2}})
 	if len(got) != 2 || got[0] != 10 || got[1] != 30 {
 		t.Fatalf("remaining UIDs = %v, want [10 30]", got)
+	}
+}
+
+func TestMarkAllReadCoversMessagesMissingFromCache(t *testing.T) {
+	acct, creds, _ := newIMAPTestEndpoint(t)
+	w := NewIMAPWorker(acct, creds, testQueueStore(t))
+	if err := w.Connect(); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(w.Disconnect)
+	for i := 0; i < 2; i++ {
+		raw := []byte("From: sender@example.com\r\nTo: alice@example.com\r\nSubject: unread\r\n\r\nbody")
+		cmd := w.client.Append("INBOX", int64(len(raw)), nil)
+		if _, err := cmd.Write(raw); err != nil {
+			t.Fatal(err)
+		}
+		if err := cmd.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := cmd.Wait(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.MarkAllRead("Inbox"); err != nil {
+		t.Fatalf("MarkAllRead: %v", err)
+	}
+	if _, err := w.client.Select("INBOX", nil).Wait(); err != nil {
+		t.Fatal(err)
+	}
+	var all imap.UIDSet
+	all.AddRange(1, imap.UID(math.MaxUint32))
+	fetch := w.client.Fetch(all, &imap.FetchOptions{UID: true, Flags: true})
+	seen := 0
+	for {
+		data := fetch.Next()
+		if data == nil {
+			break
+		}
+		message, err := data.Collect()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, flag := range message.Flags {
+			if flag == imap.FlagSeen {
+				seen++
+				break
+			}
+		}
+	}
+	if err := fetch.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if seen != 2 {
+		t.Fatalf("seen server messages = %d, want 2", seen)
 	}
 }

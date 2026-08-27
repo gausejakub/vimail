@@ -63,6 +63,7 @@ type operationInfo struct {
 	Account       string `json:"account"`
 	Folder        string `json:"folder,omitempty"`
 	Count         int    `json:"count,omitempty"`
+	All           bool   `json:"all,omitempty"`
 	Destination   string `json:"destination,omitempty"`
 	Attempts      int    `json:"attempts"`
 	Error         string `json:"error,omitempty"`
@@ -400,6 +401,7 @@ func (s *Server) registerReadTools() {
 				var payload cache.MarkReadPayload
 				if json.Unmarshal(op.Payload, &payload) == nil {
 					info.Count = len(payload.UIDs)
+					info.All = payload.All
 				}
 			case cache.OpRestore:
 				var payload cache.RestorePayload

@@ -307,35 +307,76 @@ func (c *Coordinator) MarkRead(acctEmail, folder string, uid uint32) tea.Cmd {
 // MarkReadMessages queues and executes one batched mark-read operation.
 func (c *Coordinator) MarkReadMessages(acctEmail, folder string, uids []uint32) tea.Cmd {
 	return func() tea.Msg {
-		logging.Debug("mark_read", "marking messages read", logging.Acct(acctEmail), logging.Fld(folder), logging.KV("count", len(uids)))
-		opID, _ := c.store.QueueOp(cache.OpMarkRead, acctEmail, folder, cache.MarkReadPayload{UIDs: uids})
-		if !c.store.StartOp(opID) {
-			// Another process's drainer claimed the op — it will execute it.
-			return nil
-		}
-
-		acct, ok := c.accountByEmail(acctEmail)
-		if !ok {
-			err := fmt.Errorf("no such account: %s", acctEmail)
-			c.store.FailOp(opID, err.Error())
-			return nil
-		}
-		w, err := c.ensureIMAPWorkerForWrite(acct)
-		if err != nil {
-			logging.Warn("mark_read", "IMAP worker unavailable", logging.Acct(acctEmail), logging.Fld(folder), logging.KV("count", len(uids)), logging.Err(err))
-			c.store.FailOp(opID, err.Error())
-			return nil
-		}
-		if err := w.MarkReadBatch(folder, uids); err != nil {
-			// Leave the op failed so a reconnect retry can pick it up;
-			// the optimistic cache update already reflects the read state.
-			logging.Warn("mark_read", "IMAP mark read failed", logging.Acct(acctEmail), logging.Fld(folder), logging.KV("count", len(uids)), logging.Err(err))
-			c.store.FailOp(opID, err.Error())
-			return nil
-		}
-		c.store.CompleteOp(opID)
+		c.MarkReadMessagesNow(acctEmail, folder, uids)
 		return nil
 	}
+}
+
+// MarkReadMessagesNow is the synchronous seam used by MCP. It keeps the same
+// durable queue semantics as the TUI command while returning delivery state.
+func (c *Coordinator) MarkReadMessagesNow(acctEmail, folder string, uids []uint32) MarkReadResult {
+	return c.markReadNow(acctEmail, folder, cache.MarkReadPayload{UIDs: uids})
+}
+
+// MarkAllRead returns the TUI command form of the authoritative whole-folder
+// operation.
+func (c *Coordinator) MarkAllRead(acctEmail, folder string) tea.Cmd {
+	return func() tea.Msg {
+		c.MarkAllReadNow(acctEmail, folder)
+		return nil
+	}
+}
+
+// MarkAllReadNow queues one authoritative whole-folder IMAP operation. Unlike
+// UID batches, it also covers messages absent from a stale local cache.
+func (c *Coordinator) MarkAllReadNow(acctEmail, folder string) MarkReadResult {
+	return c.markReadNow(acctEmail, folder, cache.MarkReadPayload{All: true})
+}
+
+func (c *Coordinator) markReadNow(acctEmail, folder string, payload cache.MarkReadPayload) MarkReadResult {
+	count := len(payload.UIDs)
+	if payload.All {
+		logging.Debug("mark_read", "marking all messages read", logging.Acct(acctEmail), logging.Fld(folder))
+	} else {
+		logging.Debug("mark_read", "marking messages read", logging.Acct(acctEmail), logging.Fld(folder), logging.KV("count", count))
+	}
+	opID, err := c.store.QueueOp(cache.OpMarkRead, acctEmail, folder, payload)
+	result := MarkReadResult{OpID: opID}
+	if err != nil {
+		result.Err = fmt.Errorf("queue mark-read: %w", err)
+		return result
+	}
+	if !c.store.StartOp(opID) {
+		return result // another process owns the durable operation
+	}
+
+	acct, ok := c.accountByEmail(acctEmail)
+	if !ok {
+		result.Err = fmt.Errorf("no such account: %s", acctEmail)
+		c.store.FailOp(opID, result.Err.Error())
+		return result
+	}
+	w, err := c.ensureIMAPWorkerForWrite(acct)
+	if err != nil {
+		result.Err = err
+		logging.Warn("mark_read", "IMAP worker unavailable", logging.Acct(acctEmail), logging.Fld(folder), logging.KV("count", count), logging.Err(err))
+		c.store.FailOp(opID, err.Error())
+		return result
+	}
+	if payload.All {
+		err = w.MarkAllRead(folder)
+	} else {
+		err = w.MarkReadBatch(folder, payload.UIDs)
+	}
+	if err != nil {
+		result.Err = err
+		logging.Warn("mark_read", "IMAP mark read failed", logging.Acct(acctEmail), logging.Fld(folder), logging.KV("count", count), logging.Err(err))
+		c.store.FailOp(opID, err.Error())
+		return result
+	}
+	c.store.CompleteOp(opID)
+	result.Delivered = true
+	return result
 }
 
 // SaveAttachments fetches the raw message and saves the specified attachments to ~/Downloads.
@@ -912,6 +953,15 @@ func (c *Coordinator) RetryPendingOps() tea.Cmd {
 					c.store.FailOp(op.ID, "bad payload: "+e.Error())
 					continue
 				}
+				if payload.All {
+					w, workerErr := getIMAP(op.Account)
+					if workerErr != nil {
+						err = workerErr
+					} else {
+						err = w.MarkAllRead(op.Folder)
+					}
+					break
+				}
 				byFolder := markReadBatches[op.Account]
 				if byFolder == nil {
 					byFolder = make(map[string]*markReadBatch)
@@ -1250,6 +1300,15 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig, full bool) (int, er
 			var payload cache.MarkReadPayload
 			if err := json.Unmarshal(op.Payload, &payload); err != nil {
 				c.store.FailOp(op.ID, "bad payload: "+err.Error())
+				continue
+			}
+			if payload.All {
+				if err := w.MarkAllRead(op.Folder); err != nil {
+					logging.Warn("retry", "retry mark-all-read failed", logging.Acct(op.Account), logging.Fld(op.Folder), logging.Err(err))
+					c.store.FailOp(op.ID, err.Error())
+				} else {
+					c.store.CompleteOp(op.ID)
+				}
 				continue
 			}
 			// Collect UIDs and op IDs by folder so each op is settled by

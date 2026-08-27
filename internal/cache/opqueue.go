@@ -57,6 +57,7 @@ type SendPayload struct {
 // MarkReadPayload is the JSON payload for mark-read operations.
 type MarkReadPayload struct {
 	UIDs []uint32 `json:"uids"`
+	All  bool     `json:"all,omitempty"`
 }
 
 // RestorePayload is the JSON payload for restoring messages from Trash.

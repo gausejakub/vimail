@@ -449,29 +449,51 @@ func (s *SQLiteStore) syncReadAcrossFolders(acctEmail string, folderID int, uid 
 	`, messageID, acctEmail)
 }
 
-// MarkAllRead marks all messages in a folder as read.
-func (s *SQLiteStore) MarkAllRead(acctEmail, folder string) {
-	var folderID int
-	err := s.db.QueryRow(`SELECT id FROM folders WHERE account = ? AND name = ?`, acctEmail, folder).Scan(&folderID)
+// MarkAllRead atomically marks every cached message in a folder read, cascades
+// Gmail label copies, and returns the number that changed in the selected
+// folder. Server delivery is handled independently by the operation queue.
+func (s *SQLiteStore) MarkAllRead(acctEmail, folder string) (int, error) {
+	tx, err := s.db.Begin()
 	if err != nil {
-		return
+		return 0, err
 	}
-	// Collect message_ids for cross-folder sync.
-	rows, err2 := s.db.Query(`SELECT message_id FROM messages WHERE folder_id = ? AND unread = 1 AND message_id != ''`, folderID)
-	if err2 == nil {
-		var mids []string
-		for rows.Next() {
-			var mid string
-			rows.Scan(&mid)
-			mids = append(mids, mid)
+	defer tx.Rollback()
+	var folderID int
+	if err := tx.QueryRow(`SELECT id FROM folders WHERE account = ? AND name = ?`, acctEmail, folder).Scan(&folderID); err != nil {
+		return 0, fmt.Errorf("folder %q not found for %s: %w", folder, acctEmail, err)
+	}
+	rows, err := tx.Query(`SELECT message_id FROM messages WHERE folder_id = ? AND unread = 1 AND message_id != ''`, folderID)
+	if err != nil {
+		return 0, err
+	}
+	var messageIDs []string
+	for rows.Next() {
+		var messageID string
+		if err := rows.Scan(&messageID); err != nil {
+			rows.Close()
+			return 0, err
 		}
-		rows.Close()
-		// Mark read in all folders for these message_ids.
-		for _, mid := range mids {
-			s.db.Exec(`UPDATE messages SET unread = 0 WHERE message_id = ? AND folder_id IN (SELECT id FROM folders WHERE account = ?)`, mid, acctEmail)
+		messageIDs = append(messageIDs, messageID)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	var count int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM messages WHERE folder_id = ? AND unread = 1`, folderID).Scan(&count); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(`UPDATE messages SET unread = 0 WHERE folder_id = ? AND unread = 1`, folderID); err != nil {
+		return 0, err
+	}
+	for _, messageID := range messageIDs {
+		if _, err := tx.Exec(`UPDATE messages SET unread = 0 WHERE message_id = ? AND folder_id IN (SELECT id FROM folders WHERE account = ?)`, messageID, acctEmail); err != nil {
+			return 0, err
 		}
 	}
-	s.db.Exec(`UPDATE messages SET unread = 0 WHERE folder_id = ? AND unread = 1`, folderID)
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 // SearchMessages searches messages across all folders for an account (or all accounts if acctEmail is empty).

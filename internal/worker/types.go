@@ -104,6 +104,14 @@ type DeleteResult struct {
 	Err     error
 }
 
+// MarkReadResult reports whether a queued mark-read operation reached IMAP or
+// remains durable for retry.
+type MarkReadResult struct {
+	OpID      int64
+	Delivered bool
+	Err       error
+}
+
 // ExportProgressMsg reports incremental progress during batch export.
 type ExportProgressMsg struct {
 	Done  int

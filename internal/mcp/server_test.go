@@ -116,7 +116,7 @@ func TestListTools(t *testing.T) {
 	want := []string{
 		"delete_draft", "delete_message",
 		"list_accounts", "list_folders", "list_messages", "list_operations", "list_recent_messages",
-		"mark_read", "read_message", "read_messages", "restore_messages", "save_draft", "search_messages", "sync",
+		"mark_all_read", "mark_read", "read_message", "read_messages", "restore_messages", "save_draft", "search_messages", "sync",
 	}
 	if fmt.Sprint(names) != fmt.Sprint(want) {
 		t.Errorf("tool list = %v, want %v", names, want)

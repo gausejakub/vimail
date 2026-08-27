@@ -809,6 +809,32 @@ func (w *IMAPWorker) MarkReadBatch(folder string, uids []uint32) error {
 	return nil
 }
 
+// MarkAllRead marks every message in a folder read without enumerating UIDs.
+// The UID range also covers messages that the local cache has not seen yet.
+func (w *IMAPWorker) MarkAllRead(folder string) error {
+	w.opMu.Lock()
+	defer w.opMu.Unlock()
+	if w.client == nil {
+		return fmt.Errorf("not connected")
+	}
+	cancel := w.opTimer(w.commandDeadline)
+	defer cancel()
+	imapName := w.imapMailboxName(folder)
+	if _, err := w.client.Select(imapName, nil).Wait(); err != nil {
+		return fmt.Errorf("SELECT %s: %w", imapName, err)
+	}
+	var all imap.UIDSet
+	all.AddRange(1, imap.UID(math.MaxUint32))
+	cmd := w.client.Store(all, &imap.StoreFlags{
+		Op:    imap.StoreFlagsAdd,
+		Flags: []imap.Flag{imap.FlagSeen},
+	}, nil)
+	if err := cmd.Close(); err != nil {
+		return fmt.Errorf("STORE +FLAGS \\Seen for all messages: %w", err)
+	}
+	return nil
+}
+
 // Idle starts IMAP IDLE on the given folder and blocks until
 // new mail arrives or the timeout is reached. Returns true if new mail arrived.
 func (w *IMAPWorker) Idle(folder string, timeout time.Duration) (bool, error) {

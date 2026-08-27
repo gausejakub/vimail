@@ -45,12 +45,44 @@ type markReadArgs struct {
 }
 
 type markReadResult struct {
-	Account string   `json:"account"`
-	Folder  string   `json:"folder"`
-	UID     uint32   `json:"uid,omitempty"`
-	UIDs    []uint32 `json:"uids"`
-	Count   int      `json:"count"`
-	Note    string   `json:"note"`
+	Account       string   `json:"account"`
+	Folder        string   `json:"folder"`
+	UID           uint32   `json:"uid,omitempty"`
+	UIDs          []uint32 `json:"uids"`
+	Count         int      `json:"count"`
+	OperationID   int64    `json:"operation_id,omitempty"`
+	ServerUpdated bool     `json:"server_updated"`
+	Queued        bool     `json:"queued"`
+	Error         string   `json:"error,omitempty"`
+	Note          string   `json:"note"`
+}
+
+type markAllReadArgs struct {
+	Account string `json:"account,omitempty" jsonschema:"one account email; omit to include every configured account"`
+	Folder  string `json:"folder,omitempty" jsonschema:"one folder to mark read; omit to include every cached mail folder, including Spam and Trash"`
+}
+
+type markAllReadBatchResult struct {
+	Account       string `json:"account"`
+	Folder        string `json:"folder"`
+	Count         int    `json:"count"`
+	OperationID   int64  `json:"operation_id,omitempty"`
+	ServerUpdated bool   `json:"server_updated"`
+	Queued        bool   `json:"queued"`
+	Error         string `json:"error,omitempty"`
+}
+
+type markAllReadResult struct {
+	Account          string                   `json:"account,omitempty"`
+	Folder           string                   `json:"folder,omitempty"`
+	Total            int                      `json:"total"`
+	BatchCount       int                      `json:"batch_count"`
+	Delivered        int                      `json:"delivered"`
+	Queued           int                      `json:"queued"`
+	DeliveredBatches int                      `json:"delivered_batches"`
+	QueuedBatches    int                      `json:"queued_batches"`
+	Batches          []markAllReadBatchResult `json:"batches"`
+	Note             string                   `json:"note"`
 }
 
 type deleteMessageArgs struct {
@@ -189,17 +221,100 @@ func (s *Server) registerWriteTools() {
 		if err := s.store.MarkReadUIDs(acct, args.Folder, uids); err != nil {
 			return nil, markReadResult{}, err
 		}
+		var delivery worker.MarkReadResult
 		if s.coord != nil {
-			s.coord.MarkReadMessages(acct, args.Folder, uids)()
+			delivery = s.coord.MarkReadMessagesNow(acct, args.Folder, uids)
 		}
 		logging.Info("mcp", "mark_read", logging.Acct(acct), logging.Fld(args.Folder), logging.KV("count", len(uids)))
 		out := markReadResult{
 			Account: acct, Folder: args.Folder, UIDs: uids, Count: len(uids),
-			Note: "marked read in cache; server flag queued (delivered on next sync if offline)",
+			OperationID: delivery.OpID, ServerUpdated: delivery.Delivered,
+			Queued: !delivery.Delivered, Note: "marked read in cache and queued for server delivery",
+		}
+		if delivery.Delivered {
+			out.Note = "marked read in cache and on server"
+		}
+		if delivery.Err != nil {
+			out.Error = delivery.Err.Error()
 		}
 		if len(uids) == 1 {
 			out.UID = uids[0]
 		}
+		return nil, out, nil
+	})
+
+	sdk.AddTool(s.srv, &sdk.Tool{
+		Name:        "mark_all_read",
+		Description: "Mark every message read with one call. Omit account and folder to cover every account and every server mail folder, including Spam and Trash. Uses an authoritative whole-folder IMAP operation, so uncached messages are covered without enumerating UIDs.",
+	}, func(ctx context.Context, req *sdk.CallToolRequest, args markAllReadArgs) (*sdk.CallToolResult, markAllReadResult, error) {
+		accounts := []string{args.Account}
+		if args.Account == "" {
+			accounts = accounts[:0]
+			for _, account := range s.store.Accounts() {
+				accounts = append(accounts, account.Email)
+			}
+		} else {
+			acct, err := s.resolveAccount(args.Account)
+			if err != nil {
+				return nil, markAllReadResult{}, err
+			}
+			accounts[0] = acct
+		}
+		if len(accounts) == 0 {
+			return nil, markAllReadResult{}, fmt.Errorf("no accounts configured — run `vimail setup` first")
+		}
+		if args.Folder == "Drafts" {
+			return nil, markAllReadResult{}, fmt.Errorf("Drafts do not have a read/unread state")
+		}
+
+		out := markAllReadResult{Account: args.Account, Folder: args.Folder}
+		for _, account := range accounts {
+			type targetFolder struct {
+				name   string
+				unread int
+			}
+			folders := make([]targetFolder, 0)
+			for _, candidate := range s.store.FoldersFor(account) {
+				if candidate.Name != "Drafts" && (args.Folder == "" || candidate.Name == args.Folder) {
+					folders = append(folders, targetFolder{name: candidate.Name, unread: candidate.UnreadCount})
+				}
+			}
+			if args.Folder != "" && len(folders) == 0 {
+				return nil, markAllReadResult{}, fmt.Errorf("folder %q not found for %s (see list_folders)", args.Folder, account)
+			}
+			for _, folder := range folders {
+				if _, err := s.store.MarkAllRead(account, folder.name); err != nil {
+					return nil, markAllReadResult{}, err
+				}
+				var delivery worker.MarkReadResult
+				if s.coord != nil {
+					delivery = s.coord.MarkAllReadNow(account, folder.name)
+				}
+				item := markAllReadBatchResult{
+					Account: account, Folder: folder.name, Count: folder.unread,
+					OperationID: delivery.OpID, ServerUpdated: delivery.Delivered, Queued: !delivery.Delivered,
+				}
+				if delivery.Err != nil {
+					item.Error = delivery.Err.Error()
+				}
+				out.Total += item.Count
+				if item.ServerUpdated {
+					out.Delivered += item.Count
+					out.DeliveredBatches++
+				} else {
+					out.Queued += item.Count
+					out.QueuedBatches++
+				}
+				out.Batches = append(out.Batches, item)
+			}
+		}
+		out.BatchCount = len(out.Batches)
+		if out.QueuedBatches == 0 {
+			out.Note = "marked every message in the selected folders read in cache and on server"
+		} else {
+			out.Note = "marked cached messages read; undelivered whole-folder server operations remain queued for retry"
+		}
+		logging.Info("mcp", "mark_all_read", logging.KV("accounts", len(accounts)), logging.KV("batches", out.BatchCount), logging.KV("total", out.Total), logging.KV("queued", out.Queued))
 		return nil, out, nil
 	})
 

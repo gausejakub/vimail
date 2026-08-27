@@ -679,13 +679,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		n := 0
 		if msg.SelectAll {
 			if cs, ok := m.store.(*cache.SQLiteStore); ok {
-				cs.MarkAllRead(acct, folder)
-				uids := cs.AllUIDs(acct, folder)
-				n = len(uids)
+				count, err := cs.MarkAllRead(acct, folder)
+				if err != nil {
+					logging.Error("mark_read", "mark all read cache update failed", logging.Acct(acct), logging.Fld(folder), logging.Err(err))
+					return m, func() tea.Msg { return util.InfoMsg{Text: err.Error(), IsError: true} }
+				}
+				n = count
 				if m.coordinator != nil {
-					for _, uid := range uids {
-						cmds = append(cmds, m.coordinator.MarkRead(acct, folder, uid))
-					}
+					cmds = append(cmds, m.coordinator.MarkAllRead(acct, folder))
 				}
 			}
 		} else {
@@ -1722,6 +1723,9 @@ func opDescription(op cache.QueuedOp) string {
 	case cache.OpMarkRead:
 		var p cache.MarkReadPayload
 		json.Unmarshal(op.Payload, &p)
+		if p.All {
+			return fmt.Sprintf("mark all read  %s/%s", op.Account, op.Folder)
+		}
 		return fmt.Sprintf("mark read %d msgs  %s/%s", len(p.UIDs), op.Account, op.Folder)
 	case cache.OpRestore:
 		var p cache.RestorePayload

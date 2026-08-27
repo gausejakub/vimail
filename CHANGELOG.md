@@ -16,6 +16,12 @@ every merged PR lands here in the same pass that merges it.
 
 ### Security
 
+## [0.12.1] - 2026-08-27
+
+### Fixed
+
+- Vim motions now work in the mailbox (account/folder) pane: counted `j`/`k` such as `5j`, `gg`, `G`, and counted line jumps; the cursor stays visible while moving through long lists, and quickly typed commands are no longer swallowed when the terminal delivers several keys at once. The help overlay reflects this. (#44)
+
 ## [0.12.0] - 2026-08-27
 
 ### Added
@@ -66,7 +72,8 @@ every merged PR lands here in the same pass that merges it.
 - Go 1.26.6 and `golang.org/x/net` v0.58.0 in both modules, clearing all reachable govulncheck advisories (including GO-2026-5028/5029/5030); `SECURITY.md` now states the current scan. (#17)
 - Outbound mail over MCP is opt-in (`[mcp] allow_send`), because any connected MCP client can act as you. (#33)
 
-[Unreleased]: https://github.com/gausejakub/vimail/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/gausejakub/vimail/compare/v0.12.1...HEAD
+[0.12.1]: https://github.com/gausejakub/vimail/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/gausejakub/vimail/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/gausejakub/vimail/compare/v0.10.4...v0.11.0
 

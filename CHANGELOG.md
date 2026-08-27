@@ -16,6 +16,19 @@ every merged PR lands here in the same pass that merges it.
 
 ### Security
 
+## [0.12.0] - 2026-08-27
+
+### Added
+
+- MCP `restore_messages` tool: move one or many messages back from Trash to Inbox (or another folder). Restore is server-first — Trash stays unchanged in the cache until the server confirms, then the restored messages are reconciled with their new UIDs; offline restores are queued and retried. (#43)
+- MCP `mark_all_read` tool: mark every message in a folder, an account, or all accounts read with one call. It uses a whole-folder IMAP operation, so messages that were never cached are covered too, and Spam and Trash are included by default. (#43)
+- MCP `list_operations` tool: see whether queued mark-read, delete, restore, and send operations were delivered, are still retrying, or failed — the MCP counterpart of the TUI's `:ops` view. (#43)
+- MCP `sync` accepts `full: true` to rebuild cached headers from the server in one transaction after server-side moves or deletes made the incremental cache stale, keeping already-downloaded bodies. (#43)
+
+### Changed
+
+- Marking a whole folder read in the TUI (select all in visual mode, then `r`) now sends one whole-folder operation instead of one queued operation per message. (#43)
+
 ## [0.11.0] - 2026-08-26
 
 ### Added
@@ -53,7 +66,8 @@ every merged PR lands here in the same pass that merges it.
 - Go 1.26.6 and `golang.org/x/net` v0.58.0 in both modules, clearing all reachable govulncheck advisories (including GO-2026-5028/5029/5030); `SECURITY.md` now states the current scan. (#17)
 - Outbound mail over MCP is opt-in (`[mcp] allow_send`), because any connected MCP client can act as you. (#33)
 
-[Unreleased]: https://github.com/gausejakub/vimail/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/gausejakub/vimail/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/gausejakub/vimail/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/gausejakub/vimail/compare/v0.10.4...v0.11.0
 
 ---

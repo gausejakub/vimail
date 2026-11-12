@@ -1145,14 +1145,21 @@ func (c *Coordinator) ExportMessages(acctEmail, folder string, messages []email.
 				writeToZip(zw, dirName+"/message.txt", []byte(body.Text))
 			}
 
-			// message.html
+			// message.html — the same script-, remote-content- and
+			// redirect-free rebuild that "open in browser" shows; the raw
+			// markup would run unrestricted when opened from the archive.
 			if body.HTML != "" {
-				writeToZip(zw, dirName+"/message.html", []byte(body.HTML))
+				if safe, err := email.BrowserSafeHTML(body.HTML); err == nil {
+					writeToZip(zw, dirName+"/message.html", []byte(safe))
+				}
 			}
 
-			// attachments
+			// attachments — in their own folder with unique names, so a file
+			// called "message.html" or "metadata.txt", or two attachments
+			// with one name, cannot replace another entry on extraction.
+			used := make(map[string]bool, len(attachments))
 			for _, att := range attachments {
-				writeToZip(zw, dirName+"/"+safeFilename(att.Filename), att.Data)
+				writeToZip(zw, dirName+"/attachments/"+uniqueName(used, safeFilename(att.Filename)), att.Data)
 			}
 
 			if c.program != nil && len(messages) > 1 {
@@ -1191,6 +1198,19 @@ func sanitizeExportName(subject string, uid uint32) string {
 		safe = string(runes[:80])
 	}
 	return fmt.Sprintf("%s_%d", safe, uid)
+}
+
+// uniqueName returns name, or "base (N).ext" when name was already used
+// (compared case-insensitively, as on macOS and Windows file systems).
+func uniqueName(used map[string]bool, name string) string {
+	ext := filepath.Ext(name)
+	base := strings.TrimSuffix(name, ext)
+	candidate := name
+	for i := 1; used[strings.ToLower(candidate)]; i++ {
+		candidate = fmt.Sprintf("%s (%d)%s", base, i, ext)
+	}
+	used[strings.ToLower(candidate)] = true
+	return candidate
 }
 
 func writeToZip(zw *zip.Writer, name string, data []byte) {

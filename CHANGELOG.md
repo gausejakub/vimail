@@ -16,6 +16,15 @@ every merged PR lands here in the same pass that merges it.
 
 ### Security
 
+## [0.14.0] - 2026-11-12
+
+Easier install and no-keyring setups.
+
+### Added
+
+- Nix flake: try vimail with `nix run github:gausejakub/vimail`, install it with `nix profile install github:gausejakub/vimail`, or add it as a flake input for NixOS / home-manager. (#47)
+- `password_cmd` per account and `[cache] key_cmd` read the password and the cache encryption key from a password manager (e.g. 1Password `op read`, `pass`) instead of the OS keyring. Secrets stay in memory only; a failing command never falls back to the keyring or to an unencrypted cache. `vimail setup` tests the commands instead of prompting. (#49)
+
 ## [0.13.1] - 2026-11-12
 
 Security release following a full audit of the mail-handling, local storage, network and MCP code. Upgrading is recommended for everyone.
@@ -135,7 +144,8 @@ Security release following a full audit of the mail-handling, local storage, net
 - Go 1.26.6 and `golang.org/x/net` v0.58.0 in both modules, clearing all reachable govulncheck advisories (including GO-2026-5028/5029/5030); `SECURITY.md` now states the current scan. (#17)
 - Outbound mail over MCP is opt-in (`[mcp] allow_send`), because any connected MCP client can act as you. (#33)
 
-[Unreleased]: https://github.com/gausejakub/vimail/compare/v0.13.1...HEAD
+[Unreleased]: https://github.com/gausejakub/vimail/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/gausejakub/vimail/compare/v0.13.1...v0.14.0
 [0.13.1]: https://github.com/gausejakub/vimail/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/gausejakub/vimail/compare/v0.12.1...v0.13.0
 [0.12.1]: https://github.com/gausejakub/vimail/compare/v0.12.0...v0.12.1

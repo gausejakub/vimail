@@ -16,6 +16,16 @@ every merged PR lands here in the same pass that merges it.
 
 ### Security
 
+## [0.14.1] - 2026-11-12
+
+Fixes for scrolling quickly through a large folder.
+
+### Fixed
+
+- Scrolling through messages no longer floods the server with one mark-read per message: selections are collected for 1.5 s and sent as one batch per folder, so an account sync or delete is no longer stuck behind them (a sync could hit its 5-minute timeout before starting). (#50)
+- While scrolling, the preview loads the message you stopped on instead of every message passed on the way; skipped fetches are no longer logged as errors. Bodies over 50 MB or interrupted reads no longer break the fetch connection ("imapwire: cannot decode while a literal is open"), and a fetch that hits its deadline now says it timed out. (#51)
+- An account sync that takes longer than 5 minutes keeps running in the background and refreshes the view when it finishes, instead of being reported as timed out and making the next sync fail with "account sync is locked by another process". (#52)
+
 ## [0.14.0] - 2026-11-12
 
 Easier install and no-keyring setups.
@@ -144,7 +154,8 @@ Security release following a full audit of the mail-handling, local storage, net
 - Go 1.26.6 and `golang.org/x/net` v0.58.0 in both modules, clearing all reachable govulncheck advisories (including GO-2026-5028/5029/5030); `SECURITY.md` now states the current scan. (#17)
 - Outbound mail over MCP is opt-in (`[mcp] allow_send`), because any connected MCP client can act as you. (#33)
 
-[Unreleased]: https://github.com/gausejakub/vimail/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/gausejakub/vimail/compare/v0.14.1...HEAD
+[0.14.1]: https://github.com/gausejakub/vimail/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/gausejakub/vimail/compare/v0.13.1...v0.14.0
 [0.13.1]: https://github.com/gausejakub/vimail/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/gausejakub/vimail/compare/v0.12.1...v0.13.0

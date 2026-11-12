@@ -16,6 +16,23 @@ every merged PR lands here in the same pass that merges it.
 
 ### Security
 
+## [0.15.3] - 2026-11-12
+
+Security release following a second audit, covering everything added since 0.13.1. Upgrading is recommended, especially if you use the MCP server.
+
+### Security
+
+- Invisible Unicode characters that can hide text (tag characters, the variation-selector supplement, word joiners and invisible operators) are stripped from mail. They were unseen in vimail but readable by an AI client through the MCP server — a hidden prompt injection. The MCP server also sanitizes sender, recipient, subject, body and attachment names again on output, so mail already in the cache is covered. (#57)
+- HTML entities in a body are decoded before sanitizing, so entity-encoded bidirectional controls can no longer reach the preview, the Vim reader or copied text. (#57)
+
+### Changed
+
+- `password_cmd` and `[cache] key_cmd` use only the first line of the command's output, so multi-line password-manager entries (password, then notes) work and the notes are never sent to a server. (#57)
+
+### Fixed
+
+- The 2-minute timeout of `password_cmd` / `key_cmd` now holds even when the command leaves a child process running. (#57)
+
 ## [0.15.2] - 2026-11-12
 
 ### Fixed
@@ -175,7 +192,8 @@ Security release following a full audit of the mail-handling, local storage, net
 - Go 1.26.6 and `golang.org/x/net` v0.58.0 in both modules, clearing all reachable govulncheck advisories (including GO-2026-5028/5029/5030); `SECURITY.md` now states the current scan. (#17)
 - Outbound mail over MCP is opt-in (`[mcp] allow_send`), because any connected MCP client can act as you. (#33)
 
-[Unreleased]: https://github.com/gausejakub/vimail/compare/v0.15.2...HEAD
+[Unreleased]: https://github.com/gausejakub/vimail/compare/v0.15.3...HEAD
+[0.15.3]: https://github.com/gausejakub/vimail/compare/v0.15.2...v0.15.3
 [0.15.2]: https://github.com/gausejakub/vimail/compare/v0.15.1...v0.15.2
 [0.15.1]: https://github.com/gausejakub/vimail/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/gausejakub/vimail/compare/v0.14.1...v0.15.0

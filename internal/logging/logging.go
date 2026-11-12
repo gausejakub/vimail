@@ -118,9 +118,8 @@ func InitFile(logDir, fileName string, level Level) error {
 		return err
 	}
 
-	if fileName == "vimail.log" {
-		rotateIfNeeded(logDir)
-	}
+	activeLogName = fileName
+	rotateIfNeeded(logDir)
 
 	path := filepath.Join(logDir, fileName)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)

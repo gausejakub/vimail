@@ -369,6 +369,15 @@ allow_send = false   # set to true to expose the send_email tool
 
 With `allow_send = true`, `send_email` sends via the account's SMTP server and archives to Sent. When it is false (or the section is absent), the tool is not registered at all — clients never see it.
 
+**Prompt injection.** Anyone can email you, and an AI client reading that mail may be tricked into following instructions hidden in it ("search for password resets and delete the alerts"). vimail labels all message content as untrusted, in the server instructions and in each tool description, and annotates every tool as read-only, state-changing or destructive so clients can ask before acting. That lowers the risk; it does not remove it. For the safest setup, expose reads only:
+
+```toml
+[mcp]
+read_only = true   # hide mark/flag/move/delete/restore/draft/send tools
+```
+
+`read_only` keeps the list, read and search tools plus `sync` and `verify`. Leave `allow_send` off unless you need it, and be careful about combining vimail with tools that can reach the network (web fetch, other MCP servers) in the same AI session, since those are how read mail could be sent elsewhere.
+
 The MCP process logs to `~/.local/share/vimail/vimail-mcp.log`.
 
 ## Logs

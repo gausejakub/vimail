@@ -28,7 +28,7 @@ type sendEmailResult struct {
 // must be absent from the tool list entirely, not registered-but-erroring,
 // so clients never even see an outbound-mail capability.
 func (s *Server) registerSendTool() {
-	sdk.AddTool(s.srv, &sdk.Tool{
+	addTool(s, &sdk.Tool{
 		Name:        "send_email",
 		Description: "Send an email via the account's SMTP server and archive it to Sent. Enabled by the [mcp] allow_send config option.",
 	}, func(ctx context.Context, req *sdk.CallToolRequest, args sendEmailArgs) (*sdk.CallToolResult, sendEmailResult, error) {
@@ -57,7 +57,7 @@ func (s *Server) registerSendTool() {
 			logging.Warn("mcp", "send_email failed", logging.Acct(acct), logging.Err(res.Err))
 			return nil, sendEmailResult{}, fmt.Errorf("send failed (the queued op remains retryable): %w", res.Err)
 		}
-		logging.Info("mcp", "send_email", logging.Acct(acct), logging.KV("to", args.To), logging.KV("message_id", res.MessageID))
+		logging.Info("mcp", "send_email", logging.Acct(acct), logging.KV("message_id", res.MessageID))
 		return nil, sendEmailResult{Account: acct, To: args.To, MessageID: res.MessageID}, nil
 	})
 }

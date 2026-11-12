@@ -152,6 +152,11 @@ func (w *IMAPWorker) dial(withIDLE bool) (*imapclient.Client, error) {
 	case "starttls":
 		client, err = imapclient.DialStartTLS(addr, opts)
 	case "none":
+		// A bearer token grants full mailbox access and cannot be scoped to
+		// this server; never send one over an unencrypted connection.
+		if w.creds != nil && (w.creds.AuthMethod == auth.AuthOAuth2Gmail || w.creds.AuthMethod == auth.AuthOAuth2Outlook) {
+			return nil, fmt.Errorf("refusing to send an OAuth2 token to %s without TLS (tls = \"none\")", addr)
+		}
 		log.Printf("WARNING: IMAP connecting to %s without TLS — credentials sent in plaintext", addr)
 		client, err = imapclient.DialInsecure(addr, opts)
 	default:
@@ -349,7 +354,7 @@ func (w *IMAPWorker) listMailboxes() ([]string, error) {
 		if noSelect {
 			continue
 		}
-		displayName := FolderName(mbox.Mailbox)
+		displayName := email.SanitizeLine(FolderName(mbox.Mailbox))
 		// Always populate folderMap (needed for IMAP operations like restore).
 		w.folderMap[displayName] = mbox.Mailbox
 		// Skip redundant folders from sync and sidebar.
@@ -851,7 +856,7 @@ func (w *IMAPWorker) fetchBodyDirect(folder string, uid uint32, peek bool) (Body
 								break
 							}
 							if bs, ok := item.(imapclient.FetchItemDataBodySection); ok {
-								data, err := io.ReadAll(bs.Literal)
+								data, err := io.ReadAll(io.LimitReader(bs.Literal, maxBodySize))
 								if err != nil {
 									continue
 								}

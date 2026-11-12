@@ -642,18 +642,14 @@ func (c *Coordinator) SaveAttachments(acctEmail, folder string, uid uint32, atta
 				continue
 			}
 			// Sanitize filename to prevent path traversal.
-			safeName := filepath.Base(att.Filename)
-			if safeName == "." || safeName == "/" || safeName == "" {
-				safeName = "attachment"
-			}
+			safeName := safeFilename(att.Filename)
 			if isDangerousFilename(safeName) {
 				dangerousNames = append(dangerousNames, safeName)
 			}
-			path := filepath.Join(dir, safeName)
-			// Avoid overwriting: append (1), (2), etc.
-			path = uniquePath(path)
-			if err := os.WriteFile(path, att.Data, 0600); err != nil {
-				logging.Error("save", "write attachment failed", logging.KV("filename", att.Filename), logging.Err(err))
+			// Never overwrite or follow a pre-placed symlink: create exclusively,
+			// appending (1), (2), … on collision.
+			if _, err := writeNewFile(filepath.Join(dir, safeName), att.Data); err != nil {
+				logging.Error("save", "write attachment failed", logging.Err(err))
 				continue
 			}
 			saved++
@@ -663,7 +659,7 @@ func (c *Coordinator) SaveAttachments(acctEmail, folder string, uid uint32, atta
 		var warning string
 		if len(dangerousNames) > 0 {
 			warning = fmt.Sprintf("⚠ Potentially dangerous: %s", strings.Join(dangerousNames, ", "))
-			logging.Warn("save", "dangerous attachment types saved", logging.KV("files", strings.Join(dangerousNames, ", ")))
+			logging.Warn("save", "dangerous attachment types saved", logging.KV("count", len(dangerousNames)))
 		}
 		return util.SaveAttachmentsResultMsg{Count: saved, Dir: dir, Warning: warning}
 	}
@@ -677,6 +673,67 @@ var dangerousExts = map[string]bool{
 	".docm": true, ".xlsm": true, ".pptm": true,
 	".iso": true, ".img": true, ".dmg": true,
 	".lnk": true, ".url": true, ".webloc": true,
+	".app": true, ".command": true, ".pkg": true, ".terminal": true, ".scpt": true,
+	".workflow": true, ".action": true, ".desktop": true, ".appimage": true,
+	".deb": true, ".rpm": true, ".run": true, ".py": true, ".rb": true, ".pl": true,
+	".php": true, ".html": true, ".htm": true, ".svg": true, ".jnlp": true,
+	".reg": true, ".vbe": true, ".jse": true, ".cpl": true, ".dll": true,
+	".xlam": true, ".dotm": true, ".one": true, ".zsh": true, ".fish": true,
+}
+
+// safeFilename reduces an attacker-supplied attachment name to a plain file
+// name: no directory components (either slash style, so Windows extractors of
+// an exported ZIP are covered too), no control or bidi characters (which can
+// disguise the real extension), no leading dots (hidden files), and never
+// "." or "..".
+func safeFilename(name string) string {
+	name = email.SanitizeLine(name)
+	name = strings.ReplaceAll(name, "\\", "/")
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		name = name[i+1:]
+	}
+	name = strings.NewReplacer(":", "_", "*", "_", "?", "_", "\"", "_", "<", "_", ">", "_", "|", "_").Replace(name)
+	name = strings.TrimLeft(strings.TrimSpace(name), ".")
+	name = strings.TrimRight(name, ". ")
+	if runes := []rune(name); len(runes) > 200 {
+		ext := filepath.Ext(name)
+		if len([]rune(ext)) > 20 {
+			ext = ""
+		}
+		name = string(runes[:200-len([]rune(ext))]) + ext
+	}
+	if name == "" {
+		return "attachment"
+	}
+	return name
+}
+
+// writeNewFile creates path exclusively with mode 0600, trying "name (N).ext"
+// on collision, and returns the path actually written. O_EXCL means an
+// existing file or symlink is never overwritten or followed.
+func writeNewFile(path string, data []byte) (string, error) {
+	ext := filepath.Ext(path)
+	base := path[:len(path)-len(ext)]
+	candidate := path
+	for i := 1; i <= 1000; i++ {
+		f, err := os.OpenFile(candidate, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if err == nil {
+			_, werr := f.Write(data)
+			if cerr := f.Close(); werr == nil {
+				werr = cerr
+			}
+			if werr != nil {
+				os.Remove(candidate)
+				return "", werr
+			}
+			return candidate, nil
+		}
+		if !os.IsExist(err) {
+			return "", err
+		}
+		candidate = fmt.Sprintf("%s (%d)%s", base, i, ext)
+	}
+	return "", fmt.Errorf("too many files named like %s", filepath.Base(path))
 }
 
 // isDangerousFilename checks if a filename has a dangerous extension,
@@ -695,27 +752,12 @@ func isDangerousFilename(name string) bool {
 	return false
 }
 
-func uniquePath(path string) string {
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return path
-	}
-	ext := filepath.Ext(path)
-	base := path[:len(path)-len(ext)]
-	for i := 1; i < 1000; i++ {
-		candidate := fmt.Sprintf("%s (%d)%s", base, i, ext)
-		if _, err := os.Stat(candidate); os.IsNotExist(err) {
-			return candidate
-		}
-	}
-	return path
-}
-
 // SendAndArchive returns a tea.Cmd that sends an email via SMTP and
 // appends it to the Sent folder via IMAP.
 // The operation is queued so it can be retried on reconnect.
 func (c *Coordinator) SendAndArchive(acctEmail string, req SendRequest) tea.Cmd {
 	return func() tea.Msg {
-		logging.Info("send", "sending email", logging.Acct(acctEmail), logging.KV("to", req.To), logging.KV("subject", req.Subject))
+		logging.Info("send", "sending email", logging.Acct(acctEmail))
 		start := time.Now()
 		opID, _ := c.store.QueueOp(cache.OpSend, acctEmail, "", cache.SendPayload{
 			From: req.From, To: req.To, Subject: req.Subject, Body: req.Body,
@@ -909,11 +951,7 @@ func (c *Coordinator) ExportMessages(acctEmail, folder string, messages []email.
 
 			// attachments
 			for _, att := range attachments {
-				safeName := filepath.Base(att.Filename)
-				if safeName == "" || safeName == "." || safeName == "/" {
-					safeName = "attachment"
-				}
-				writeToZip(zw, dirName+"/"+safeName, att.Data)
+				writeToZip(zw, dirName+"/"+safeFilename(att.Filename), att.Data)
 			}
 
 			if c.program != nil && len(messages) > 1 {
@@ -930,8 +968,8 @@ func (c *Coordinator) ExportMessages(acctEmail, folder string, messages []email.
 		os.MkdirAll(dir, 0755)
 
 		zipName := fmt.Sprintf("vimail-export-%s.zip", time.Now().Format("20060102-150405"))
-		zipPath := uniquePath(filepath.Join(dir, zipName))
-		if err := os.WriteFile(zipPath, buf.Bytes(), 0600); err != nil {
+		zipPath, err := writeNewFile(filepath.Join(dir, zipName), buf.Bytes())
+		if err != nil {
 			return util.ExportResultMsg{Err: fmt.Errorf("write zip: %w", err)}
 		}
 
@@ -942,8 +980,8 @@ func (c *Coordinator) ExportMessages(acctEmail, folder string, messages []email.
 
 func sanitizeExportName(subject string, uid uint32) string {
 	replacer := strings.NewReplacer("/", "_", "\\", "_", ":", "_", "*", "_", "?", "_", "\"", "_", "<", "_", ">", "_", "|", "_")
-	safe := replacer.Replace(subject)
-	safe = strings.TrimSpace(safe)
+	safe := replacer.Replace(email.SanitizeLine(subject))
+	safe = strings.Trim(strings.TrimSpace(safe), ".")
 	if safe == "" {
 		safe = "no-subject"
 	}

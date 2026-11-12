@@ -48,12 +48,13 @@ func New(cfg config.Config, store *cache.SQLiteStore, coord *worker.Coordinator)
 			Name:    "vmail",
 			Title:   "vmail email client",
 			Version: version,
-		}, nil),
+		}, &sdk.ServerOptions{Instructions: serverInstructions}),
 	}
 	s.registerReadTools()
 	s.registerWriteTools()
 	// Outbound mail is opt-in: without [mcp] allow_send = true the
 	// send_email tool is never registered, so clients cannot see it.
+	// (addTool additionally drops every state-changing tool in read_only mode.)
 	if cfg.MCP.AllowSend {
 		s.registerSendTool()
 	}
@@ -62,6 +63,9 @@ func New(cfg config.Config, store *cache.SQLiteStore, coord *worker.Coordinator)
 
 // Run serves MCP over stdio until the client disconnects or ctx is canceled.
 func (s *Server) Run(ctx context.Context) error {
+	// A standalone MCP process must prune finished queue rows too; otherwise
+	// only the TUI ever does.
+	s.store.CleanupOldOps(7 * 24 * time.Hour)
 	retryCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go s.retryPendingOps(retryCtx)

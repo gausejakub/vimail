@@ -8,7 +8,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
+	"sync"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -97,6 +99,27 @@ func (m Model) HandleKey(key string) (Model, tea.Cmd) {
 	return m, nil
 }
 
+var (
+	tempOnce sync.Once
+	tempPath string
+	tempErr  error
+)
+
+// tempDir returns a private (0700, unpredictable name) directory for this
+// process. A fixed path such as /tmp/vimail could be pre-created or
+// symlinked by another local user.
+func tempDir() (string, error) {
+	tempOnce.Do(func() { tempPath, tempErr = os.MkdirTemp("", "vimail-") })
+	return tempPath, tempErr
+}
+
+// CleanupTemp removes any decrypted HTML written for the browser.
+func CleanupTemp() {
+	if tempPath != "" {
+		os.RemoveAll(tempPath)
+	}
+}
+
 // openInBrowser writes the HTML body to a temp file and opens it.
 // Falls back to wrapping plain text in HTML when no HTML part exists.
 func (m Model) openInBrowser() tea.Cmd {
@@ -106,7 +129,13 @@ func (m Model) openInBrowser() tea.Cmd {
 		}
 	}
 
+	// Never let the mail's own markup run scripts or load remote content
+	// (tracking pixels, redirects to custom URL schemes) in the browser.
+	const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: cid:; style-src 'unsafe-inline'; font-src data:">` + "\n"
 	content := m.message.HTMLBody
+	if content != "" {
+		content = csp + content
+	}
 	if content == "" {
 		// Wrap plain text in minimal HTML for browser viewing.
 		escaped := html.EscapeString(m.message.Body)
@@ -127,13 +156,27 @@ func (m Model) openInBrowser() tea.Cmd {
 	msgID := fmt.Sprintf("%d", m.message.UID)
 
 	return func() tea.Msg {
-		dir := filepath.Join(os.TempDir(), "vimail")
-		os.MkdirAll(dir, 0700)
+		dir, err := tempDir()
+		if err != nil {
+			return util.InfoMsg{Text: "Failed to create temp dir: " + err.Error(), IsError: true}
+		}
 		path := filepath.Join(dir, fmt.Sprintf("msg-%s.html", msgID))
-		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		_ = os.Remove(path) // our own earlier copy; the dir is private to this process
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if err == nil {
+			_, err = f.WriteString(content)
+			if cerr := f.Close(); err == nil {
+				err = cerr
+			}
+		}
+		if err != nil {
 			return util.InfoMsg{Text: "Failed to write HTML: " + err.Error(), IsError: true}
 		}
-		if err := exec.Command("open", path).Start(); err != nil {
+		opener := "open"
+		if runtime.GOOS != "darwin" {
+			opener = "xdg-open"
+		}
+		if err := exec.Command(opener, path).Start(); err != nil {
 			return util.InfoMsg{Text: "Failed to open browser: " + err.Error(), IsError: true}
 		}
 		return util.InfoMsg{Text: "Opened in browser", IsError: false}
@@ -188,21 +231,8 @@ func (m Model) View() string {
 		lipgloss.NewStyle().Foreground(t.BorderDim()).Render(strings.Repeat("─", m.width)),
 	)
 
-	// Body with word wrapping
-	bodyText := prettyJSON(sanitizeBody(msg.Body))
-	if bodyText == "" && msg.HTMLBody != "" {
-		// HTML-only email — do a basic tag strip for preview.
-		bodyText = basicHTMLStrip(msg.HTMLBody)
-		bodyText = sanitizeBody(bodyText)
-		if bodyText == "" {
-			bodyText = "(HTML-only email — press 'o' to view)"
-		}
-	}
-	if bodyText == "" {
-		bodyText = "(loading...)"
-	}
-	bodyWidth := max(10, m.width-1)
-	wrapped := wordwrap.String(bodyText, bodyWidth)
+	// Body with word wrapping (prepared once per message, not per frame).
+	wrapped := wrappedBody(msg.Body, msg.HTMLBody, max(10, m.width-1))
 	for _, bl := range strings.Split(wrapped, "\n") {
 		// Hard-truncate lines that exceed width (wordwrap doesn't break long words).
 		runes := []rune(bl)
@@ -221,7 +251,7 @@ func (m Model) View() string {
 				fmt.Sprintf("Attachments (%d)", len(msg.Attachments))),
 		)
 		for _, att := range msg.Attachments {
-			label := fmt.Sprintf("  %s  %s", att.Filename, formatSize(att.Size))
+			label := fmt.Sprintf("  %s  %s", sanitize(att.Filename), formatSize(att.Size))
 			allLines = append(allLines,
 				lipgloss.NewStyle().Foreground(t.Text()).Render(label),
 			)
@@ -264,15 +294,7 @@ func (m Model) View() string {
 
 // sanitize strips newlines and control characters that break fixed-row layout.
 func sanitize(s string) string {
-	var b []rune
-	for _, r := range s {
-		if r == '\n' || r == '\r' || r == '\t' {
-			b = append(b, ' ')
-		} else if r >= 0x20 {
-			b = append(b, r)
-		}
-	}
-	return string(b)
+	return email.SanitizeLine(s)
 }
 
 var reANSI = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
@@ -283,7 +305,9 @@ var reANSI = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
 // combining marks, joiners) and escape codes that corrupt TUI rendering.
 // It also collapses consecutive blank lines to a single blank line.
 func sanitizeBody(s string) string {
-	// Strip any ANSI escape sequences.
+	// Strip escape sequences and control/bidi characters (also covers mail
+	// cached before ingest-time sanitizing existed).
+	s = email.SanitizeText(s)
 	s = reANSI.ReplaceAllString(s, "")
 	// Decode leftover HTML entities (&zwnj;, &nbsp;, etc.) that may remain
 	// in cached text bodies from imperfect HTML-to-text conversion.
@@ -333,13 +357,100 @@ func sanitizeBody(s string) string {
 	return strings.Join(out, "\n")
 }
 
+// maxPreviewBody caps how much of a body the preview renders. Bodies are
+// attacker-controlled and can be tens of megabytes.
+const maxPreviewBody = 512 * 1024
+
+// bodyMemo caches the prepared body of the message on screen. View runs every
+// frame, so sanitizing, JSON detection and wrapping must not be repeated there:
+// a crafted body would otherwise freeze the UI on every render.
+var bodyMemo struct {
+	sync.Mutex
+	body, html string
+	width      int
+	wrapped    string
+	valid      bool
+}
+
+// wrappedBody returns the display-ready, word-wrapped body text.
+func wrappedBody(body, htmlBody string, width int) string {
+	bodyMemo.Lock()
+	defer bodyMemo.Unlock()
+	if bodyMemo.valid && bodyMemo.width == width && bodyMemo.body == body && bodyMemo.html == htmlBody {
+		return bodyMemo.wrapped
+	}
+	text := body
+	truncated := false
+	if len(text) > maxPreviewBody {
+		text, truncated = strings.ToValidUTF8(text[:maxPreviewBody], ""), true
+	}
+	text = prettyJSON(sanitizeBody(text))
+	if text == "" && htmlBody != "" {
+		// HTML-only email — do a basic tag strip for preview.
+		h := htmlBody
+		if len(h) > maxPreviewBody {
+			h, truncated = strings.ToValidUTF8(h[:maxPreviewBody], ""), true
+		}
+		text = sanitizeBody(basicHTMLStrip(h))
+		if text == "" {
+			text = "(HTML-only email — press 'o' to view)"
+		}
+	}
+	if text == "" {
+		text = "(loading...)"
+	}
+	if truncated {
+		text += "\n\n[message truncated in preview — press 'o' to open the full message]"
+	}
+	bodyMemo.body, bodyMemo.html, bodyMemo.width = body, htmlBody, width
+	bodyMemo.wrapped, bodyMemo.valid = wordwrap.String(breakLongWords(text, width), width), true
+	return bodyMemo.wrapped
+}
+
+// breakLongWords hard-breaks any unbroken run longer than width. The wordwrap
+// library is quadratic in the length of a single word, so one long base64
+// blob or URL (trivial for a sender to include) would stall rendering.
+func breakLongWords(s string, width int) string {
+	if width <= 0 {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s) + len(s)/width + 1)
+	run := 0
+	for _, r := range s {
+		if r == '\n' || r == ' ' || r == '\t' {
+			run = 0
+		} else {
+			if run == width {
+				b.WriteByte('\n')
+				run = 0
+			}
+			run++
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// prettyJSON budgets: each failed decode attempt can scan a long way, so both
+// the input size and the number of attempts are bounded.
+const (
+	maxPrettyJSONInput    = 256 * 1024
+	maxPrettyJSONAttempts = 32
+)
+
 // prettyJSON finds JSON objects/arrays in text and pretty-prints them in place.
 func prettyJSON(s string) string {
+	if len(s) > maxPrettyJSONInput || !strings.ContainsAny(s, "{[") {
+		return s
+	}
 	var result strings.Builder
 	i := 0
+	attempts := 0
 	data := []byte(s)
 	for i < len(data) {
-		if data[i] == '{' || data[i] == '[' {
+		if (data[i] == '{' || data[i] == '[') && attempts < maxPrettyJSONAttempts {
+			attempts++
 			dec := json.NewDecoder(strings.NewReader(s[i:]))
 			var raw json.RawMessage
 			if err := dec.Decode(&raw); err == nil && len(raw) > 10 {
@@ -393,9 +504,7 @@ func (m Model) contentHeight() int {
 	if m.message == nil {
 		return 0
 	}
-	bodyWidth := max(10, m.width-1)
-	bodyText := prettyJSON(sanitizeBody(m.message.Body))
-	wrapped := wordwrap.String(bodyText, bodyWidth)
+	wrapped := wrappedBody(m.message.Body, m.message.HTMLBody, max(10, m.width-1))
 	h := 5 + strings.Count(wrapped, "\n") + 1
 	if len(m.message.Attachments) > 0 {
 		h += 3 + len(m.message.Attachments) // separator + header + files + save hint

@@ -160,6 +160,11 @@ func (s *SQLiteStore) CompleteOp(id int64) {
 	s.db.Exec(`UPDATE pending_ops SET status = ?, owner = '', lease_until = NULL, error = '', next_attempt_at = NULL, updated_at = ?
 		WHERE id = ? AND (owner = ? OR owner = '')`,
 		string(OpCompleted), now, id, s.procID)
+	// A delivered message's text has no further use in the queue, where it
+	// would sit unencrypted until cleanup; keep only recipient and subject
+	// for the operations view.
+	s.db.Exec(`UPDATE pending_ops SET payload = json_remove(payload, '$.body')
+		WHERE id = ? AND type = ? AND status = ?`, id, string(OpSend), string(OpCompleted))
 }
 
 // UpdateOpPayload replaces the payload of an operation currently claimed by

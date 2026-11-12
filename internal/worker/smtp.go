@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/mail"
 	"net/smtp"
+	"strings"
 	"time"
 
 	"github.com/emersion/go-sasl"
@@ -84,8 +86,10 @@ func (w *SMTPWorker) Send(req SendRequest) (string, []byte, error) {
 	if err := client.Mail(req.From); err != nil {
 		return "", nil, fmt.Errorf("SMTP MAIL FROM: %w", err)
 	}
-	if err := client.Rcpt(req.To); err != nil {
-		return "", nil, fmt.Errorf("SMTP RCPT TO: %w", err)
+	for _, rcpt := range recipientAddresses(req.To) {
+		if err := client.Rcpt(rcpt); err != nil {
+			return "", nil, fmt.Errorf("SMTP RCPT TO: %w", err)
+		}
 	}
 	wc, err := client.Data()
 	if err != nil {
@@ -178,4 +182,19 @@ func sendCommand(client *smtp.Client, cmd string) (int, string, error) {
 	defer client.Text.EndResponse(id)
 	code, msg, err := client.Text.ReadResponse(235)
 	return code, msg, err
+}
+
+// recipientAddresses turns a To value ("a@x, Name <b@y>") into bare envelope
+// addresses, one RCPT each. An unparseable value is passed through unchanged
+// so the server reports the error.
+func recipientAddresses(to string) []string {
+	list, err := mail.ParseAddressList(to)
+	if err != nil || len(list) == 0 {
+		return []string{strings.TrimSpace(to)}
+	}
+	out := make([]string, 0, len(list))
+	for _, addr := range list {
+		out = append(out, addr.Address)
+	}
+	return out
 }

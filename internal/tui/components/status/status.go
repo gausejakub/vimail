@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/gausejakub/vimail/internal/email"
 	"github.com/gausejakub/vimail/internal/theme"
 	"github.com/gausejakub/vimail/internal/tui/keys"
 	"github.com/gausejakub/vimail/internal/tui/util"
@@ -54,7 +55,8 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	case keys.ModeChangedMsg:
 		m.mode = msg.Mode
 	case util.InfoMsg:
-		m.infoText = msg.Text
+		// Info text may embed server or message-derived strings.
+		m.infoText = email.SanitizeLine(msg.Text)
 		m.infoIsError = msg.IsError
 		ttl := 2 * time.Second
 		if msg.IsError {

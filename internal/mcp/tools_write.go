@@ -200,7 +200,7 @@ func (s *Server) resolveCreds() {
 // it stays queued and retryable, and either process (TUI or this server)
 // delivers it on its next sync — exactly once, thanks to op claiming.
 func (s *Server) registerWriteTools() {
-	sdk.AddTool(s.srv, &sdk.Tool{
+	addTool(s, &sdk.Tool{
 		Name:        "save_draft",
 		Description: "Create a new draft, or update an existing one when id is given. Drafts are stored locally (no server round trip).",
 	}, func(ctx context.Context, req *sdk.CallToolRequest, args saveDraftArgs) (*sdk.CallToolResult, saveDraftResult, error) {
@@ -229,7 +229,7 @@ func (s *Server) registerWriteTools() {
 		return nil, saveDraftResult{Account: acct, ID: id}, nil
 	})
 
-	sdk.AddTool(s.srv, &sdk.Tool{
+	addTool(s, &sdk.Tool{
 		Name:        "delete_draft",
 		Description: "Delete a local draft by id.",
 	}, func(ctx context.Context, req *sdk.CallToolRequest, args deleteDraftArgs) (*sdk.CallToolResult, deleteDraftResult, error) {
@@ -248,7 +248,7 @@ func (s *Server) registerWriteTools() {
 		return nil, deleteDraftResult{Account: acct, ID: args.ID, Deleted: true}, nil
 	})
 
-	sdk.AddTool(s.srv, &sdk.Tool{
+	addTool(s, &sdk.Tool{
 		Name:        "mark_read",
 		Description: "Mark one or many messages as read. Pass either uid or uids. One batch updates the cache immediately and creates one queued server operation.",
 	}, func(ctx context.Context, req *sdk.CallToolRequest, args markReadArgs) (*sdk.CallToolResult, markReadResult, error) {
@@ -290,7 +290,7 @@ func (s *Server) registerWriteTools() {
 		return nil, out, nil
 	})
 
-	sdk.AddTool(s.srv, &sdk.Tool{
+	addTool(s, &sdk.Tool{
 		Name:        "mark_all_read",
 		Description: "Mark every message read with one call. Omit account and folder to cover every account and every server mail folder, including Spam and Trash. Uses an authoritative whole-folder IMAP operation, so uncached messages are covered without enumerating UIDs.",
 	}, func(ctx context.Context, req *sdk.CallToolRequest, args markAllReadArgs) (*sdk.CallToolResult, markAllReadResult, error) {
@@ -366,7 +366,7 @@ func (s *Server) registerWriteTools() {
 	})
 
 	registerState := func(name, description string, apply func(string, string, []uint32) worker.OperationResult) {
-		sdk.AddTool(s.srv, &sdk.Tool{Name: name, Description: description}, func(ctx context.Context, req *sdk.CallToolRequest, args messageStateArgs) (*sdk.CallToolResult, messageStateResult, error) {
+		addTool(s, &sdk.Tool{Name: name, Description: description}, func(ctx context.Context, req *sdk.CallToolRequest, args messageStateArgs) (*sdk.CallToolResult, messageStateResult, error) {
 			acct, err := s.resolveAccount(args.Account)
 			if err != nil {
 				return nil, messageStateResult{}, err
@@ -397,7 +397,7 @@ func (s *Server) registerWriteTools() {
 		return s.coord.SetFlaggedMessagesNow(a, f, u, false)
 	})
 
-	sdk.AddTool(s.srv, &sdk.Tool{Name: "move_message", Description: "Move one or many messages to another existing folder with optimistic cache and durable server delivery."}, func(ctx context.Context, req *sdk.CallToolRequest, args moveMessageArgs) (*sdk.CallToolResult, messageStateResult, error) {
+	addTool(s, &sdk.Tool{Name: "move_message", Description: "Move one or many messages to another existing folder with optimistic cache and durable server delivery."}, func(ctx context.Context, req *sdk.CallToolRequest, args moveMessageArgs) (*sdk.CallToolResult, messageStateResult, error) {
 		acct, err := s.resolveAccount(args.Account)
 		if err != nil {
 			return nil, messageStateResult{}, err
@@ -428,7 +428,7 @@ func (s *Server) registerWriteTools() {
 		return nil, out, nil
 	})
 
-	sdk.AddTool(s.srv, &sdk.Tool{
+	addTool(s, &sdk.Tool{
 		Name:        "delete_message",
 		Description: "Move one or many messages to Trash. Pass either uid or uids. Never expunges; one batch creates one queued server operation.",
 	}, func(ctx context.Context, req *sdk.CallToolRequest, args deleteMessageArgs) (*sdk.CallToolResult, deleteMessageResult, error) {
@@ -467,7 +467,7 @@ func (s *Server) registerWriteTools() {
 		return nil, out, nil
 	})
 
-	sdk.AddTool(s.srv, &sdk.Tool{
+	addTool(s, &sdk.Tool{
 		Name:        "restore_messages",
 		Description: "Restore one or many messages from Trash to Inbox (or another folder). Validates the whole batch, connects lazily, queues offline failures, and reconciles cache rows with server-assigned destination UIDs.",
 	}, func(ctx context.Context, req *sdk.CallToolRequest, args restoreMessagesArgs) (*sdk.CallToolResult, restoreMessagesResult, error) {
@@ -525,7 +525,7 @@ func (s *Server) registerWriteTools() {
 		return nil, out, nil
 	})
 
-	sdk.AddTool(s.srv, &sdk.Tool{
+	addTool(s, &sdk.Tool{
 		Name:        "sync",
 		Description: "Sync an account (or a single folder) with the IMAP server now. Whole-account sync delivers queued writes first. Set full=true to rebuild cached headers authoritatively after server-side moves or deletes.",
 	}, func(ctx context.Context, req *sdk.CallToolRequest, args syncArgs) (*sdk.CallToolResult, syncToolResult, error) {
@@ -574,7 +574,7 @@ func (s *Server) registerWriteTools() {
 		return nil, out, nil
 	})
 
-	sdk.AddTool(s.srv, &sdk.Tool{Name: "verify", Description: "Reconcile cached UIDs and flags with IMAP and check SQLite integrity. Set full=true for PRAGMA integrity_check."}, func(ctx context.Context, req *sdk.CallToolRequest, args verifyArgs) (*sdk.CallToolResult, verifyToolResult, error) {
+	addTool(s, &sdk.Tool{Name: "verify", Description: "Reconcile cached UIDs and flags with IMAP and check SQLite integrity. Set full=true for PRAGMA integrity_check."}, func(ctx context.Context, req *sdk.CallToolRequest, args verifyArgs) (*sdk.CallToolResult, verifyToolResult, error) {
 		acct, err := s.resolveAccount(args.Account)
 		if err != nil {
 			return nil, verifyToolResult{}, err

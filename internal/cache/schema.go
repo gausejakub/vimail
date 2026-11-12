@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"os"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -106,13 +107,21 @@ CREATE TABLE IF NOT EXISTS schema_version (
 `
 
 func Open(path string) (*sql.DB, error) {
+	// Create the file owner-only before SQLite does: sql.Open is lazy, so a
+	// chmod after it would miss a brand-new database and leave it (and its
+	// WAL) world-readable for the whole first session.
+	onDisk := path != ":memory:" && !strings.HasPrefix(path, "file:")
+	if onDisk {
+		if f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0600); err == nil {
+			f.Close()
+		}
+		os.Chmod(path, 0600)
+	}
+
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, err
 	}
-
-	// Restrict DB file permissions to owner-only.
-	os.Chmod(path, 0600)
 
 	// Single connection avoids SQLITE_BUSY when multiple goroutines write.
 	// WAL mode still allows concurrent reads within the same connection.
@@ -122,6 +131,14 @@ func Open(path string) (*sql.DB, error) {
 		db.Close()
 		return nil, err
 	}
+	// SQLite creates the WAL/SHM files with the main file's mode; tighten
+	// any left over from older versions.
+	if onDisk {
+		os.Chmod(path+"-wal", 0600)
+		os.Chmod(path+"-shm", 0600)
+	}
+	// Overwrite deleted rows so removed mail does not linger in free pages.
+	db.Exec("PRAGMA secure_delete=ON")
 	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
 		db.Close()
 		return nil, err

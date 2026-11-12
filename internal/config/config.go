@@ -87,6 +87,9 @@ type AIConfig struct {
 // is absent) the send_email tool is not registered at all.
 type MCPConfig struct {
 	AllowSend bool `toml:"allow_send"`
+	// ReadOnly hides every tool that changes mailbox state (mark, flag, move,
+	// delete, restore, drafts, send), leaving reads plus sync/verify.
+	ReadOnly bool `toml:"read_only"`
 }
 
 type Config struct {

@@ -44,6 +44,14 @@ func NewSQLiteStore(db *sql.DB) *SQLiteStore {
 
 // SetEncryptionKey sets the AES-256 key used to encrypt email bodies at rest.
 // Pass nil to disable encryption.
+// HasEncryptedBodies reports whether the cache already contains values
+// encrypted with a keyring key.
+func (s *SQLiteStore) HasEncryptedBodies() bool {
+	var n int
+	_ = s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM messages WHERE body LIKE 'enc:%' OR html_body LIKE 'enc:%') OR EXISTS(SELECT 1 FROM drafts WHERE body LIKE 'enc:%')`).Scan(&n)
+	return n != 0
+}
+
 func (s *SQLiteStore) SetEncryptionKey(key []byte) {
 	s.encKey = key
 }

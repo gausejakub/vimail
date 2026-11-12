@@ -71,7 +71,11 @@ func (r *OAuth2Resolver) Resolve(acct config.AccountConfig) (*Credentials, error
 	if err := json.Unmarshal([]byte(raw), &old); err != nil {
 		return nil, fmt.Errorf("invalid OAuth2 token for %s (run 'vimail setup'): %w", acct.Email, err)
 	}
-	newTok, err := oauthConfig(acct).TokenSource(context.Background(), &old).Token()
+	// Bound the refresh: callers hold coordinator locks, so a stalled token
+	// endpoint must not freeze every account.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	newTok, err := oauthConfig(acct).TokenSource(ctx, &old).Token()
 	if err != nil {
 		if isInvalidGrant(err) {
 			_ = deleteTokenPassword(key)

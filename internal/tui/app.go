@@ -1098,6 +1098,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
+	// In the preview pane, a Vim reading key (v, V, /, w, y, …) opens the
+	// reader and is applied right away, so it is not mistaken for the
+	// message-list visual mode or the global search.
+	if m.focusedPane == layout.PanePreview && m.preview.HasMessage() && preview.OpensReader(msg.String()) {
+		var start, cmd tea.Cmd
+		m.preview, start = m.preview.StartReading()
+		m.preview, cmd = m.preview.ReaderUpdate(msg)
+		return m, tea.Batch(start, cmd)
+	}
+
 	switch {
 	case key.Matches(msg, keys.Normal.Quit):
 		return m, tea.Quit
@@ -1178,6 +1188,19 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 						return util.OpenDraftMsg{Message: draft}
 					})
 					return m, tea.Batch(cmds...)
+				}
+				// A loaded message opens in the Vim reader; an empty body is
+				// re-fetched instead (the old Enter behavior).
+				if selected.Body != "" || selected.HTMLBody != "" || m.preview.HasBody() {
+					if m.layout.ShowPreview {
+						m = m.blurAll()
+						m.focusedPane = layout.PanePreview
+						m.preview = m.preview.Focus()
+						var cmd tea.Cmd
+						m.preview, cmd = m.preview.StartReading()
+						cmds = append(cmds, cmd)
+						return m, tea.Batch(cmds...)
+					}
 				}
 				// Force re-fetch body for non-draft messages.
 				if m.coordinator != nil && selected.UID > 0 {

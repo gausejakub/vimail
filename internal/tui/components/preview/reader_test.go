@@ -142,3 +142,20 @@ func lastLine(v string) string {
 	lines := strings.Split(v, "\n")
 	return lines[len(lines)-1]
 }
+
+func TestReaderHintDoesNotRepeatMode(t *testing.T) {
+	for status, want := range map[string]string{
+		" VISUAL | -- VISUAL --":        "v/V select · y copy · / search · q back",
+		" NORMAL":                       "v/V select · y copy · / search · q back",
+		"/Sec":                          "/Sec",
+		" NORMAL | yanked 5 characters": "yanked 5 characters",
+	} {
+		mode := "NORMAL"
+		if strings.Contains(status, "VISUAL") {
+			mode = "VISUAL"
+		}
+		if got := readerHint(status, mode); got != want {
+			t.Errorf("readerHint(%q) = %q, want %q", status, got, want)
+		}
+	}
+}

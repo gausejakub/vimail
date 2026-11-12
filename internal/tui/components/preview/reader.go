@@ -10,6 +10,38 @@ import (
 	"github.com/gausejakub/vimail/pkg/vimtea"
 )
 
+// readerKeys open the reader from the preview pane and are then applied in it.
+var readerKeys = map[string]bool{
+	"v": true, "V": true, "/": true, "?": true, "y": true,
+	"w": true, "b": true, "e": true, "W": true, "B": true, "E": true,
+	"0": true, "^": true, "$": true, "{": true, "}": true,
+	"f": true, "F": true, "t": true, "T": true,
+}
+
+// OpensReader reports whether key, pressed in the preview pane, should open
+// the Vim reader (and then be applied in it).
+func OpensReader(key string) bool {
+	return readerKeys[key]
+}
+
+// ReaderMode returns the reader's Vim mode (ModeNormal when closed).
+func (m Model) ReaderMode() vimtea.EditorMode {
+	if !m.reading || m.reader == nil {
+		return vimtea.ModeNormal
+	}
+	return m.reader.GetMode()
+}
+
+// HasMessage reports whether a message is shown.
+func (m Model) HasMessage() bool {
+	return m.message != nil
+}
+
+// HasBody reports whether the shown message's body has loaded.
+func (m Model) HasBody() bool {
+	return m.message != nil && (m.message.Body != "" || m.message.HTMLBody != "")
+}
+
 // Reading reports whether the Vim reader is open; it then takes every key.
 func (m Model) Reading() bool {
 	return m.reading
@@ -115,6 +147,10 @@ func readerHint(status, mode string) string {
 	s := strings.TrimSpace(status)
 	s = strings.TrimSpace(strings.TrimPrefix(s, mode))
 	s = strings.TrimSpace(strings.TrimPrefix(s, "|"))
+	// The editor's own "-- VISUAL --" style markers repeat the mode badge.
+	if strings.HasPrefix(s, "--") && strings.HasSuffix(s, "--") {
+		s = ""
+	}
 	if s == "" {
 		return "v/V select · y copy · / search · q back"
 	}

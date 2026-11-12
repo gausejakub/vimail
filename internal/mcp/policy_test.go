@@ -9,7 +9,7 @@ import (
 )
 
 func TestEveryToolIsClassifiedAndAnnotated(t *testing.T) {
-	session := connectCfg(t, seededStore(t), config.Config{MCP: config.MCPConfig{AllowSend: true}})
+	session := connectCfg(t, seededStore(t), config.Config{MCP: config.MCPConfig{AllowSend: true, AllowWrite: true}})
 	res, err := session.ListTools(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -36,8 +36,8 @@ func TestEveryToolIsClassifiedAndAnnotated(t *testing.T) {
 	}
 }
 
-func TestReadOnlyModeHidesStateChangingTools(t *testing.T) {
-	session := connectCfg(t, seededStore(t), config.Config{MCP: config.MCPConfig{ReadOnly: true, AllowSend: true}})
+func TestDefaultConfigExposesNoStateChangingTools(t *testing.T) {
+	session := connectCfg(t, seededStore(t), config.DefaultConfig())
 	res, err := session.ListTools(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -46,12 +46,12 @@ func TestReadOnlyModeHidesStateChangingTools(t *testing.T) {
 	for _, tool := range res.Tools {
 		seen[tool.Name] = true
 		if toolKinds[tool.Name] >= toolWrite {
-			t.Errorf("read_only mode exposes %q", tool.Name)
+			t.Errorf("default config exposes %q", tool.Name)
 		}
 	}
 	for _, want := range []string{"read_message", "search_messages", "sync", "verify"} {
 		if !seen[want] {
-			t.Errorf("read_only mode is missing %q", want)
+			t.Errorf("default config is missing %q", want)
 		}
 	}
 }

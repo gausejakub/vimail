@@ -124,6 +124,12 @@ func openStore(cfg config.Config) (*cache.SQLiteStore, *sql.DB, error) {
 		db.Close()
 		return nil, nil, err
 	}
+	// One-time upgrade: older versions stored headers in plaintext.
+	if n, err := sqlStore.EncryptLegacyRows(); err != nil {
+		logging.Warn("app", "encrypting legacy cache rows failed", logging.Err(err))
+	} else if n > 0 {
+		logging.Info("app", "encrypted legacy cache rows", logging.KV("rows", n))
+	}
 
 	// Seed accounts from config.
 	for _, acct := range cfg.Accounts {

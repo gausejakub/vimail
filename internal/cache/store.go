@@ -48,8 +48,108 @@ func NewSQLiteStore(db *sql.DB) *SQLiteStore {
 // encrypted with a keyring key.
 func (s *SQLiteStore) HasEncryptedBodies() bool {
 	var n int
-	_ = s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM messages WHERE body LIKE 'enc:%' OR html_body LIKE 'enc:%') OR EXISTS(SELECT 1 FROM drafts WHERE body LIKE 'enc:%')`).Scan(&n)
+	_ = s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM messages WHERE body LIKE 'enc:%' OR html_body LIKE 'enc:%' OR subject LIKE 'enc:%') OR EXISTS(SELECT 1 FROM drafts WHERE body LIKE 'enc:%')`).Scan(&n)
 	return n != 0
+}
+
+// enc encrypts a header value (sender, recipients, subject, attachment name)
+// for storage. Headers are encrypted like bodies so a copied cache file does
+// not reveal who the user corresponds with or about what.
+func (s *SQLiteStore) enc(v string) string { return encrypt(s.encKey, v) }
+
+// decHeaders decrypts the header fields of a scanned message in place.
+// Values written before header encryption existed are returned unchanged.
+func (s *SQLiteStore) decHeaders(m *email.Message) {
+	m.From = decrypt(s.encKey, m.From)
+	m.To = decrypt(s.encKey, m.To)
+	m.Subject = decrypt(s.encKey, m.Subject)
+}
+
+// EncryptLegacyRows encrypts header fields, draft fields and attachment
+// names stored in plaintext by earlier versions, and returns how many rows
+// changed. It is a no-op without a key and once everything is encrypted.
+func (s *SQLiteStore) EncryptLegacyRows() (int, error) {
+	if len(s.encKey) == 0 {
+		return 0, nil
+	}
+	type target struct {
+		table string
+		cols  []string
+	}
+	total := 0
+	for _, t := range []target{
+		{"messages", []string{"from_addr", "to_addr", "subject"}},
+		{"drafts", []string{"from_addr", "to_addr", "subject"}},
+		{"attachments", []string{"filename"}},
+	} {
+		var conds []string
+		for _, c := range t.cols {
+			conds = append(conds, fmt.Sprintf("(%s != '' AND %s NOT LIKE 'enc:%%')", c, c))
+		}
+		where := strings.Join(conds, " OR ")
+		for {
+			// Collect a batch first: modernc.org/sqlite cannot run updates
+			// while a cursor is open on the single connection.
+			rows, err := s.db.Query(`SELECT rowid, ` + strings.Join(t.cols, ", ") + ` FROM ` + t.table + ` WHERE ` + where + ` LIMIT 2000`)
+			if err != nil {
+				return total, err
+			}
+			type row struct {
+				id   int64
+				vals []string
+			}
+			var batch []row
+			for rows.Next() {
+				r := row{vals: make([]string, len(t.cols))}
+				dest := []any{&r.id}
+				for i := range r.vals {
+					dest = append(dest, &r.vals[i])
+				}
+				if err := rows.Scan(dest...); err != nil {
+					rows.Close()
+					return total, err
+				}
+				batch = append(batch, r)
+			}
+			rows.Close()
+			if len(batch) == 0 {
+				break
+			}
+			tx, err := s.db.Begin()
+			if err != nil {
+				return total, err
+			}
+			var sets []string
+			for _, c := range t.cols {
+				sets = append(sets, c+" = ?")
+			}
+			stmt, err := tx.Prepare(`UPDATE ` + t.table + ` SET ` + strings.Join(sets, ", ") + ` WHERE rowid = ?`)
+			if err != nil {
+				tx.Rollback()
+				return total, err
+			}
+			for _, r := range batch {
+				args := make([]any, 0, len(r.vals)+1)
+				for _, v := range r.vals {
+					if v != "" && !strings.HasPrefix(v, encPrefix) {
+						v = encrypt(s.encKey, v)
+					}
+					args = append(args, v)
+				}
+				if _, err := stmt.Exec(append(args, r.id)...); err != nil {
+					stmt.Close()
+					tx.Rollback()
+					return total, err
+				}
+			}
+			stmt.Close()
+			if err := tx.Commit(); err != nil {
+				return total, err
+			}
+			total += len(batch)
+		}
+	}
+	return total, nil
 }
 
 func (s *SQLiteStore) SetEncryptionKey(key []byte) {
@@ -353,6 +453,7 @@ func (s *SQLiteStore) MessagesForPage(acctEmail, folder string, offset, limit in
 		if err := rows.Scan(&m.UID, &m.From, &m.To, &m.Subject, &m.Body, &m.HTMLBody, &dateStr, &unread, &flagged); err != nil {
 			continue
 		}
+		s.decHeaders(&m)
 		m.Body = decrypt(s.encKey, m.Body)
 		m.HTMLBody = decrypt(s.encKey, m.HTMLBody)
 		m.ID = fmt.Sprintf("%d", m.UID)
@@ -386,6 +487,7 @@ func (s *SQLiteStore) MessageByUID(acctEmail, folder string, uid uint32) (msg em
 	if err != nil {
 		return email.Message{}, false, false
 	}
+	s.decHeaders(&m)
 	m.Body = decrypt(s.encKey, m.Body)
 	m.HTMLBody = decrypt(s.encKey, m.HTMLBody)
 	m.ID = fmt.Sprintf("%d", m.UID)
@@ -451,6 +553,7 @@ func (s *SQLiteStore) RecentMessages(accounts []string, since, until time.Time, 
 		if err := rows.Scan(&m.UID, &m.Folder, &m.Account, &m.MessageID, &m.From, &m.To, &m.Subject, &dateStr, &unread, &flagged); err != nil {
 			continue
 		}
+		s.decHeaders(&m)
 		key := dedupKey{Account: m.Account, MessageID: m.MessageID}
 		if m.MessageID == "" {
 			// Without a stable identity, preserving every row is safer than
@@ -507,6 +610,7 @@ func (s *SQLiteStore) MessagesFor(acctEmail, folder string) []email.Message {
 		if err := rows.Scan(&m.UID, &m.From, &m.To, &m.Subject, &m.Body, &m.HTMLBody, &dateStr, &unread, &flagged); err != nil {
 			continue
 		}
+		s.decHeaders(&m)
 		m.Body = decrypt(s.encKey, m.Body)
 		m.HTMLBody = decrypt(s.encKey, m.HTMLBody)
 		m.ID = fmt.Sprintf("%d", m.UID)
@@ -539,6 +643,7 @@ func (s *SQLiteStore) draftsFor(acctEmail string) []email.Message {
 		if err := rows.Scan(&m.ID, &m.From, &m.To, &m.Subject, &m.Body, &dateStr); err != nil {
 			continue
 		}
+		s.decHeaders(&m)
 		m.Body = decrypt(s.encKey, m.Body)
 		m.Date, _ = time.Parse(time.RFC3339, dateStr)
 		msgs = append(msgs, m)
@@ -555,7 +660,7 @@ func (s *SQLiteStore) SaveDraft(acctEmail string, msg email.Message) {
 			subject = excluded.subject,
 			body = excluded.body,
 			date = excluded.date
-	`, msg.ID, acctEmail, msg.From, msg.To, msg.Subject, encrypt(s.encKey, msg.Body), msg.Date.Format(time.RFC3339))
+	`, msg.ID, acctEmail, s.enc(msg.From), s.enc(msg.To), s.enc(msg.Subject), encrypt(s.encKey, msg.Body), msg.Date.Format(time.RFC3339))
 }
 
 func (s *SQLiteStore) DeleteDraft(acctEmail, id string) {
@@ -823,6 +928,7 @@ func (s *SQLiteStore) SearchMessages(acctEmail, query string, limit int) []email
 		if err := rows.Scan(&m.UID, &folder, &account, &m.MessageID, &m.From, &m.To, &m.Subject, &m.Body, &dateStr, &unread, &flagged); err != nil {
 			continue
 		}
+		s.decHeaders(&m)
 		m.Body = decrypt(s.encKey, m.Body)
 
 		// When body wasn't searched in SQL, check it here.
@@ -1193,7 +1299,7 @@ func (s *SQLiteStore) UpsertMessage(acctEmail, folder string, msg email.Message)
 			unread = excluded.unread,
 				flagged = excluded.flagged,
 				answered = excluded.answered
-	`, msg.UID, folderID, msg.MessageID, msg.From, msg.To, msg.Subject, msg.Body,
+	`, msg.UID, folderID, msg.MessageID, s.enc(msg.From), s.enc(msg.To), s.enc(msg.Subject), encrypt(s.encKey, msg.Body),
 		msg.Date.Format(time.RFC3339), unread, flagged, answered)
 	return err
 }
@@ -1330,7 +1436,7 @@ func (s *SQLiteStore) ReplaceFolderHeaders(acctEmail, folder string, messages []
 			answered = 1
 		}
 		if _, err := upsertStmt.Exec(
-			msg.UID, folderID, msg.MessageID, msg.From, msg.To, msg.Subject,
+			msg.UID, folderID, msg.MessageID, s.enc(msg.From), s.enc(msg.To), s.enc(msg.Subject),
 			msg.Date.Format(time.RFC3339), unread, flagged, answered, folderID, msg.UID,
 		); err != nil {
 			return err
@@ -1421,6 +1527,7 @@ func (s *SQLiteStore) loadAttachments(folderID int, msgs []email.Message) {
 		if err := attRows.Scan(&uid, &att.Filename, &att.ContentType, &att.Size, &att.PartNum); err != nil {
 			continue
 		}
+		att.Filename = decrypt(s.encKey, att.Filename)
 		if idx, ok := uidIndex[uid]; ok {
 			msgs[idx].Attachments = append(msgs[idx].Attachments, att)
 		}
@@ -1458,7 +1565,7 @@ func (s *SQLiteStore) UpdateMessageBody(acctEmail, folder string, uid uint32, bo
 	s.db.Exec(`DELETE FROM attachments WHERE folder_id = ? AND uid = ?`, folderID, uid)
 	for _, att := range attachments {
 		s.db.Exec(`INSERT INTO attachments (folder_id, uid, filename, content_type, size, part_num) VALUES (?, ?, ?, ?, ?, ?)`,
-			folderID, uid, att.Filename, att.ContentType, att.Size, att.PartNum)
+			folderID, uid, s.enc(att.Filename), att.ContentType, att.Size, att.PartNum)
 	}
 	return nil
 }

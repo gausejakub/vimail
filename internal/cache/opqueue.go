@@ -89,11 +89,16 @@ func (s *SQLiteStore) QueueOp(opType OpType, account, folder string, payload int
 	if err != nil {
 		return 0, err
 	}
+	stored := string(data)
+	if opType == OpSend {
+		// Outgoing mail (recipients, subject, text) waits here until sent.
+		stored = encrypt(s.encKey, stored)
+	}
 	now := time.Now().Format(time.RFC3339)
 	res, err := s.db.Exec(`
 		INSERT INTO pending_ops (type, status, account, folder, payload, error, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, '', ?, ?)
-	`, string(opType), string(OpPending), account, folder, string(data), now, now)
+	`, string(opType), string(OpPending), account, folder, stored, now, now)
 	if err != nil {
 		return 0, err
 	}
@@ -163,8 +168,27 @@ func (s *SQLiteStore) CompleteOp(id int64) {
 	// A delivered message's text has no further use in the queue, where it
 	// would sit unencrypted until cleanup; keep only recipient and subject
 	// for the operations view.
-	s.db.Exec(`UPDATE pending_ops SET payload = json_remove(payload, '$.body')
-		WHERE id = ? AND type = ? AND status = ?`, id, string(OpSend), string(OpCompleted))
+	s.stripSentBody(id)
+}
+
+// stripSentBody removes the message text from a completed send op, keeping
+// recipient and subject for the operations view.
+func (s *SQLiteStore) stripSentBody(id int64) {
+	var stored string
+	if err := s.db.QueryRow(`SELECT payload FROM pending_ops WHERE id = ? AND type = ? AND status = ?`,
+		id, string(OpSend), string(OpCompleted)).Scan(&stored); err != nil {
+		return
+	}
+	var p SendPayload
+	if err := json.Unmarshal([]byte(decrypt(s.encKey, stored)), &p); err != nil || p.Body == "" {
+		return
+	}
+	p.Body = ""
+	data, err := json.Marshal(p)
+	if err != nil {
+		return
+	}
+	s.db.Exec(`UPDATE pending_ops SET payload = ? WHERE id = ?`, encrypt(s.encKey, string(data)), id)
 }
 
 // UpdateOpPayload replaces the payload of an operation currently claimed by
@@ -275,7 +299,9 @@ func (s *SQLiteStore) queryOps(query string, args ...interface{}) []QueuedOp {
 		}
 		op.Type = OpType(opType)
 		op.Status = OpStatus(status)
-		op.Payload = json.RawMessage(payload)
+		// Queued outgoing mail is stored encrypted; other payloads (UID
+		// lists) and rows from older versions are plain JSON.
+		op.Payload = json.RawMessage(decrypt(s.encKey, payload))
 		if errStr.Valid {
 			op.Error = errStr.String
 		}

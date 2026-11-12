@@ -17,8 +17,9 @@ If you discover a security vulnerability, please email **security@vimail.dev** i
 
 ### Encryption at Rest
 
-- Email bodies, HTML content and draft bodies in the SQLite cache are encrypted with **AES-256-GCM**
-- **Not encrypted:** headers (sender, recipients, subject, date), folder names, attachment names, and queued operations. Use full-disk encryption if the metadata matters to you. The text of a sent message is removed from the queue as soon as it is delivered
+- Message bodies and HTML, senders, recipients, subjects, attachment names, drafts and queued outgoing mail in the SQLite cache are encrypted with **AES-256-GCM**. Rows written by older versions are encrypted on the first start after upgrading
+- **Not encrypted:** dates, Message-IDs, read/flag state, folder and account names, and attachment sizes — the cache needs them to sort and sync. Use full-disk encryption if that metadata matters to you
+- The text of a sent message is removed from the queue as soon as it is delivered
 - The encryption key is auto-generated on first run and stored in the OS keyring. An existing key is never replaced: if the keyring is unavailable while the cache holds encrypted mail, vimail refuses to start instead of writing plaintext. If no keyring exists at all, vimail warns at startup and stores bodies unencrypted
 - The key protects against other users, backups and a stolen disk — not against malware running as you, which can read the keyring too
 - Deleted rows are overwritten (`PRAGMA secure_delete`)
@@ -29,7 +30,9 @@ If you discover a security vulnerability, please email **security@vimail.dev** i
 - All IMAP and SMTP connections enforce **TLS 1.2 minimum**
 - Certificate validation is always enabled (`InsecureSkipVerify` is never set)
 - STARTTLS upgrade is verified before credentials are sent
-- Plaintext connections (`tls: "none"`) log a warning; unknown TLS modes are rejected
+- Plaintext connections (`tls: "none"`) show a warning in the TUI at every start and in `vimail setup`; unknown TLS modes are rejected
+- After a rejected login, reconnects back off (30s up to 5 minutes) so queued work cannot get the account locked
+- Deleting uses `UID EXPUNGE` where the server supports it, so only the messages vimail deleted are purged
 - TCP keepalive (30s) detects dead connections
 - 30-second dial timeouts on all connections
 
@@ -61,7 +64,7 @@ If you discover a security vulnerability, please email **security@vimail.dev** i
 ### MCP Server
 
 - Mail returned to AI clients is labelled as untrusted content; tools carry read-only / destructive annotations
-- `[mcp] read_only = true` hides every state-changing tool; `send_email` exists only with `allow_send = true`
+- Read-only by default: tools that change the mailbox exist only with `[mcp] allow_write = true`, and `send_email` only with `allow_send = true`
 - No tool takes a file path or reads files; permanent deletion is not exposed
 - Prompt injection through received mail cannot be fully prevented by the server — see the README's MCP section
 
@@ -75,5 +78,6 @@ If you discover a security vulnerability, please email **security@vimail.dev** i
 
 - Dependencies are audited with `govulncheck ./...` in both Go modules (root and `pkg/vimtea`) on every push and pull request
 - CI runs with read-only repository permissions and actions pinned to commit SHAs
+- Release tarballs are built by CI from the tag, published with a `SHA256SUMS` file and signed build provenance (`gh attestation verify <file> -R gausejakub/vimail`)
 - Checksums verified via `go mod verify`
 - Minimal dependency footprint — pure Go, no CGO

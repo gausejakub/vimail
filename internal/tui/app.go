@@ -168,6 +168,15 @@ func (m Model) Init() tea.Cmd {
 		sqlStore.CleanupOldOps(7 * 24 * time.Hour)
 	}
 
+	// An unencrypted account is easy to configure by accident and was only
+	// reported in the log file; say so on screen at every start.
+	for _, acct := range m.cfg.Accounts {
+		if strings.EqualFold(acct.TLS, "none") {
+			text := "WARN: " + acct.Email + " uses tls = \"none\" — password and mail are sent unencrypted"
+			cmds = append(cmds, func() tea.Msg { return util.InfoMsg{Text: text, IsError: true} })
+		}
+	}
+
 	// Trigger initial sync if coordinator is available.
 	if m.coordinator != nil {
 		cmds = append(cmds, func() tea.Msg {

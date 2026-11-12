@@ -1,11 +1,14 @@
 package worker
 
 import (
+	"fmt"
 	"github.com/emersion/go-imap/v2"
+	"github.com/gausejakub/vimail/internal/auth"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestComposeRFC5322BlocksHeaderInjection(t *testing.T) {
@@ -121,5 +124,34 @@ func TestIngestStripsTerminalEscapes(t *testing.T) {
 	}
 	if msg.Subject != "Invoice" || !strings.Contains(body.Text, "hello world") {
 		t.Errorf("visible text damaged: subject=%q body=%q", msg.Subject, body.Text)
+	}
+}
+
+func TestRejectedLoginBacksOffAndResets(t *testing.T) {
+	c := &Coordinator{creds: map[string]*auth.Credentials{"a@x.test": {}}, authFail: map[string]*authFailure{}}
+	if err := c.authCooldownError("a@x.test"); err != nil {
+		t.Fatalf("cooldown before any failure: %v", err)
+	}
+	// Network errors never start a cooldown.
+	c.noteConnectResult("a@x.test", fmt.Errorf("IMAP connect to host: timeout"))
+	if err := c.authCooldownError("a@x.test"); err != nil {
+		t.Fatalf("network error started a cooldown: %v", err)
+	}
+	authErr := fmt.Errorf("IMAP auth for a@x.test: invalid credentials")
+	c.noteConnectResult("a@x.test", authErr)
+	first := c.authFail["a@x.test"].until
+	if err := c.authCooldownError("a@x.test"); err == nil || !strings.Contains(err.Error(), "vimail setup") {
+		t.Fatalf("no cooldown after rejected login: %v", err)
+	}
+	if _, cached := c.creds["a@x.test"]; cached {
+		t.Fatal("rejected credentials still cached")
+	}
+	c.noteConnectResult("a@x.test", authErr)
+	if !c.authFail["a@x.test"].until.After(first.Add(20 * time.Second)) {
+		t.Fatal("cooldown did not grow on repeated failure")
+	}
+	c.noteConnectResult("a@x.test", nil)
+	if err := c.authCooldownError("a@x.test"); err != nil {
+		t.Fatalf("cooldown survived a successful login: %v", err)
 	}
 }

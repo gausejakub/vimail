@@ -30,6 +30,8 @@ type Coordinator struct {
 	imap  map[string]*IMAPWorker // keyed by email
 	smtp  map[string]*SMTPWorker // keyed by email
 	creds map[string]*auth.Credentials
+	// authFail backs off reconnects after the server rejects a login.
+	authFail map[string]*authFailure
 	// connectMu serializes lazy worker creation per account without blocking
 	// independent accounts from connecting concurrently.
 	connectMu map[string]*sync.Mutex
@@ -49,6 +51,7 @@ func NewCoordinator(cfg config.Config, store *cache.SQLiteStore) *Coordinator {
 		imap:         make(map[string]*IMAPWorker),
 		smtp:         make(map[string]*SMTPWorker),
 		creds:        make(map[string]*auth.Credentials),
+		authFail:     make(map[string]*authFailure),
 		connectMu:    make(map[string]*sync.Mutex),
 		syncInFlight: make(map[string]bool),
 	}
@@ -1403,6 +1406,13 @@ func (c *Coordinator) ensureIMAPWorkerMode(acct config.AccountConfig, healthChec
 		return existing, nil
 	}
 
+	// After a rejected login, wait before trying again: a batch of queued
+	// operations (or an AI client retrying) would otherwise hammer the server
+	// with bad credentials and can get the account locked.
+	if err := c.authCooldownError(acct.Email); err != nil {
+		return nil, err
+	}
+
 	// Connection is dead or doesn't exist — disconnect old and create new.
 	if existing != nil {
 		c.mu.Lock()
@@ -1416,8 +1426,10 @@ func (c *Coordinator) ensureIMAPWorkerMode(acct config.AccountConfig, healthChec
 	w := NewIMAPWorker(acct, creds, c.store)
 	if err := w.Connect(); err != nil {
 		logging.Error("connect", "IMAP connect failed", logging.Acct(acct.Email), logging.Dur(time.Since(connectStart)), logging.Err(err))
+		c.noteConnectResult(acct.Email, err)
 		return nil, err
 	}
+	c.noteConnectResult(acct.Email, nil)
 	logging.Info("connect", "IMAP connected", logging.Acct(acct.Email), logging.Dur(time.Since(connectStart)))
 
 	c.mu.Lock()
@@ -1848,4 +1860,62 @@ func (c *Coordinator) DisconnectAll() {
 		w.Disconnect()
 		logging.Debug("connect", "IMAP disconnected", logging.Acct(email))
 	}
+}
+
+// authFailure tracks consecutive rejected logins for one account.
+type authFailure struct {
+	count int
+	until time.Time
+	err   error
+}
+
+const (
+	authCooldownBase = 30 * time.Second
+	authCooldownMax  = 5 * time.Minute
+)
+
+// isAuthError reports whether a connect error is the server rejecting the
+// credentials (as opposed to a network problem, which is safe to retry).
+func isAuthError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "IMAP auth for")
+}
+
+// authCooldownError returns an error while the account is cooling down after
+// a rejected login.
+func (c *Coordinator) authCooldownError(account string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	f := c.authFail[account]
+	if f == nil || !time.Now().Before(f.until) {
+		return nil
+	}
+	return fmt.Errorf("login was rejected; next attempt in %s (fix credentials with 'vimail setup'): %w",
+		time.Until(f.until).Round(time.Second), f.err)
+}
+
+// noteConnectResult updates the login-failure backoff: 30s, 1m, 2m, 4m, then
+// 5m, reset by any successful connection.
+func (c *Coordinator) noteConnectResult(account string, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !isAuthError(err) {
+		if err == nil {
+			delete(c.authFail, account)
+		}
+		return
+	}
+	f := c.authFail[account]
+	if f == nil {
+		f = &authFailure{}
+		c.authFail[account] = f
+	}
+	f.count++
+	delay := authCooldownBase << min(f.count-1, 4)
+	if delay > authCooldownMax {
+		delay = authCooldownMax
+	}
+	f.until, f.err = time.Now().Add(delay), err
+	// Re-read the keyring next time, so a password fixed with
+	// 'vimail setup' is picked up without restarting.
+	delete(c.creds, account)
 }

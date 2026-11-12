@@ -258,7 +258,17 @@ After adding accounts, run `vimail setup` to store credentials.
 | `gg` / `G` | Jump to top / bottom |
 | `500gg` / `500G` | Jump to line N |
 | `Ctrl+D` / `Ctrl+U` | Half-page scroll (preview) |
+| `Enter` (preview pane) | Open the message in the Vim reader (see below) |
 | `Tab` / `Shift+Tab` | Next / previous pane |
+
+### Vim reader
+
+Focus the preview pane (`l` / `Tab`) and press `Enter` to open the message in a read-only Vim buffer — headers, body and attachment list:
+
+- Move with Vim motions: `h j k l`, `w b e W B E`, `0 ^ $`, `gg G`, `{count}`, `f`/`t`, `Ctrl+D` / `Ctrl+U`, `/` `?` `n` `N`
+- Select with `v` / `V`, then `y` to copy; `yy`, `yiw`, `yaW`, `yi(`, `y$` … work too
+- Copies go to the system clipboard (`wl-copy`, `xclip`/`xsel`, `pbcopy`; OSC 52 as a fallback, also over SSH)
+- `q` or `Esc` closes the reader; the buffer cannot be edited
 
 ### Actions
 

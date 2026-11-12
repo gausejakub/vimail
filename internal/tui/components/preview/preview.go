@@ -17,6 +17,7 @@ import (
 	"github.com/gausejakub/vimail/internal/email"
 	"github.com/gausejakub/vimail/internal/theme"
 	"github.com/gausejakub/vimail/internal/tui/util"
+	"github.com/gausejakub/vimail/pkg/vimtea"
 	"github.com/muesli/reflow/wordwrap"
 )
 
@@ -27,6 +28,11 @@ type Model struct {
 	message      *email.Message
 	scrollOffset int
 	pendingOpen  bool // open in browser once body arrives
+
+	// reader is a read-only Vim buffer over the message (Enter in the preview
+	// pane): motions, search, visual selection and yank to the clipboard.
+	reader  vimtea.Editor
+	reading bool
 }
 
 func New() Model {
@@ -49,6 +55,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		m.message = &msg.Message
 		m.scrollOffset = 0
 		m.pendingOpen = false
+		m = m.StopReading()
 	case util.FetchBodyCompleteMsg:
 		if m.message != nil && m.message.UID == msg.UID {
 			m.message.Body = msg.Body
@@ -184,6 +191,9 @@ func (m Model) openInBrowser() tea.Cmd {
 }
 
 func (m Model) View() string {
+	if m.reading && m.reader != nil {
+		return m.readerView()
+	}
 	t := theme.Current()
 
 	if m.message == nil {
@@ -264,7 +274,7 @@ func (m Model) View() string {
 	// Hint for browser viewing
 	allLines = append(allLines,
 		"",
-		lipgloss.NewStyle().Foreground(t.TextMuted()).Render("Press 'o' to open in browser"),
+		lipgloss.NewStyle().Foreground(t.TextMuted()).Render("Press 'o' to open in browser · Enter in this pane: Vim reader"),
 	)
 
 	// Apply scroll offset
@@ -379,6 +389,16 @@ func wrappedBody(body, htmlBody string, width int) string {
 	if bodyMemo.valid && bodyMemo.width == width && bodyMemo.body == body && bodyMemo.html == htmlBody {
 		return bodyMemo.wrapped
 	}
+	text := preparedBody(body, htmlBody)
+	bodyMemo.body, bodyMemo.html, bodyMemo.width = body, htmlBody, width
+	bodyMemo.wrapped, bodyMemo.valid = wordwrap.String(breakLongWords(text, width), width), true
+	return bodyMemo.wrapped
+}
+
+// preparedBody returns the sanitized, display-ready body text before wrapping:
+// plain text (JSON pretty-printed) or stripped HTML, truncated for very large
+// messages.
+func preparedBody(body, htmlBody string) string {
 	text := body
 	truncated := false
 	if len(text) > maxPreviewBody {
@@ -402,9 +422,7 @@ func wrappedBody(body, htmlBody string, width int) string {
 	if truncated {
 		text += "\n\n[message truncated in preview — press 'o' to open the full message]"
 	}
-	bodyMemo.body, bodyMemo.html, bodyMemo.width = body, htmlBody, width
-	bodyMemo.wrapped, bodyMemo.valid = wordwrap.String(breakLongWords(text, width), width), true
-	return bodyMemo.wrapped
+	return text
 }
 
 // breakLongWords hard-breaks any unbroken run longer than width. The wordwrap

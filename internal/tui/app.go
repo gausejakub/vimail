@@ -27,6 +27,7 @@ import (
 	"github.com/gausejakub/vimail/internal/tui/layout"
 	"github.com/gausejakub/vimail/internal/tui/util"
 	"github.com/gausejakub/vimail/internal/worker"
+	"github.com/gausejakub/vimail/pkg/vimtea"
 )
 
 type Model struct {
@@ -1043,6 +1044,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Vim reader in the preview pane takes every key until closed.
+		if m.preview.Reading() {
+			var cmd tea.Cmd
+			m.preview, cmd = m.preview.ReaderUpdate(msg)
+			return m, cmd
+		}
+
 		// Command mode
 		if m.cmdActive {
 			return m.handleCommandKey(msg)
@@ -1055,6 +1063,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Normal mode
 		return m.handleNormalKey(msg)
+	}
+
+	// Yanks in the Vim reader go to the system clipboard.
+	if y, ok := msg.(vimtea.YankMsg); ok {
+		return m, copyToClipboard(y.Text)
+	}
+	// Non-key messages (e.g. cursor blink) to the Vim reader.
+	if m.preview.Reading() {
+		var cmd tea.Cmd
+		m.preview, cmd = m.preview.ReaderUpdate(msg)
+		cmds = append(cmds, cmd)
 	}
 
 	// Forward non-key messages to compose when visible (e.g. cursor blink)
@@ -1145,6 +1164,12 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case key.Matches(msg, keys.Normal.Enter):
+		if m.focusedPane == layout.PanePreview {
+			var cmd tea.Cmd
+			m.preview, cmd = m.preview.StartReading()
+			cmds = append(cmds, cmd)
+			return m, tea.Batch(cmds...)
+		}
 		if m.focusedPane == layout.PaneMsgList {
 			if selected := m.msglist.SelectedMessage(); selected != nil {
 				if m.msglist.CurrentFolder() == "Drafts" {

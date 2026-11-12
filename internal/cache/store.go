@@ -2,13 +2,27 @@ package cache
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/gausejakub/vimail/internal/email"
 )
+
+type MessageState struct {
+	UID      uint32
+	Unread   bool
+	Flagged  bool
+	Answered bool
+}
+type OrphanSweepResult struct{ Attachments, Messages, Drafts int }
+
+// PlaceholderUIDBase starts the reserved range used for optimistic move rows
+// until the server reports the real destination UIDs.
+const PlaceholderUIDBase uint32 = 0xF0000000
 
 // SQLiteStore implements email.Store backed by a SQLite database.
 type SQLiteStore struct {
@@ -46,6 +60,175 @@ func (s *SQLiteStore) DataVersion() (int64, error) {
 	var version int64
 	err := s.db.QueryRow(`PRAGMA data_version`).Scan(&version)
 	return version, err
+}
+
+func (s *SQLiteStore) IntegrityCheck(full bool) error {
+	pragma := "PRAGMA quick_check"
+	if full {
+		pragma = "PRAGMA integrity_check"
+	}
+	rows, err := s.db.Query(pragma)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var result string
+		if err := rows.Scan(&result); err != nil {
+			return err
+		}
+		if strings.ToLower(result) != "ok" {
+			return fmt.Errorf("SQLite %s failed: %s; rebuild the vimail cache", strings.TrimPrefix(pragma, "PRAGMA "), result)
+		}
+	}
+	return rows.Err()
+}
+
+func (s *SQLiteStore) SweepOrphans() (OrphanSweepResult, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return OrphanSweepResult{}, err
+	}
+	defer tx.Rollback()
+	var out OrphanSweepResult
+	queries := []struct {
+		sql   string
+		count *int
+	}{
+		{`DELETE FROM attachments WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.folder_id=attachments.folder_id AND m.uid=attachments.uid)`, &out.Attachments},
+		{`DELETE FROM messages WHERE NOT EXISTS (SELECT 1 FROM folders f WHERE f.id=messages.folder_id)`, &out.Messages},
+		{`DELETE FROM drafts WHERE NOT EXISTS (SELECT 1 FROM accounts a WHERE a.email=drafts.account)`, &out.Drafts},
+	}
+	for _, q := range queries {
+		result, err := tx.Exec(q.sql)
+		if err != nil {
+			return out, err
+		}
+		n, _ := result.RowsAffected()
+		*q.count = int(n)
+	}
+	return out, tx.Commit()
+}
+
+func (s *SQLiteStore) SampleDecrypt(limit int) error {
+	if limit <= 0 {
+		return nil
+	}
+	rows, err := s.db.Query(`SELECT body, html_body FROM messages WHERE body LIKE 'enc:%' OR html_body LIKE 'enc:%' ORDER BY RANDOM() LIMIT ?`, limit)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var body, html string
+		if err := rows.Scan(&body, &html); err != nil {
+			return err
+		}
+		if err := decryptChecked(s.encKey, body); err != nil {
+			return fmt.Errorf("decrypt cached body: %w", err)
+		}
+		if err := decryptChecked(s.encKey, html); err != nil {
+			return fmt.Errorf("decrypt cached HTML body: %w", err)
+		}
+	}
+	return rows.Err()
+}
+
+func (s *SQLiteStore) MessageStates(acctEmail, folder string) (map[uint32]MessageState, error) {
+	rows, err := s.db.Query(`SELECT m.uid, m.unread, m.flagged, m.answered FROM messages m JOIN folders f ON f.id=m.folder_id WHERE f.account=? AND f.name=?`, acctEmail, folder)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[uint32]MessageState)
+	for rows.Next() {
+		var state MessageState
+		if err := rows.Scan(&state.UID, &state.Unread, &state.Flagged, &state.Answered); err != nil {
+			return nil, err
+		}
+		out[state.UID] = state
+	}
+	return out, rows.Err()
+}
+
+// PendingUIDs returns UIDs in a folder with undelivered queued writes.
+// Dead-lettered ops (failed at the attempt cap) are excluded so verification
+// can heal them instead of protecting them until cleanup.
+func (s *SQLiteStore) PendingUIDs(acctEmail, folder string) map[uint32]bool {
+	return s.PendingUIDsSince(acctEmail, folder, time.Time{})
+}
+
+// PendingUIDsSince is PendingUIDs plus UIDs touched by any op (including
+// completed ones) updated at or after since. Verification passes their start
+// time so a write that finishes mid-pass is not reverted from a stale snapshot.
+func (s *SQLiteStore) PendingUIDsSince(acctEmail, folder string, since time.Time) map[uint32]bool {
+	out := make(map[uint32]bool)
+	recent, args := "", []any{string(OpPending), string(OpRunning), string(OpFailed), opMaxAttempts}
+	if !since.IsZero() {
+		recent = " OR updated_at >= ?"
+		args = append(args, since.UTC().Add(-time.Second).Format(time.RFC3339))
+	}
+	args = append(args, string(OpVerify))
+	ops := s.queryOps(`SELECT id, type, status, account, folder, payload, error, attempts, next_attempt_at, created_at, updated_at FROM pending_ops
+		WHERE (status IN (?, ?) OR (status = ? AND attempts < ?)`+recent+`) AND type != ?
+		ORDER BY created_at, id`, args...)
+	for _, op := range ops {
+		if op.Account != acctEmail {
+			continue
+		}
+		var uids []uint32
+		switch op.Type {
+		case OpDelete:
+			if op.Folder != folder {
+				continue
+			}
+			var p DeletePayload
+			_ = json.Unmarshal(op.Payload, &p)
+			uids = p.UIDs
+		case OpMarkRead:
+			if op.Folder != folder {
+				continue
+			}
+			var p MarkReadPayload
+			_ = json.Unmarshal(op.Payload, &p)
+			uids = p.UIDs
+		case OpMarkUnread:
+			if op.Folder != folder {
+				continue
+			}
+			var p MarkUnreadPayload
+			_ = json.Unmarshal(op.Payload, &p)
+			uids = p.UIDs
+		case OpFlag:
+			if op.Folder != folder {
+				continue
+			}
+			var p FlagPayload
+			_ = json.Unmarshal(op.Payload, &p)
+			uids = p.UIDs
+		case OpMove:
+			var p MovePayload
+			_ = json.Unmarshal(op.Payload, &p)
+			if op.Folder != folder && p.Destination != folder {
+				continue
+			}
+			uids = p.UIDs
+			if p.Destination == folder && len(p.CacheUIDs) == len(p.UIDs) {
+				uids = p.CacheUIDs
+			}
+		case OpRestore:
+			if op.Folder != folder {
+				continue
+			}
+			var p RestorePayload
+			_ = json.Unmarshal(op.Payload, &p)
+			uids = p.UIDs
+		}
+		for _, uid := range uids {
+			out[uid] = true
+		}
+	}
+	return out
 }
 
 // SeedAccount ensures an account row exists, creating it if needed.
@@ -146,7 +329,7 @@ func (s *SQLiteStore) MessagesForPage(acctEmail, folder string, offset, limit in
 	rows, err := s.db.Query(`
 		SELECT uid, from_addr, to_addr, subject, body, html_body, date, unread, flagged
 		FROM messages WHERE folder_id = ?
-		ORDER BY date DESC
+		ORDER BY julianday(date) DESC, uid DESC
 		LIMIT ? OFFSET ?
 	`, folderID, limit, offset)
 	if err != nil {
@@ -300,7 +483,7 @@ func (s *SQLiteStore) MessagesFor(acctEmail, folder string) []email.Message {
 	rows, err := s.db.Query(`
 		SELECT uid, from_addr, to_addr, subject, body, html_body, date, unread, flagged
 		FROM messages WHERE folder_id = ?
-		ORDER BY date DESC
+		ORDER BY julianday(date) DESC, uid DESC
 		LIMIT 500
 	`, folderID)
 	if err != nil {
@@ -334,7 +517,7 @@ func (s *SQLiteStore) draftsFor(acctEmail string) []email.Message {
 	rows, err := s.db.Query(`
 		SELECT id, from_addr, to_addr, subject, body, date
 		FROM drafts WHERE account = ?
-		ORDER BY date DESC
+		ORDER BY julianday(date) DESC, id DESC
 	`, acctEmail)
 	if err != nil {
 		return nil
@@ -384,6 +567,80 @@ func (s *SQLiteStore) MarkRead(acctEmail, folder, id string) {
 	s.db.Exec(`UPDATE messages SET unread = 0 WHERE folder_id = ? AND uid = ?`, folderID, id)
 	// Also mark the same message read in other folders (Gmail labels).
 	s.syncReadAcrossFolders(acctEmail, folderID, id)
+}
+
+func (s *SQLiteStore) MarkUnread(acctEmail, folder, id string) {
+	uid := uint32(0)
+	_, _ = fmt.Sscan(id, &uid)
+	_ = s.SetUnreadUIDs(acctEmail, folder, []uint32{uid}, true)
+}
+
+func (s *SQLiteStore) SetFlagged(acctEmail, folder, id string, flagged bool) {
+	uid := uint32(0)
+	_, _ = fmt.Sscan(id, &uid)
+	_ = s.SetFlaggedUIDs(acctEmail, folder, []uint32{uid}, flagged)
+}
+
+// SetUnreadUIDs updates read state atomically and cascades Gmail label copies.
+func (s *SQLiteStore) SetUnreadUIDs(acctEmail, folder string, uids []uint32, unread bool) error {
+	return s.setMessageBoolUIDs(acctEmail, folder, uids, "unread", unread)
+}
+
+// SetFlaggedUIDs updates star state atomically and cascades Gmail label copies.
+func (s *SQLiteStore) SetFlaggedUIDs(acctEmail, folder string, uids []uint32, flagged bool) error {
+	return s.setMessageBoolUIDs(acctEmail, folder, uids, "flagged", flagged)
+}
+
+func (s *SQLiteStore) SetAnsweredUIDs(acctEmail, folder string, uids []uint32, answered bool) error {
+	return s.setMessageBoolUIDs(acctEmail, folder, uids, "answered", answered)
+}
+
+func (s *SQLiteStore) setMessageBoolUIDs(acctEmail, folder string, uids []uint32, column string, value bool) error {
+	if len(uids) == 0 {
+		return nil
+	}
+	if column != "unread" && column != "flagged" && column != "answered" {
+		return fmt.Errorf("unsupported message state %q", column)
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var folderID int
+	if err := tx.QueryRow(`SELECT id FROM folders WHERE account = ? AND name = ?`, acctEmail, folder).Scan(&folderID); err != nil {
+		return err
+	}
+	find, err := tx.Prepare(`SELECT message_id FROM messages WHERE folder_id = ? AND uid = ?`)
+	if err != nil {
+		return err
+	}
+	defer find.Close()
+	updateOne, err := tx.Prepare(`UPDATE messages SET ` + column + ` = ? WHERE folder_id = ? AND uid = ?`)
+	if err != nil {
+		return err
+	}
+	defer updateOne.Close()
+	updateCopies, err := tx.Prepare(`UPDATE messages SET ` + column + ` = ? WHERE message_id = ? AND folder_id IN (SELECT id FROM folders WHERE account = ?)`)
+	if err != nil {
+		return err
+	}
+	defer updateCopies.Close()
+	for _, uid := range uids {
+		var messageID string
+		if err := find.QueryRow(folderID, uid).Scan(&messageID); err != nil {
+			return fmt.Errorf("message %d not found in %s/%s: %w", uid, acctEmail, folder, err)
+		}
+		if _, err := updateOne.Exec(value, folderID, uid); err != nil {
+			return err
+		}
+		if messageID != "" {
+			if _, err := updateCopies.Exec(value, messageID, acctEmail); err != nil {
+				return err
+			}
+		}
+	}
+	return tx.Commit()
 }
 
 // MarkReadUIDs marks a batch read in one transaction and cascades the state
@@ -530,7 +787,7 @@ func (s *SQLiteStore) SearchMessages(acctEmail, query string, limit int) []email
 	// Do not LIMIT candidates before deduplication: many label copies may
 	// precede later unique messages. Rows are streamed and iteration stops as
 	// soon as the requested number of unique matches has been collected.
-	querySQL += ` ORDER BY m.date DESC, f.name, m.uid DESC`
+	querySQL += ` ORDER BY julianday(m.date) DESC, f.name, m.uid DESC`
 	rows, err := s.db.Query(querySQL, args...)
 	if err != nil {
 		return nil
@@ -697,14 +954,14 @@ func (s *SQLiteStore) RestoreMessages(acctEmail, sourceFolder, destinationFolder
 			return fmt.Errorf("restore UID mapping must be non-zero")
 		}
 		var messageID, from, to, subject, body, htmlBody, date string
-		var bodyFetched, unread, flagged, attachmentsCached int
+		var bodyFetched, unread, flagged, answered, attachmentsCached int
 		if err := tx.QueryRow(`
 			SELECT message_id, from_addr, to_addr, subject, body, html_body,
-			       body_fetched, date, unread, flagged, attachments_cached
+			       body_fetched, date, unread, flagged, answered, attachments_cached
 			FROM messages WHERE folder_id = ? AND uid = ?
 		`, sourceID, move.Source).Scan(
 			&messageID, &from, &to, &subject, &body, &htmlBody,
-			&bodyFetched, &date, &unread, &flagged, &attachmentsCached,
+			&bodyFetched, &date, &unread, &flagged, &answered, &attachmentsCached,
 		); err != nil {
 			return fmt.Errorf("source message %d not found in %s/%s: %w", move.Source, acctEmail, sourceFolder, err)
 		}
@@ -722,10 +979,10 @@ func (s *SQLiteStore) RestoreMessages(acctEmail, sourceFolder, destinationFolder
 		if _, err := tx.Exec(`
 			INSERT INTO messages (
 				uid, folder_id, message_id, from_addr, to_addr, subject, body,
-				html_body, body_fetched, date, unread, flagged, attachments_cached
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				html_body, body_fetched, date, unread, flagged, answered, attachments_cached
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, move.Destination, destinationID, messageID, from, to, subject, body,
-			htmlBody, bodyFetched, date, unread, flagged, attachmentsCached); err != nil {
+			htmlBody, bodyFetched, date, unread, flagged, answered, attachmentsCached); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(`
@@ -740,6 +997,80 @@ func (s *SQLiteStore) RestoreMessages(acctEmail, sourceFolder, destinationFolder
 		}
 		if _, err := tx.Exec(`DELETE FROM pending_deletes WHERE (folder_id = ? AND uid = ?) OR (folder_id = ? AND uid = ?)`,
 			sourceID, move.Source, destinationID, move.Destination); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// MoveMessagesLocal performs the optimistic cache half of a queued server move.
+func (s *SQLiteStore) MoveMessagesLocal(acctEmail, sourceFolder, destinationFolder string, uids []uint32) ([]uint32, error) {
+	var destinationID int
+	if err := s.db.QueryRow(`SELECT id FROM folders WHERE account=? AND name=?`, acctEmail, destinationFolder).Scan(&destinationID); err != nil {
+		return nil, err
+	}
+	used := make(map[uint32]bool)
+	rows, err := s.db.Query(`SELECT uid FROM messages WHERE folder_id=?`, destinationID)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var uid uint32
+		_ = rows.Scan(&uid)
+		used[uid] = true
+	}
+	rows.Close()
+	// Optimistic rows always live in a reserved UID range that real servers
+	// do not reach. That keeps HighestUID (and so incremental sync) honest and
+	// makes placeholder→server UID reconciliation collision-free.
+	cacheUIDs := make([]uint32, len(uids))
+	moves := make([]UIDMove, len(uids))
+	next := uint32(math.MaxUint32)
+	for i, uid := range uids {
+		for used[next] && next > PlaceholderUIDBase {
+			next--
+		}
+		if used[next] {
+			return nil, fmt.Errorf("no free placeholder UIDs in %s/%s", acctEmail, destinationFolder)
+		}
+		used[next] = true
+		cacheUIDs[i] = next
+		moves[i] = UIDMove{Source: uid, Destination: next}
+		next--
+	}
+	if err := s.RestoreMessages(acctEmail, sourceFolder, destinationFolder, moves); err != nil {
+		return nil, err
+	}
+	return cacheUIDs, nil
+}
+
+// ReconcileMovedUIDs replaces optimistic destination UIDs with server UIDs.
+func (s *SQLiteStore) ReconcileMovedUIDs(acctEmail, destinationFolder string, moves []UIDMove) error {
+	var folderID int
+	if err := s.db.QueryRow(`SELECT id FROM folders WHERE account = ? AND name = ?`, acctEmail, destinationFolder).Scan(&folderID); err != nil {
+		return err
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, move := range moves {
+		if move.Destination == 0 || move.Source == move.Destination {
+			continue
+		}
+		// Incremental sync may already have fetched the server copy; the
+		// optimistic row carries the cached body, so it wins.
+		if _, err := tx.Exec(`DELETE FROM attachments WHERE folder_id = ? AND uid = ?`, folderID, move.Destination); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DELETE FROM messages WHERE folder_id = ? AND uid = ?`, folderID, move.Destination); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`UPDATE attachments SET uid = ? WHERE folder_id = ? AND uid = ?`, move.Destination, folderID, move.Source); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`UPDATE messages SET uid = ? WHERE folder_id = ? AND uid = ?`, move.Destination, folderID, move.Source); err != nil {
 			return err
 		}
 	}
@@ -838,9 +1169,13 @@ func (s *SQLiteStore) UpsertMessage(acctEmail, folder string, msg email.Message)
 	if msg.Flagged {
 		flagged = 1
 	}
+	answered := 0
+	if msg.Answered {
+		answered = 1
+	}
 	_, err = s.db.Exec(`
-		INSERT INTO messages (uid, folder_id, message_id, from_addr, to_addr, subject, body, date, unread, flagged)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			INSERT INTO messages (uid, folder_id, message_id, from_addr, to_addr, subject, body, date, unread, flagged, answered)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(folder_id, uid) DO UPDATE SET
 			message_id = CASE WHEN excluded.message_id != '' THEN excluded.message_id ELSE messages.message_id END,
 			from_addr = excluded.from_addr,
@@ -848,9 +1183,10 @@ func (s *SQLiteStore) UpsertMessage(acctEmail, folder string, msg email.Message)
 			subject = excluded.subject,
 			date = excluded.date,
 			unread = excluded.unread,
-			flagged = excluded.flagged
+				flagged = excluded.flagged,
+				answered = excluded.answered
 	`, msg.UID, folderID, msg.MessageID, msg.From, msg.To, msg.Subject, msg.Body,
-		msg.Date.Format(time.RFC3339), unread, flagged)
+		msg.Date.Format(time.RFC3339), unread, flagged, answered)
 	return err
 }
 
@@ -898,7 +1234,7 @@ func (s *SQLiteStore) AllUIDs(acctEmail, folder string) []uint32 {
 	if err := s.db.QueryRow(`SELECT id FROM folders WHERE account = ? AND name = ?`, acctEmail, folder).Scan(&folderID); err != nil {
 		return nil
 	}
-	rows, err := s.db.Query(`SELECT uid FROM messages WHERE folder_id = ? ORDER BY date DESC`, folderID)
+	rows, err := s.db.Query(`SELECT uid FROM messages WHERE folder_id = ? ORDER BY julianday(date) DESC, uid DESC`, folderID)
 	if err != nil {
 		return nil
 	}
@@ -952,8 +1288,8 @@ func (s *SQLiteStore) ReplaceFolderHeaders(acctEmail, folder string, messages []
 	}
 	defer uidStmt.Close()
 	upsertStmt, err := tx.Prepare(`
-		INSERT INTO messages (uid, folder_id, message_id, from_addr, to_addr, subject, body, date, unread, flagged)
-		SELECT ?, ?, ?, ?, ?, ?, '', ?, ?, ?
+			INSERT INTO messages (uid, folder_id, message_id, from_addr, to_addr, subject, body, date, unread, flagged, answered)
+			SELECT ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?
 		WHERE NOT EXISTS (
 			SELECT 1 FROM pending_deletes WHERE folder_id = ? AND uid = ?
 		)
@@ -964,7 +1300,8 @@ func (s *SQLiteStore) ReplaceFolderHeaders(acctEmail, folder string, messages []
 			subject = excluded.subject,
 			date = excluded.date,
 			unread = excluded.unread,
-			flagged = excluded.flagged
+				flagged = excluded.flagged,
+				answered = excluded.answered
 	`)
 	if err != nil {
 		return err
@@ -974,16 +1311,19 @@ func (s *SQLiteStore) ReplaceFolderHeaders(acctEmail, folder string, messages []
 		if _, err := uidStmt.Exec(msg.UID); err != nil {
 			return err
 		}
-		unread, flagged := 0, 0
+		unread, flagged, answered := 0, 0, 0
 		if msg.Unread {
 			unread = 1
 		}
 		if msg.Flagged {
 			flagged = 1
 		}
+		if msg.Answered {
+			answered = 1
+		}
 		if _, err := upsertStmt.Exec(
 			msg.UID, folderID, msg.MessageID, msg.From, msg.To, msg.Subject,
-			msg.Date.Format(time.RFC3339), unread, flagged, folderID, msg.UID,
+			msg.Date.Format(time.RFC3339), unread, flagged, answered, folderID, msg.UID,
 		); err != nil {
 			return err
 		}
@@ -1008,7 +1348,7 @@ func (s *SQLiteStore) HighestUID(acctEmail, folder string) (uint32, error) {
 		return 0, err
 	}
 	var uid uint32
-	err = s.db.QueryRow(`SELECT COALESCE(MAX(uid), 0) FROM messages WHERE folder_id = ?`, folderID).Scan(&uid)
+	err = s.db.QueryRow(`SELECT COALESCE(MAX(uid), 0) FROM messages WHERE folder_id = ? AND uid < ?`, folderID, PlaceholderUIDBase).Scan(&uid)
 	return uid, err
 }
 

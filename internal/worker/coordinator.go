@@ -230,6 +230,127 @@ func (c *Coordinator) SyncFolderIfIdle(acctEmail, folder string) tea.Cmd {
 	}
 }
 
+func (c *Coordinator) VerifyFolderNow(acctEmail, folder string, full bool) VerifyResult {
+	result := VerifyResult{Account: acctEmail, Folder: folder}
+	if err := c.verifyCacheHealth(acctEmail, full, &result); err != nil {
+		return result
+	}
+	return c.verifyServerFolder(acctEmail, folder, result)
+}
+
+// verifyCacheHealth runs the account-independent SQLite checks: integrity,
+// a decryption sample, and the orphan sweep. It records the outcome in result
+// and returns its error.
+func (c *Coordinator) verifyCacheHealth(acctEmail string, full bool, result *VerifyResult) error {
+	if err := c.store.IntegrityCheck(full); err != nil {
+		result.Err = err
+		logging.Error("verify", "cache integrity failed; rebuild cache recommended", logging.Acct(acctEmail), logging.Err(err))
+		return err
+	}
+	result.QuickCheckOK = true
+	if err := c.store.SampleDecrypt(5); err != nil {
+		result.Err = err
+		logging.Error("verify", "cache body decryption failed; check encryption key", logging.Acct(acctEmail), logging.Err(err))
+		return err
+	}
+	orphans, err := c.store.SweepOrphans()
+	if err != nil {
+		result.Err = err
+		return err
+	}
+	result.Orphans = orphans
+	if orphans.Attachments+orphans.Messages+orphans.Drafts > 0 {
+		logging.Info("verify", "orphan rows swept", logging.KV("attachments", orphans.Attachments), logging.KV("messages", orphans.Messages), logging.KV("drafts", orphans.Drafts))
+	}
+	return nil
+}
+
+// verifyServerFolder reconciles one folder's UIDs and flags with IMAP.
+func (c *Coordinator) verifyServerFolder(acctEmail, folder string, result VerifyResult) VerifyResult {
+	result.Account, result.Folder = acctEmail, folder
+	release, ok := c.store.TryAcquireSyncLock(acctEmail)
+	if !ok {
+		result.Err = ErrSyncLocked
+		return result
+	}
+	defer release()
+	acct, ok := c.accountByEmail(acctEmail)
+	if !ok {
+		result.Err = fmt.Errorf("no such account: %s", acctEmail)
+		return result
+	}
+	w, err := c.ensureIMAPWorker(acct)
+	if err != nil {
+		result.Err = err
+		return result
+	}
+	serverResult, err := w.VerifyFolder(folder)
+	if err != nil {
+		result.Err = err
+	} else {
+		result.Messages = serverResult.Messages
+		result.StaleRemoved = serverResult.StaleRemoved
+		result.MissingAdded = serverResult.MissingAdded
+		result.FlagsCorrected = serverResult.FlagsCorrected
+		result.UIDValidityReset = serverResult.UIDValidityReset
+	}
+	if result.Err == nil {
+		opID, queueErr := c.store.QueueOp(cache.OpVerify, acctEmail, folder, result)
+		if queueErr == nil && c.store.StartOp(opID) {
+			c.store.CompleteOp(opID)
+		}
+	}
+	if result.Err == nil {
+		logging.Info("verify", "folder verified", logging.Acct(acctEmail), logging.Fld(folder), logging.KV("messages", result.Messages), logging.KV("stale_removed", result.StaleRemoved), logging.KV("missing_added", result.MissingAdded), logging.KV("flags_corrected", result.FlagsCorrected))
+	}
+	return result
+}
+
+// VerifyFoldersNow verifies several folders of one account, running the
+// cache-wide SQLite checks once instead of per folder.
+func (c *Coordinator) VerifyFoldersNow(acctEmail string, folders []string, full bool) []VerifyResult {
+	var health VerifyResult
+	if err := c.verifyCacheHealth(acctEmail, full, &health); err != nil {
+		results := make([]VerifyResult, len(folders))
+		for i, folder := range folders {
+			results[i] = health
+			results[i].Account, results[i].Folder = acctEmail, folder
+		}
+		return results
+	}
+	results := make([]VerifyResult, 0, len(folders))
+	for _, folder := range folders {
+		results = append(results, c.verifyServerFolder(acctEmail, folder, health))
+	}
+	return results
+}
+
+func (c *Coordinator) VerifyFolder(acctEmail, folder string, full bool) tea.Cmd {
+	return func() tea.Msg { return c.VerifyFolderNow(acctEmail, folder, full) }
+}
+
+func (c *Coordinator) VerifyAll(full bool) tea.Cmd {
+	return func() tea.Msg {
+		var results []VerifyResult
+		// The SQLite checks cover the whole cache, so run them once per pass
+		// rather than once per folder (integrity_check is expensive).
+		var health VerifyResult
+		if err := c.verifyCacheHealth("", full, &health); err != nil {
+			return VerifyCompleteMsg{Results: []VerifyResult{health}}
+		}
+		for _, acct := range c.cfg.Accounts {
+			for _, folder := range c.store.FoldersFor(acct.Email) {
+				if folder.Name == "Drafts" {
+					continue
+				}
+				results = append(results, c.verifyServerFolder(acct.Email, folder.Name, VerifyResult{QuickCheckOK: true}))
+				time.Sleep(250 * time.Millisecond)
+			}
+		}
+		return VerifyCompleteMsg{Results: results}
+	}
+}
+
 // FetchBody returns a tea.Cmd that lazily fetches a message body.
 func (c *Coordinator) FetchBody(acctEmail, folder string, uid uint32) tea.Cmd {
 	return func() (result tea.Msg) {
@@ -377,6 +498,107 @@ func (c *Coordinator) markReadNow(acctEmail, folder string, payload cache.MarkRe
 	c.store.CompleteOp(opID)
 	result.Delivered = true
 	return result
+}
+
+func (c *Coordinator) MarkUnreadMessagesNow(acctEmail, folder string, uids []uint32) OperationResult {
+	if err := c.store.SetUnreadUIDs(acctEmail, folder, uids, true); err != nil {
+		return OperationResult{Err: err}
+	}
+	return c.executeStateOp(cache.OpMarkUnread, acctEmail, folder, cache.MarkUnreadPayload{UIDs: uids}, func(w *IMAPWorker) error { return w.MarkUnreadBatch(folder, uids) })
+}
+
+func (c *Coordinator) SetFlaggedMessagesNow(acctEmail, folder string, uids []uint32, flagged bool) OperationResult {
+	if err := c.store.SetFlaggedUIDs(acctEmail, folder, uids, flagged); err != nil {
+		return OperationResult{Err: err}
+	}
+	return c.executeStateOp(cache.OpFlag, acctEmail, folder, cache.FlagPayload{UIDs: uids, Flagged: flagged}, func(w *IMAPWorker) error { return w.SetFlaggedBatch(folder, uids, flagged) })
+}
+
+func (c *Coordinator) MoveMessagesNow(acctEmail, source, destination string, uids []uint32) OperationResult {
+	cacheUIDs, err := c.store.MoveMessagesLocal(acctEmail, source, destination, uids)
+	if err != nil {
+		return OperationResult{Err: err}
+	}
+	payload := cache.MovePayload{UIDs: uids, CacheUIDs: cacheUIDs, Destination: destination}
+	return c.executeStateOp(cache.OpMove, acctEmail, source, payload, func(w *IMAPWorker) error { return c.executeMove(w, acctEmail, source, payload) })
+}
+
+func (c *Coordinator) MarkUnreadMessages(acctEmail, folder string, uids []uint32) tea.Cmd {
+	return func() tea.Msg { c.MarkUnreadMessagesNow(acctEmail, folder, uids); return nil }
+}
+func (c *Coordinator) SetFlaggedMessages(acctEmail, folder string, uids []uint32, flagged bool) tea.Cmd {
+	return func() tea.Msg { c.SetFlaggedMessagesNow(acctEmail, folder, uids, flagged); return nil }
+}
+func (c *Coordinator) MoveMessages(acctEmail, source, destination string, uids []uint32) tea.Cmd {
+	return func() tea.Msg { c.MoveMessagesNow(acctEmail, source, destination, uids); return nil }
+}
+
+func (c *Coordinator) executeStateOp(opType cache.OpType, acctEmail, folder string, payload interface{}, execute func(*IMAPWorker) error) OperationResult {
+	opID, err := c.store.QueueOp(opType, acctEmail, folder, payload)
+	result := OperationResult{OpID: opID}
+	if err != nil {
+		result.Err = err
+		return result
+	}
+	if !c.store.StartOp(opID) {
+		return result
+	}
+	acct, ok := c.accountByEmail(acctEmail)
+	if !ok {
+		result.Err = fmt.Errorf("no such account: %s", acctEmail)
+		c.store.FailOp(opID, result.Err.Error())
+		return result
+	}
+	w, err := c.ensureIMAPWorkerForWrite(acct)
+	if err == nil {
+		err = execute(w)
+	}
+	if err != nil {
+		result.Err = err
+		c.store.FailOp(opID, err.Error())
+		return result
+	}
+	c.store.CompleteOp(opID)
+	result.Delivered = true
+	return result
+}
+
+func (c *Coordinator) executeMove(w *IMAPWorker, account, source string, payload cache.MovePayload) error {
+	moves, moveErr := w.MoveToFolderBatchWithUIDs(source, payload.UIDs, payload.Destination)
+	cacheBySource := make(map[uint32]uint32, len(payload.UIDs))
+	for i, uid := range payload.UIDs {
+		cacheUID := uid
+		if i < len(payload.CacheUIDs) {
+			cacheUID = payload.CacheUIDs[i]
+		}
+		cacheBySource[uid] = cacheUID
+	}
+	cacheMoves := make([]cache.UIDMove, 0, len(moves))
+	var unmapped []uint32
+	for _, move := range moves {
+		cacheUID := cacheBySource[move.Source]
+		if move.Destination == 0 {
+			unmapped = append(unmapped, cacheUID)
+			continue
+		}
+		cacheMoves = append(cacheMoves, cache.UIDMove{Source: cacheUID, Destination: move.Destination})
+	}
+	if err := c.store.ReconcileMovedUIDs(account, payload.Destination, cacheMoves); err != nil {
+		return err
+	}
+	if len(unmapped) > 0 {
+		// The server did not report destination UIDs (no UIDPLUS, or the source
+		// UID was already moved by an earlier attempt). Drop only the optimistic
+		// rows; placeholders sit above HighestUID's range, so an incremental
+		// sync fetches the real copies without purging the folder.
+		if err := c.store.RemoveMessagesByUID(account, payload.Destination, unmapped); err != nil {
+			return err
+		}
+		if _, err := w.SyncFolder(payload.Destination); err != nil {
+			return err
+		}
+	}
+	return moveErr
 }
 
 // SaveAttachments fetches the raw message and saves the specified attachments to ~/Downloads.
@@ -901,9 +1123,31 @@ func (c *Coordinator) RetryPendingOps() tea.Cmd {
 		}
 
 		markReadBatches := make(map[string]map[string]*markReadBatch)
+		flushMarkRead := func(account string) {
+			byFolder := markReadBatches[account]
+			if len(byFolder) == 0 {
+				return
+			}
+			delete(markReadBatches, account)
+			w, err := getIMAP(account)
+			if err != nil {
+				for _, batch := range byFolder {
+					for _, id := range batch.opIDs {
+						c.store.FailOp(id, err.Error())
+					}
+				}
+				return
+			}
+			retryMarkReadBatches(c.store, account, byFolder, w.MarkReadBatch)
+		}
 		for _, op := range ops {
 			if !c.store.StartOp(op.ID) {
 				continue // claimed by another drainer in the meantime
+			}
+			// Batched mark-reads must reach the server before any later op on
+			// the account (e.g. mark-unread, move) so replay keeps queue order.
+			if op.Type != cache.OpMarkRead {
+				flushMarkRead(op.Account)
 			}
 			var err error
 			switch op.Type {
@@ -1004,6 +1248,46 @@ func (c *Coordinator) RetryPendingOps() tea.Cmd {
 					}
 				}
 
+			case cache.OpMarkUnread:
+				var payload cache.MarkUnreadPayload
+				if e := json.Unmarshal(op.Payload, &payload); e != nil {
+					c.store.FailOp(op.ID, "bad payload: "+e.Error())
+					continue
+				}
+				w, workerErr := getIMAP(op.Account)
+				if workerErr != nil {
+					err = workerErr
+				} else {
+					err = w.MarkUnreadBatch(op.Folder, payload.UIDs)
+				}
+			case cache.OpFlag:
+				var payload cache.FlagPayload
+				if e := json.Unmarshal(op.Payload, &payload); e != nil {
+					c.store.FailOp(op.ID, "bad payload: "+e.Error())
+					continue
+				}
+				w, workerErr := getIMAP(op.Account)
+				if workerErr != nil {
+					err = workerErr
+				} else {
+					err = w.SetFlaggedBatch(op.Folder, payload.UIDs, payload.Flagged)
+				}
+			case cache.OpMove:
+				var payload cache.MovePayload
+				if e := json.Unmarshal(op.Payload, &payload); e != nil {
+					c.store.FailOp(op.ID, "bad payload: "+e.Error())
+					continue
+				}
+				w, workerErr := getIMAP(op.Account)
+				if workerErr != nil {
+					err = workerErr
+				} else {
+					err = c.executeMove(w, op.Account, op.Folder, payload)
+				}
+
+			case cache.OpVerify:
+				// Audit record only; nothing to deliver (left pending by a crash).
+
 			default:
 				err = fmt.Errorf("unsupported queued op type %q", op.Type)
 			}
@@ -1016,17 +1300,8 @@ func (c *Coordinator) RetryPendingOps() tea.Cmd {
 			}
 		}
 
-		for account, byFolder := range markReadBatches {
-			w, err := getIMAP(account)
-			if err != nil {
-				for _, batch := range byFolder {
-					for _, id := range batch.opIDs {
-						c.store.FailOp(id, err.Error())
-					}
-				}
-				continue
-			}
-			retryMarkReadBatches(c.store, account, byFolder, w.MarkReadBatch)
+		for account := range markReadBatches {
+			flushMarkRead(account)
 		}
 		return nil
 	}
@@ -1268,12 +1543,32 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig, full bool) (int, er
 	// Batch mark_read ops by folder to avoid flooding the server.
 	ops := c.store.PendingOps()
 	markReadBatches := make(map[string]*markReadBatch) // folder → UIDs + op IDs
+	flushMarkRead := func() {
+		if len(markReadBatches) == 0 {
+			return
+		}
+		batches := markReadBatches
+		markReadBatches = make(map[string]*markReadBatch)
+		// One SELECT+STORE per folder instead of per UID.
+		retryMarkReadBatches(c.store, acct.Email, batches, func(folder string, uids []uint32) error {
+			markWorker, err := c.ensureIMAPWorker(acct)
+			if err != nil {
+				return err
+			}
+			w = markWorker
+			return w.MarkReadBatch(folder, uids)
+		})
+	}
 	for _, op := range ops {
 		if op.Account != acct.Email {
 			continue
 		}
 		if !c.store.StartOpNow(op.ID) {
 			continue // claimed by another drainer in the meantime
+		}
+		// Keep queue order: deliver batched mark-reads before any other op.
+		if op.Type != cache.OpMarkRead {
+			flushMarkRead()
 		}
 		switch op.Type {
 		case cache.OpDelete:
@@ -1342,20 +1637,48 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig, full bool) (int, er
 				}
 				c.store.FailOp(op.ID, restore.Err.Error())
 			}
+		case cache.OpMarkUnread:
+			var payload cache.MarkUnreadPayload
+			if err := json.Unmarshal(op.Payload, &payload); err != nil {
+				c.store.FailOp(op.ID, "bad payload: "+err.Error())
+				continue
+			}
+			if err := w.MarkUnreadBatch(op.Folder, payload.UIDs); err != nil {
+				c.store.FailOp(op.ID, err.Error())
+			} else {
+				c.store.CompleteOp(op.ID)
+			}
+		case cache.OpFlag:
+			var payload cache.FlagPayload
+			if err := json.Unmarshal(op.Payload, &payload); err != nil {
+				c.store.FailOp(op.ID, "bad payload: "+err.Error())
+				continue
+			}
+			if err := w.SetFlaggedBatch(op.Folder, payload.UIDs, payload.Flagged); err != nil {
+				c.store.FailOp(op.ID, err.Error())
+			} else {
+				c.store.CompleteOp(op.ID)
+			}
+		case cache.OpMove:
+			var payload cache.MovePayload
+			if err := json.Unmarshal(op.Payload, &payload); err != nil {
+				c.store.FailOp(op.ID, "bad payload: "+err.Error())
+				continue
+			}
+			if err := c.executeMove(w, op.Account, op.Folder, payload); err != nil {
+				c.store.FailOp(op.ID, err.Error())
+			} else {
+				c.store.CompleteOp(op.ID)
+			}
+		case cache.OpVerify:
+			// Audit record only; nothing to deliver (left pending by a crash).
+			c.store.CompleteOp(op.ID)
 		default:
 			// Send ops are retried separately.
 			c.store.FailOp(op.ID, "skipped during sync")
 		}
 	}
-	// Execute batched mark_read — one SELECT+STORE per folder instead of per UID.
-	retryMarkReadBatches(c.store, acct.Email, markReadBatches, func(folder string, uids []uint32) error {
-		markWorker, err := c.ensureIMAPWorker(acct)
-		if err != nil {
-			return err
-		}
-		w = markWorker
-		return w.MarkReadBatch(folder, uids)
-	})
+	flushMarkRead()
 
 	// List mailboxes.
 	w, err = c.ensureIMAPWorker(acct)

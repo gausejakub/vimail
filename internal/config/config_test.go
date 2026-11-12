@@ -2,6 +2,7 @@ package config
 
 import (
 	"testing"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -26,6 +27,37 @@ preview_pane = true
 	}
 	if cfg.MCP.AllowSend {
 		t.Error("allow_send true with key omitted, want false")
+	}
+}
+
+func TestOAuthMotionAndVerificationConfig(t *testing.T) {
+	cfg := DefaultConfig()
+	if !cfg.General.Motion {
+		t.Fatal("motion should default true")
+	}
+	if _, err := toml.Decode(`
+[general]
+motion = false
+[sync]
+verify_interval = "90m"
+[[accounts]]
+email = "alice@example.com"
+oauth_client_id = "client"
+oauth_client_secret = "secret"
+`, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.General.Motion || cfg.Accounts[0].OAuthClientID != "client" {
+		t.Fatalf("decoded config=%+v", cfg)
+	}
+	interval, err := cfg.Sync.VerificationInterval()
+	if err != nil || interval != 90*time.Minute {
+		t.Fatalf("interval=%s err=%v", interval, err)
+	}
+	cfg.Sync.VerifyInterval = "0"
+	interval, err = cfg.Sync.VerificationInterval()
+	if err != nil || interval != 0 {
+		t.Fatalf("disabled interval=%s err=%v", interval, err)
 	}
 }
 

@@ -53,11 +53,13 @@ type Model struct {
 	cmdInput  textinput.Model
 	cmdActive bool
 
-	syncPending int // number of accounts still syncing
+	syncPending   int             // number of accounts still syncing
+	syncCompleted map[string]bool // completion deduplication for the active cycle
 }
 
 // syncTickMsg triggers periodic sync refresh.
 type syncTickMsg struct{}
+type verifyTickMsg struct{}
 
 // cacheVersionMsg reports SQLite's connection-local data version. A changed
 // value means another process committed to the shared cache.
@@ -103,17 +105,18 @@ func New(cfg config.Config, store email.Store) Model {
 	cmdInput.Placeholder = ""
 
 	m := Model{
-		cfg:         cfg,
-		store:       store,
-		mode:        keys.ModeNormal,
-		focusedPane: layout.PaneMsgList,
-		layout:      layout.SplitPaneLayout{ShowPreview: cfg.General.PreviewPane},
-		mailbox:     mailbox.New(store),
-		msglist:     msglist.New(store).Focus(),
-		preview:     preview.New(),
-		status:      status.New(),
-		compose:     compose.New(cfg.AI),
-		cmdInput:    cmdInput,
+		cfg:           cfg,
+		store:         store,
+		mode:          keys.ModeNormal,
+		focusedPane:   layout.PaneMsgList,
+		layout:        layout.SplitPaneLayout{ShowPreview: cfg.General.PreviewPane},
+		mailbox:       mailbox.New(store),
+		msglist:       msglist.New(store).SetMotion(cfg.General.Motion).Focus(),
+		preview:       preview.New(),
+		status:        status.New().SetMotion(cfg.General.Motion),
+		compose:       compose.New(cfg.AI),
+		cmdInput:      cmdInput,
+		syncCompleted: make(map[string]bool),
 	}
 	if store, ok := store.(cacheVersionStore); ok {
 		m.cacheVersion, _ = store.DataVersion()
@@ -130,6 +133,18 @@ func pollCacheVersion(store email.Store) tea.Cmd {
 		version, err := versionStore.DataVersion()
 		return cacheVersionMsg{version: version, err: err}
 	})
+}
+
+// verifyInterval returns the periodic verification interval. An invalid
+// sync.verify_interval falls back to the default instead of silently
+// disabling verification.
+func (m Model) verifyInterval() time.Duration {
+	interval, err := m.cfg.Sync.VerificationInterval()
+	if err != nil {
+		logging.Warn("verify", "invalid sync.verify_interval; using default 6h", logging.KV("value", m.cfg.Sync.VerifyInterval), logging.Err(err))
+		return 6 * time.Hour
+	}
+	return interval
 }
 
 func (m Model) Init() tea.Cmd {
@@ -154,11 +169,18 @@ func (m Model) Init() tea.Cmd {
 
 	// Trigger initial sync if coordinator is available.
 	if m.coordinator != nil {
-		m.syncPending = len(m.cfg.Accounts)
 		cmds = append(cmds, func() tea.Msg {
 			return util.SyncStartMsg{}
 		})
-		cmds = append(cmds, m.coordinator.SyncAll())
+		// Periodic timers are single self-rescheduling chains. Scheduling them
+		// from account-completion events caused duplicate completions to grow an
+		// exponential timer storm.
+		cmds = append(cmds, tea.Tick(5*time.Minute, func(time.Time) tea.Msg {
+			return syncTickMsg{}
+		}))
+		if interval := m.verifyInterval(); interval > 0 {
+			cmds = append(cmds, tea.Tick(interval, func(time.Time) tea.Msg { return verifyTickMsg{} }))
+		}
 	}
 
 	return tea.Batch(cmds...)
@@ -348,9 +370,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case util.SyncStartMsg:
+		if m.syncPending > 0 {
+			return m, func() tea.Msg {
+				return util.InfoMsg{Text: "Sync already in progress"}
+			}
+		}
 		logging.Info("sync", "initial sync starting", logging.KV("accounts", len(m.cfg.Accounts)))
 		m.syncPending = len(m.cfg.Accounts)
+		m.syncCompleted = make(map[string]bool, len(m.cfg.Accounts))
 		for _, acct := range m.cfg.Accounts {
+			m.syncCompleted[acct.Email] = false
 			m.msglist = m.msglist.SetAccountSyncing(acct.Email, true)
 			m.mailbox = m.mailbox.SetAccountSyncing(acct.Email, true)
 			email := acct.Email
@@ -361,10 +390,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			})
 			cmds = append(cmds, cmd)
 		}
+		if m.coordinator != nil && m.syncPending > 0 {
+			cmds = append(cmds, m.coordinator.SyncAll())
+		}
 		return m, tea.Batch(cmds...)
 
 	case worker.SyncProgressMsg:
-		label := fmt.Sprintf("⟳ %s %d/%d %s", msg.Account, msg.Done, msg.Total, msg.Folder)
+		label := fmt.Sprintf("%s %s %d/%d %s", status.ProgressBar(msg.Done, msg.Total, 5), msg.Account, msg.Done, msg.Total, msg.Folder)
 		if msg.Messages > 0 {
 			label = fmt.Sprintf("⟳ %s %d/%d %s (%d msgs)", msg.Account, msg.Done, msg.Total, msg.Folder, msg.Messages)
 		}
@@ -377,6 +409,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case worker.SyncAccountCompleteMsg:
+		completed, expected := m.syncCompleted[msg.Account]
+		if m.syncPending <= 0 || !expected || completed {
+			logging.Debug("sync", "ignoring duplicate or stale account completion", logging.Acct(msg.Account), logging.KV("pending", m.syncPending))
+			return m, nil
+		}
+		m.syncCompleted[msg.Account] = true
 		logging.Info("sync", "account sync complete (TUI)", logging.Acct(msg.Account), logging.Err(msg.Err), logging.KV("pending", m.syncPending-1))
 		m.syncPending--
 		m.mailbox = m.mailbox.SetAccountSyncing(msg.Account, false)
@@ -401,7 +439,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			})
 		}
 		// All accounts done?
-		if m.syncPending <= 0 {
+		if m.syncPending == 0 {
 			m.msglist = m.msglist.SetSyncing(false)
 			var cmd tea.Cmd
 			m.status, cmd = m.status.Update(util.SyncAllCompleteMsg{})
@@ -409,31 +447,57 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, func() tea.Msg {
 				return util.InfoMsg{Text: "Sync complete", IsError: false}
 			})
-			// Schedule periodic refresh (5 minutes).
-			cmds = append(cmds, tea.Tick(5*time.Minute, func(time.Time) tea.Msg {
-				return syncTickMsg{}
-			}))
 		}
 		return m, tea.Batch(cmds...)
 
 	case syncTickMsg:
 		logging.Info("sync", "periodic sync tick")
 		if m.coordinator != nil {
-			m.syncPending = len(m.cfg.Accounts)
-			for _, acct := range m.cfg.Accounts {
-				m.mailbox = m.mailbox.SetAccountSyncing(acct.Email, true)
-				m.msglist = m.msglist.SetAccountSyncing(acct.Email, true)
-				email := acct.Email
-				var cmd tea.Cmd
-				m.status, cmd = m.status.Update(util.ProcessStartMsg{
-					ID:    "sync:" + email,
-					Label: "⟳ " + email + " connecting…",
-				})
-				cmds = append(cmds, cmd)
+			cmds = append(cmds, tea.Tick(5*time.Minute, func(time.Time) tea.Msg {
+				return syncTickMsg{}
+			}))
+			if m.syncPending == 0 {
+				cmds = append(cmds, func() tea.Msg { return util.SyncStartMsg{} })
+			} else {
+				logging.Info("sync", "periodic sync skipped; sync already in progress", logging.KV("pending", m.syncPending))
 			}
-			cmds = append(cmds, m.coordinator.SyncAll())
 		}
 		return m, tea.Batch(cmds...)
+
+	case verifyTickMsg:
+		if m.coordinator != nil {
+			cmds = append(cmds, m.coordinator.VerifyAll(false))
+			if interval := m.verifyInterval(); interval > 0 {
+				cmds = append(cmds, tea.Tick(interval, func(time.Time) tea.Msg { return verifyTickMsg{} }))
+			}
+		}
+		return m, tea.Batch(cmds...)
+
+	case worker.VerifyResult:
+		if msg.Err != nil {
+			return m, func() tea.Msg { return util.InfoMsg{Text: "Verification failed: " + msg.Err.Error(), IsError: true} }
+		}
+		text := fmt.Sprintf("Verified %s: %d messages · %d stale removed · %d missing added · %d flags corrected · quick_check ok", msg.Folder, msg.Messages, msg.StaleRemoved, msg.MissingAdded, msg.FlagsCorrected)
+		return m, func() tea.Msg { return util.InfoMsg{Text: text} }
+
+	case worker.VerifyCompleteMsg:
+		failed, stale, missing, flags := 0, 0, 0, 0
+		for _, result := range msg.Results {
+			if result.Err != nil {
+				failed++
+			}
+			stale += result.StaleRemoved
+			missing += result.MissingAdded
+			flags += result.FlagsCorrected
+		}
+		if failed > 0 {
+			return m, func() tea.Msg {
+				return util.InfoMsg{Text: fmt.Sprintf("Verification finished with %d errors", failed), IsError: true}
+			}
+		}
+		return m, func() tea.Msg {
+			return util.InfoMsg{Text: fmt.Sprintf("Verification complete: %d stale removed · %d missing added · %d flags corrected", stale, missing, flags)}
+		}
 
 	case worker.SyncResult:
 		if msg.Err != nil {
@@ -1159,6 +1223,24 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					})
 				}
 			}
+		} else if k == "f" {
+			if sel := m.msglist.SelectedMessage(); sel != nil && sel.UID > 0 {
+				acct, folder, flagged := m.mailbox.SelectedEmail(), m.msglist.CurrentFolder(), !sel.Flagged
+				m.store.SetFlagged(acct, folder, sel.ID, flagged)
+				if m.coordinator != nil {
+					cmds = append(cmds, m.coordinator.SetFlaggedMessages(acct, folder, []uint32{sel.UID}, flagged))
+				}
+				cmds = append(cmds, func() tea.Msg { return util.FolderRefreshMsg{Account: acct, Folder: folder} })
+			}
+		} else if k == "U" {
+			if sel := m.msglist.SelectedMessage(); sel != nil && sel.UID > 0 {
+				acct, folder := m.mailbox.SelectedEmail(), m.msglist.CurrentFolder()
+				m.store.MarkUnread(acct, folder, sel.ID)
+				if m.coordinator != nil {
+					cmds = append(cmds, m.coordinator.MarkUnreadMessages(acct, folder, []uint32{sel.UID}))
+				}
+				cmds = append(cmds, func() tea.Msg { return util.FolderRefreshMsg{Account: acct, Folder: folder} })
+			}
 		} else if k == "u" {
 			// Restore from Trash (works in Trash folder or search results from Trash)
 			if sel := m.msglist.SelectedMessage(); sel != nil {
@@ -1436,10 +1518,7 @@ func (m Model) executeCommand(input string) tea.Cmd {
 
 	case "sync":
 		if m.coordinator != nil {
-			return tea.Batch(
-				func() tea.Msg { return util.SyncStartMsg{} },
-				m.coordinator.SyncAll(),
-			)
+			return func() tea.Msg { return util.SyncStartMsg{} }
 		}
 		return func() tea.Msg {
 			return util.InfoMsg{Text: "Sync not available (using mock data)", IsError: false}
@@ -1459,6 +1538,37 @@ func (m Model) executeCommand(input string) tea.Cmd {
 
 	case "ops", "operations", "queue":
 		return func() tea.Msg { return showOpsMsg{} }
+
+	case "verify":
+		if m.coordinator == nil {
+			return func() tea.Msg { return util.InfoMsg{Text: "Verification requires a configured account", IsError: true} }
+		}
+		full := len(parts) > 1 && parts[1] == "full"
+		if full {
+			return m.coordinator.VerifyAll(true)
+		}
+		folder := m.msglist.CurrentFolder()
+		if len(parts) > 1 {
+			folder = strings.Join(parts[1:], " ")
+		}
+		return m.coordinator.VerifyFolder(m.mailbox.SelectedEmail(), folder, false)
+
+	case "move":
+		if len(parts) < 2 {
+			return func() tea.Msg { return util.InfoMsg{Text: "Usage: :move <folder>", IsError: true} }
+		}
+		if m.coordinator == nil {
+			return func() tea.Msg { return util.InfoMsg{Text: "Move requires a configured account", IsError: true} }
+		}
+		sel := m.msglist.SelectedMessage()
+		if sel == nil || sel.UID == 0 {
+			return func() tea.Msg { return util.InfoMsg{Text: "No message selected", IsError: true} }
+		}
+		acct, source, destination := m.mailbox.SelectedEmail(), m.msglist.CurrentFolder(), strings.Join(parts[1:], " ")
+		if destination == source {
+			return func() tea.Msg { return util.InfoMsg{Text: "Message is already in " + destination, IsError: true} }
+		}
+		return tea.Sequence(m.coordinator.MoveMessages(acct, source, destination, []uint32{sel.UID}), func() tea.Msg { return util.FolderRefreshMsg{Account: acct, Folder: source} })
 
 	default:
 		return func() tea.Msg {
@@ -1746,6 +1856,26 @@ func opDescription(op cache.QueuedOp) string {
 		var p cache.RestorePayload
 		json.Unmarshal(op.Payload, &p)
 		return fmt.Sprintf("restore %d msgs  %s/Trash → %s", len(p.UIDs), op.Account, p.Destination)
+	case cache.OpMarkUnread:
+		var p cache.MarkUnreadPayload
+		_ = json.Unmarshal(op.Payload, &p)
+		return fmt.Sprintf("mark unread %d msgs  %s/%s", len(p.UIDs), op.Account, op.Folder)
+	case cache.OpFlag:
+		var p cache.FlagPayload
+		_ = json.Unmarshal(op.Payload, &p)
+		action := "unflag"
+		if p.Flagged {
+			action = "flag"
+		}
+		return fmt.Sprintf("%s %d msgs  %s/%s", action, len(p.UIDs), op.Account, op.Folder)
+	case cache.OpMove:
+		var p cache.MovePayload
+		_ = json.Unmarshal(op.Payload, &p)
+		return fmt.Sprintf("move %d msgs  %s/%s → %s", len(p.UIDs), op.Account, op.Folder, p.Destination)
+	case cache.OpVerify:
+		var p worker.VerifyResult
+		_ = json.Unmarshal(op.Payload, &p)
+		return fmt.Sprintf("verified %s: %d msgs · %d stale · %d missing · %d flags", op.Folder, p.Messages, p.StaleRemoved, p.MissingAdded, p.FlagsCorrected)
 	default:
 		return string(op.Type)
 	}

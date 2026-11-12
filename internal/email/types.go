@@ -27,6 +27,7 @@ type Message struct {
 	Date        time.Time
 	Unread      bool
 	Flagged     bool
+	Answered    bool
 	Attachments []Attachment
 	Folder      string // populated by search results for context
 	Account     string // populated by search results for context

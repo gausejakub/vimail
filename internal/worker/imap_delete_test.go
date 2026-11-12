@@ -11,6 +11,7 @@ import (
 	"github.com/emersion/go-imap/v2/imapserver"
 	"github.com/emersion/go-imap/v2/imapserver/imapmemserver"
 	"github.com/gausejakub/vimail/internal/auth"
+	"github.com/gausejakub/vimail/internal/cache"
 	"github.com/gausejakub/vimail/internal/config"
 	"github.com/gausejakub/vimail/internal/email"
 )
@@ -289,6 +290,65 @@ func TestSyncFolderFullReplacesStaleCacheSnapshot(t *testing.T) {
 	msg, _, ok := store.MessageByUID(acct.Email, "Inbox", 1)
 	if !ok || msg.Subject != "current" {
 		t.Fatalf("current message = %+v found=%v", msg, ok)
+	}
+}
+
+func TestVerifyFolderReconcilesUIDsFlagsAndPreservesPendingWrites(t *testing.T) {
+	acct, creds, _ := newIMAPTestEndpoint(t)
+	store := testQueueStore(t)
+	if err := store.SeedAccount("Alice", acct.Email, acct.IMAPHost, acct.IMAPPort, "", 587); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.EnsureFolder(acct.Email, "Inbox"); err != nil {
+		t.Fatal(err)
+	}
+	w := NewIMAPWorker(acct, creds, store)
+	if err := w.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(w.Disconnect)
+	appendMessage := func(subject string, flags []imap.Flag) {
+		raw := []byte("Message-ID: <" + subject + "@example.com>\r\nFrom: sender@example.com\r\nTo: alice@example.com\r\nSubject: " + subject + "\r\n\r\nbody")
+		cmd := w.client.Append("INBOX", int64(len(raw)), &imap.AppendOptions{Flags: flags})
+		if _, err := cmd.Write(raw); err != nil {
+			t.Fatal(err)
+		}
+		if err := cmd.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := cmd.Wait(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendMessage("one", []imap.Flag{imap.FlagSeen, imap.FlagFlagged})
+	appendMessage("two", nil)
+	for _, msg := range []email.Message{{UID: 1, MessageID: "<one@example.com>", Date: time.Now(), Unread: true}, {UID: 99, Date: time.Now()}, {UID: 100, Date: time.Now()}} {
+		if err := store.UpsertMessage(acct.Email, "Inbox", msg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.QueueOp(cache.OpFlag, acct.Email, "Inbox", cache.FlagPayload{UIDs: []uint32{100}, Flagged: true}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := w.VerifyFolder("Inbox")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.StaleRemoved != 1 || result.MissingAdded != 1 || result.FlagsCorrected != 2 {
+		t.Fatalf("result=%+v", result)
+	}
+	if _, _, ok := store.MessageByUID(acct.Email, "Inbox", 99); ok {
+		t.Fatal("stale UID 99 survived")
+	}
+	if _, _, ok := store.MessageByUID(acct.Email, "Inbox", 100); !ok {
+		t.Fatal("pending UID 100 was overwritten")
+	}
+	one, _, ok := store.MessageByUID(acct.Email, "Inbox", 1)
+	if !ok || one.Unread || !one.Flagged {
+		t.Fatalf("UID 1=%+v found=%v", one, ok)
+	}
+	if _, _, ok := store.MessageByUID(acct.Email, "Inbox", 2); !ok {
+		t.Fatal("missing UID 2 not added")
 	}
 }
 

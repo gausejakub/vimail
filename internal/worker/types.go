@@ -1,6 +1,9 @@
 package worker
 
-import "github.com/gausejakub/vimail/internal/email"
+import (
+	"github.com/gausejakub/vimail/internal/cache"
+	"github.com/gausejakub/vimail/internal/email"
+)
 
 // SyncRequest requests syncing a specific folder.
 type SyncRequest struct {
@@ -111,6 +114,27 @@ type MarkReadResult struct {
 	Delivered bool
 	Err       error
 }
+
+type OperationResult struct {
+	OpID      int64
+	Delivered bool
+	Err       error
+}
+
+type VerifyResult struct {
+	Account          string
+	Folder           string
+	Messages         int
+	StaleRemoved     int
+	MissingAdded     int
+	FlagsCorrected   int
+	UIDValidityReset bool
+	QuickCheckOK     bool
+	Orphans          cache.OrphanSweepResult
+	Err              error
+}
+
+type VerifyCompleteMsg struct{ Results []VerifyResult }
 
 // ExportProgressMsg reports incremental progress during batch export.
 type ExportProgressMsg struct {

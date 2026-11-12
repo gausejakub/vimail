@@ -104,6 +104,30 @@ func TestMessagesFor(t *testing.T) {
 	}
 }
 
+func TestMessagesForPageOrdersMixedTimezoneOffsetsChronologically(t *testing.T) {
+	s := testStore(t)
+	seedWithFolders(t, s, "Test", "a@b.com")
+
+	older := time.Date(2026, time.August, 28, 11, 4, 39, 0, time.UTC)
+	newer := time.Date(2026, time.August, 28, 6, 59, 58, 0, time.FixedZone("PDT", -7*60*60))
+	for _, msg := range []email.Message{
+		{UID: 1, Subject: "older", Date: older},
+		{UID: 2, Subject: "newer", Date: newer},
+	} {
+		if err := s.UpsertMessage("a@b.com", "Inbox", msg); err != nil {
+			t.Fatalf("UpsertMessage: %v", err)
+		}
+	}
+
+	msgs := s.MessagesForPage("a@b.com", "Inbox", 0, 10)
+	if len(msgs) != 2 {
+		t.Fatalf("got %d messages, want 2", len(msgs))
+	}
+	if msgs[0].UID != 2 {
+		t.Fatalf("first UID = %d (%s), want newer UID 2 (%s)", msgs[0].UID, msgs[0].Date, newer)
+	}
+}
+
 func TestMessagesForEmptyFolder(t *testing.T) {
 	s := testStore(t)
 	seedWithFolders(t, s, "Test", "a@b.com")

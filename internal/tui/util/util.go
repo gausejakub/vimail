@@ -1,6 +1,11 @@
 package util
 
-import "github.com/gausejakub/vimail/internal/email"
+import (
+	"github.com/gausejakub/vimail/internal/email"
+	"time"
+)
+
+type MotionTickMsg struct{ Now time.Time }
 
 // InfoMsg is displayed in the status bar with an optional error flag.
 type InfoMsg struct {
@@ -119,16 +124,16 @@ type DeleteRequestMsg struct {
 
 // BatchDeleteRequestMsg is emitted by the message list in visual mode when the user presses d.
 type BatchDeleteRequestMsg struct {
-	Account    string
-	Folder     string
-	Messages   []email.Message
-	SelectAll  bool // true when user selected the entire folder (may exceed loaded window)
+	Account   string
+	Folder    string
+	Messages  []email.Message
+	SelectAll bool // true when user selected the entire folder (may exceed loaded window)
 }
 
 // RestoreRequestMsg is emitted when the user presses u in Trash to restore a message.
 type RestoreRequestMsg struct {
-	Account  string
-	Message  email.Message
+	Account string
+	Message email.Message
 }
 
 // BatchRestoreRequestMsg is emitted in visual mode when the user restores selected messages from Trash.
@@ -215,7 +220,7 @@ type ProcessEndMsg struct {
 
 // SearchResultsMsg carries search results to the message list.
 type SearchResultsMsg struct {
-	Query    string
-	Account  string // empty = all accounts
-	Results  []email.Message
+	Query   string
+	Account string // empty = all accounts
+	Results []email.Message
 }

@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"path/filepath"
 	"testing"
 	"time"
@@ -149,6 +150,43 @@ func TestMarkReadBulkValidatesBeforeMutation(t *testing.T) {
 	}
 	expectToolError(t, session, "mark_read", map[string]any{"folder": "Inbox", "uid": 3, "uids": []uint32{3}})
 	expectToolError(t, session, "mark_read", map[string]any{"folder": "Inbox", "uids": []uint32{}})
+}
+
+func TestFlagUnreadAndMoveToolsUseOptimisticQueue(t *testing.T) {
+	store := seededStore(t)
+	session := connect(t, store)
+	var state messageStateResult
+	call(t, session, "flag_message", map[string]any{"folder": "Inbox", "uid": uint32(1)}, &state)
+	msg, _, ok := store.MessageByUID(testAcct, "Inbox", 1)
+	if !ok || !msg.Flagged {
+		t.Fatalf("flagged message=%+v found=%v", msg, ok)
+	}
+	call(t, session, "mark_unread", map[string]any{"folder": "Inbox", "uid": uint32(1)}, &state)
+	msg, _, ok = store.MessageByUID(testAcct, "Inbox", 1)
+	if !ok || !msg.Unread {
+		t.Fatalf("unread message=%+v found=%v", msg, ok)
+	}
+	call(t, session, "move_message", map[string]any{"folder": "Inbox", "destination": "Sent", "uid": uint32(1)}, &state)
+	if _, _, ok = store.MessageByUID(testAcct, "Inbox", 1); ok {
+		t.Fatal("source remained after MCP move")
+	}
+	// The optimistic destination row lives in the reserved placeholder range
+	// until the server reports its real UID.
+	if _, _, ok = store.MessageByUID(testAcct, "Sent", math.MaxUint32); !ok {
+		t.Fatal("destination placeholder missing after MCP move")
+	}
+	if state.Folder != "Inbox" || state.Destination != "Sent" || len(state.UIDs) != 1 || state.UIDs[0] != 1 {
+		t.Fatalf("move result = %+v, want source folder/UIDs plus destination", state)
+	}
+	types := map[cache.OpType]bool{}
+	for _, op := range store.PendingOps() {
+		types[op.Type] = true
+	}
+	for _, want := range []cache.OpType{cache.OpFlag, cache.OpMarkUnread, cache.OpMove} {
+		if !types[want] {
+			t.Fatalf("queued types=%v, missing %s", types, want)
+		}
+	}
 }
 
 func TestMarkAllReadCoversInboxSpamAndTrashWithOneBatchEach(t *testing.T) {

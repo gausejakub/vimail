@@ -74,6 +74,32 @@ func decrypt(key []byte, value string) string {
 	return string(plaintext)
 }
 
+func decryptChecked(key []byte, value string) error {
+	if !strings.HasPrefix(value, encPrefix) {
+		return nil
+	}
+	if len(key) == 0 {
+		return errors.New("encrypted cache body found but encryption key is unavailable")
+	}
+	data, err := base64.StdEncoding.DecodeString(value[len(encPrefix):])
+	if err != nil {
+		return err
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return err
+	}
+	if len(data) < gcm.NonceSize() {
+		return errors.New("encrypted cache body is truncated")
+	}
+	_, err = gcm.Open(nil, data[:gcm.NonceSize()], data[gcm.NonceSize():], nil)
+	return err
+}
+
 // GenerateEncryptionKey creates a random 256-bit key for AES-256-GCM.
 func GenerateEncryptionKey() ([]byte, error) {
 	key := make([]byte, 32)

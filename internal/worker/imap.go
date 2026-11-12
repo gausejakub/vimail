@@ -171,10 +171,20 @@ func (w *IMAPWorker) dial(withIDLE bool) (*imapclient.Client, error) {
 
 func (w *IMAPWorker) authenticate(client *imapclient.Client) error {
 	switch w.creds.AuthMethod {
-	case auth.AuthOAuth2Gmail, auth.AuthOAuth2Outlook:
+	case auth.AuthOAuth2Outlook:
+		token, err := w.creds.AccessToken()
+		if err != nil {
+			return err
+		}
+		return client.Authenticate(newXOAuth2Client(w.creds.Username, token))
+	case auth.AuthOAuth2Gmail:
+		token, err := w.creds.AccessToken()
+		if err != nil {
+			return err
+		}
 		saslClient := sasl.NewOAuthBearerClient(&sasl.OAuthBearerOptions{
 			Username: w.creds.Username,
-			Token:    w.creds.Token,
+			Token:    token,
 		})
 		return client.Authenticate(saslClient)
 	default:
@@ -387,6 +397,161 @@ func (w *IMAPWorker) SyncFolder(folder string, onProgress ...func(fetched int)) 
 // that incremental UID fetching cannot observe.
 func (w *IMAPWorker) SyncFolderFull(folder string, onProgress ...func(fetched int)) (int, error) {
 	return w.syncFolder(folder, true, onProgress...)
+}
+
+// VerifyFolder reconciles cached UIDs and mutable flags with the server while
+// preserving UIDs covered by queued optimistic writes.
+func (w *IMAPWorker) VerifyFolder(folder string) (VerifyResult, error) {
+	w.opMu.Lock()
+	defer w.opMu.Unlock()
+	result := VerifyResult{Account: w.acct.Email, Folder: folder}
+	if w.client == nil {
+		return result, fmt.Errorf("not connected")
+	}
+	started := time.Now()
+	cancel := w.opTimer(syncDeadline)
+	defer cancel()
+	sel, err := w.client.Select(w.imapMailboxName(folder), nil).Wait()
+	if err != nil {
+		return result, fmt.Errorf("SELECT %s: %w", folder, err)
+	}
+	storedValidity, _ := w.store.GetUIDValidity(w.acct.Email, folder)
+	if storedValidity != 0 && storedValidity != sel.UIDValidity {
+		if err := w.store.PurgeFolder(w.acct.Email, folder); err != nil {
+			return result, err
+		}
+		result.UIDValidityReset = true
+	}
+	_ = w.store.SetUIDValidity(w.acct.Email, folder, sel.UIDValidity)
+	server := make(map[uint32]cache.MessageState)
+	// Existence comes from UID SEARCH, not FETCH: a message whose FETCH
+	// response fails to parse must not be treated as deleted.
+	exists := make(map[uint32]bool)
+	if sel.NumMessages > 0 {
+		search, err := w.client.UIDSearch(&imap.SearchCriteria{}, nil).Wait()
+		if err != nil {
+			return result, fmt.Errorf("UID SEARCH ALL: %w", err)
+		}
+		uids := search.AllUIDs()
+		for _, uid := range uids {
+			exists[uint32(uid)] = true
+		}
+		for start := 0; start < len(uids); start += imapUIDChunkSize {
+			end := start + imapUIDChunkSize
+			if end > len(uids) {
+				end = len(uids)
+			}
+			var chunk imap.UIDSet
+			for _, uid := range uids[start:end] {
+				chunk.AddNum(uid)
+			}
+			fetch := w.client.Fetch(chunk, &imap.FetchOptions{UID: true, Flags: true})
+			for {
+				data := fetch.Next()
+				if data == nil {
+					break
+				}
+				buf, collectErr := data.Collect()
+				if collectErr != nil {
+					continue
+				}
+				state := cache.MessageState{UID: uint32(buf.UID), Unread: true}
+				for _, flag := range buf.Flags {
+					if flag == imap.FlagSeen {
+						state.Unread = false
+					}
+					if flag == imap.FlagFlagged {
+						state.Flagged = true
+					}
+					if flag == imap.FlagAnswered {
+						state.Answered = true
+					}
+				}
+				if state.UID != 0 {
+					server[state.UID] = state
+				}
+			}
+			if err := fetch.Close(); err != nil {
+				return result, fmt.Errorf("FETCH UID FLAGS chunk %d-%d: %w", start, end-1, err)
+			}
+		}
+	}
+	result.Messages = len(exists)
+	cached, err := w.store.MessageStates(w.acct.Email, folder)
+	if err != nil {
+		return result, err
+	}
+	pending := w.store.PendingUIDsSince(w.acct.Email, folder, started)
+	var stale, missing []uint32
+	for uid, local := range cached {
+		if pending[uid] {
+			continue
+		}
+		if !exists[uid] {
+			stale = append(stale, uid)
+			continue
+		}
+		remote, ok := server[uid]
+		if !ok {
+			continue // exists, but its flags could not be read this pass
+		}
+		if local.Unread != remote.Unread {
+			if err := w.store.SetUnreadUIDs(w.acct.Email, folder, []uint32{uid}, remote.Unread); err != nil {
+				return result, err
+			}
+			result.FlagsCorrected++
+		}
+		if local.Flagged != remote.Flagged {
+			if err := w.store.SetFlaggedUIDs(w.acct.Email, folder, []uint32{uid}, remote.Flagged); err != nil {
+				return result, err
+			}
+			result.FlagsCorrected++
+		}
+		if local.Answered != remote.Answered {
+			if err := w.store.SetAnsweredUIDs(w.acct.Email, folder, []uint32{uid}, remote.Answered); err != nil {
+				return result, err
+			}
+			result.FlagsCorrected++
+		}
+	}
+	for uid := range exists {
+		if _, ok := cached[uid]; !ok && !pending[uid] {
+			missing = append(missing, uid)
+		}
+	}
+	if err := w.store.RemoveMessagesByUID(w.acct.Email, folder, stale); err != nil {
+		return result, err
+	}
+	result.StaleRemoved = len(stale)
+	for start := 0; start < len(missing); start += imapUIDChunkSize {
+		end := start + imapUIDChunkSize
+		if end > len(missing) {
+			end = len(missing)
+		}
+		var set imap.UIDSet
+		for _, uid := range missing[start:end] {
+			set.AddNum(imap.UID(uid))
+		}
+		fetch := w.client.Fetch(set, &imap.FetchOptions{UID: true, Flags: true, Envelope: true})
+		for {
+			data := fetch.Next()
+			if data == nil {
+				break
+			}
+			buf, collectErr := data.Collect()
+			if collectErr != nil {
+				continue
+			}
+			if err := w.store.UpsertMessage(w.acct.Email, folder, ParseEnvelope(uint32(buf.UID), buf.Envelope, buf.Flags)); err != nil {
+				return result, err
+			}
+			result.MissingAdded++
+		}
+		if err := fetch.Close(); err != nil {
+			return result, err
+		}
+	}
+	return result, nil
 }
 
 func (w *IMAPWorker) syncFolder(folder string, full bool, onProgress ...func(fetched int)) (int, error) {
@@ -770,6 +935,17 @@ func (w *IMAPWorker) MarkRead(folder string, uid uint32) error {
 
 // MarkReadBatch marks multiple messages as read in a single IMAP operation.
 func (w *IMAPWorker) MarkReadBatch(folder string, uids []uint32) error {
+	return w.setFlagBatch(folder, uids, imap.FlagSeen, true)
+}
+
+func (w *IMAPWorker) MarkUnreadBatch(folder string, uids []uint32) error {
+	return w.setFlagBatch(folder, uids, imap.FlagSeen, false)
+}
+func (w *IMAPWorker) SetFlaggedBatch(folder string, uids []uint32, flagged bool) error {
+	return w.setFlagBatch(folder, uids, imap.FlagFlagged, flagged)
+}
+
+func (w *IMAPWorker) setFlagBatch(folder string, uids []uint32, flag imap.Flag, add bool) error {
 	w.opMu.Lock()
 	defer w.opMu.Unlock()
 
@@ -798,12 +974,16 @@ func (w *IMAPWorker) MarkReadBatch(folder string, uids []uint32) error {
 			seqSet.AddNum(imap.UID(uid))
 		}
 
+		op := imap.StoreFlagsDel
+		if add {
+			op = imap.StoreFlagsAdd
+		}
 		storeCmd := w.client.Store(seqSet, &imap.StoreFlags{
-			Op:    imap.StoreFlagsAdd,
-			Flags: []imap.Flag{imap.FlagSeen},
+			Op:    op,
+			Flags: []imap.Flag{flag},
 		}, nil)
 		if err := storeCmd.Close(); err != nil {
-			return fmt.Errorf("STORE +FLAGS \\Seen chunk %d-%d of %d: %w", i, end-1, len(uids), err)
+			return fmt.Errorf("STORE flag %s chunk %d-%d of %d: %w", flag, i, end-1, len(uids), err)
 		}
 	}
 	return nil

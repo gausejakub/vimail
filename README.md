@@ -21,7 +21,7 @@ vimail brings the speed of Vim navigation to your inbox with a 3-pane layout, mo
 - **HTML email rendering** — Clean text conversion via html2text, open raw HTML in browser with `o`
 - **JSON auto-format** — Pretty-prints JSON bodies in the preview pane
 - **Incremental sync** — Per-account IMAP sync with loading indicators
-- **Offline operation queue** — Deletes, sends, and mark-read ops are queued in SQLite and retried on reconnect with exponential backoff; safe to share between the TUI and the MCP server (each op runs exactly once)
+- **Offline operation queue** — Deletes, sends, read/flag changes, and moves are queued in SQLite and retried on reconnect with exponential backoff; safe to share between the TUI and the MCP server (each op runs exactly once)
 - **Pure Go** — No CGO required, single static binary
 
 ## Requirements
@@ -96,6 +96,10 @@ vimail reads its config from `~/.config/vimail/config.toml`. If the file doesn't
 ```toml
 [general]
 preview_pane = true
+motion = true # set false for static status/progress rendering
+
+[sync]
+verify_interval = "6h" # periodic server/cache reconciliation; "0" disables
 
 [theme]
 name = "tokyonight"
@@ -123,6 +127,42 @@ tls = "tls"
 ```
 
 5. Run `vimail setup` and paste the 16-character app password when prompted
+
+Gmail OAuth is also supported with Authorization Code + PKCE over a loopback callback. Gmail's mail scope is restricted, so vimail does not borrow or ship another application's client ID. Create a Google Cloud project, enable the Gmail API, configure and publish the consent screen, create a **Desktop app** OAuth client, then use:
+
+```toml
+[[accounts]]
+name = "Gmail"
+email = "you@gmail.com"
+imap_host = "imap.gmail.com"
+smtp_host = "smtp.gmail.com"
+smtp_port = 587
+auth_method = "oauth2-gmail"
+oauth_client_id = "your-desktop-client-id"
+oauth_client_secret = "your-desktop-client-secret"
+tls = "tls"
+```
+
+Run `vimail setup`; vimail prints the authorization URL (so SSH/headless use still works), attempts to open it in a browser, receives the callback on `127.0.0.1:53682`, and stores tokens in the OS keyring. An unverified published app shows Google's warning screen; leaving it in Testing mode makes refresh tokens expire after seven days. App passwords remain the simplest alternative.
+
+### Adding an Outlook / Microsoft 365 account
+
+Microsoft requires OAuth2 for Outlook.com IMAP/SMTP. Register a multi-tenant public-client application in Azure with delegated `IMAP.AccessAsUser.All`, `SMTP.Send`, and `offline_access` permissions, then configure its client ID (no secret is needed for a public client):
+
+```toml
+[[accounts]]
+name = "Outlook"
+email = "you@outlook.com"
+imap_host = "outlook.office365.com"
+imap_port = 993
+smtp_host = "smtp.office365.com"
+smtp_port = 587
+auth_method = "oauth2-outlook"
+oauth_client_id = "your-azure-public-client-id"
+tls = "tls"
+```
+
+`vimail setup` uses Microsoft's headless-friendly device-code flow. Outlook uses XOAUTH2 for both IMAP and SMTP. Revoked refresh tokens are removed from the keyring automatically so setup can authorize cleanly again.
 
 ### Adding other providers
 
@@ -172,7 +212,8 @@ After adding accounts, run `vimail setup` to store credentials.
 |-----|--------|
 | `c` | Compose new message |
 | `r` | Reply to selected message |
-| `f` | Forward |
+| `f` | Toggle flag/star |
+| `U` | Mark unread |
 | `dd` | Delete message |
 | `S` | Save attachments to ~/Downloads |
 | `E` | Export message(s) to ZIP |
@@ -199,6 +240,9 @@ After adding accounts, run `vimail setup` to store credentials.
 | `:quit` / `:q` | Quit vimail |
 | `:theme <name>` | Switch theme |
 | `:sync` | Sync mail |
+| `:verify [folder]` | Reconcile the current (or named) folder with IMAP and check the cache |
+| `:verify full` | Verify every folder and run SQLite `integrity_check` |
+| `:move <folder>` | Move the selected message to another folder |
 | `:ai` | AI-assisted compose (default agent) |
 | `:ai <name>` | AI-assisted compose with a specific agent |
 | `:ops` / `:queue` | Show operation queue log |
@@ -308,9 +352,9 @@ Any tool that accepts a prompt as an argument and prints the response to stdout 
 }
 ```
 
-Reads (`list_accounts`, `list_folders`, `list_messages`, `read_message`, `search_messages`) are served from the local cache; search results expose usable folder/UID handles and a `truncated` flag. For natural review tasks, `list_recent_messages` can sync and list a time window across every account in one call, excluding non-received folders and collapsing Gmail label copies; `read_messages` then opens the selected bodies as one batch and can fetch missing bodies without marking messages read.
+Reads (`list_accounts`, `list_folders`, `list_messages`, `read_message`, `search_messages`) are served from the local cache; search results expose usable folder/UID handles and a `truncated` flag. Write tools include `mark_read`, `mark_unread`, `flag_message`, `unflag_message`, `move_message`, Trash-safe delete/restore, draft operations, and `verify`. For natural review tasks, `list_recent_messages` can sync and list a time window across every account in one call, excluding non-received folders and collapsing Gmail label copies; `read_messages` then opens the selected bodies as one batch and can fetch missing bodies without marking messages read.
 
-Draft tools are local-only. Server writes (`mark_read`, `mark_all_read`, `delete_message`, `restore_messages`) use the durable operation queue. `mark_read`, delete, and restore accept either one `uid` or a batch in `uids`, producing one queue row per batch; `mark_all_read` creates an authoritative whole-folder operation for every selected server mailbox, including Spam and Trash by default, so it covers uncached messages without UID discovery. Deletion only ever moves to Trash, so permanent deletion stays in the TUI. Restore is server-first: Trash remains unchanged in cache until delivery succeeds, then destination UIDs are reconciled without relying on incremental sync. `list_operations` reports delivery, retry, and failure state. The `sync` tool refreshes an account or folder on demand and delivers queued writes; `full: true` rebuilds cached headers authoritatively when server-side moves or deletes made the incremental cache stale.
+Draft tools are local-only. Server writes (`mark_read`, `mark_unread`, `flag_message`, `unflag_message`, `move_message`, `mark_all_read`, delete, and restore) use the durable operation queue. UID-based tools accept either one `uid` or a batch in `uids`, producing one queue row per batch; `mark_all_read` creates an authoritative whole-folder operation, including uncached messages. Flag/read changes and general moves update the cache optimistically, then retry server delivery offline. Deletion only ever moves to Trash, so permanent deletion stays in the TUI. Restore is server-first and reconciles server-assigned destination UIDs. `list_operations` reports delivery, retry, verification, and failure state. `sync` refreshes mail; `verify` reconciles UIDs/flags and checks SQLite; `full: true` selects their authoritative/full-check modes.
 
 The MCP server is safe to run alongside the TUI: queued operations are claimed exactly once, account syncs are serialized across processes, and the TUI refreshes its folder counts and message list when the MCP process changes the cache. A standalone MCP process connects to IMAP lazily on the first write and retries queued operations every minute; outcomes are visible through MCP's `list_operations` and the TUI's `:ops` view.
 

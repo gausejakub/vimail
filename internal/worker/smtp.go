@@ -2,6 +2,7 @@ package worker
 
 import (
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"net/smtp"
@@ -40,7 +41,7 @@ func (w *SMTPWorker) Send(req SendRequest) (string, []byte, error) {
 	msgID, rawMsg := ComposeRFC5322(req.From, req.To, req.Subject, req.Body)
 
 	tlsMode := w.acct.TLS
-	if tlsMode == "" {
+	if tlsMode == "" || (tlsMode == "tls" && port == 587) {
 		tlsMode = "starttls" // SMTP typically uses STARTTLS on port 587.
 	}
 
@@ -107,16 +108,45 @@ func (w *SMTPWorker) Send(req SendRequest) (string, []byte, error) {
 
 func (w *SMTPWorker) authenticateSMTP(client *smtp.Client) error {
 	switch w.creds.AuthMethod {
-	case auth.AuthOAuth2Gmail, auth.AuthOAuth2Outlook:
+	case auth.AuthOAuth2Outlook:
+		token, err := w.creds.AccessToken()
+		if err != nil {
+			return err
+		}
+		return smtpAuthSASL(client, newXOAuth2Client(w.creds.Username, token))
+	case auth.AuthOAuth2Gmail:
+		token, err := w.creds.AccessToken()
+		if err != nil {
+			return err
+		}
 		saslClient := sasl.NewOAuthBearerClient(&sasl.OAuthBearerOptions{
 			Username: w.creds.Username,
-			Token:    w.creds.Token,
+			Token:    token,
 		})
 		return smtpAuthSASL(client, saslClient)
 	default:
 		auth := smtp.PlainAuth("", w.creds.Username, w.creds.Password, w.acct.SMTPHost)
 		return client.Auth(auth)
 	}
+}
+
+type xOAuth2Client struct {
+	username, token string
+	started         bool
+}
+
+func newXOAuth2Client(username, token string) sasl.Client {
+	return &xOAuth2Client{username: username, token: token}
+}
+func (c *xOAuth2Client) Start() (string, []byte, error) {
+	c.started = true
+	return "XOAUTH2", []byte("user=" + c.username + "\x01auth=Bearer " + c.token + "\x01\x01"), nil
+}
+func (c *xOAuth2Client) Next([]byte) ([]byte, error) {
+	if !c.started {
+		return nil, errors.New("XOAUTH2 exchange not started")
+	}
+	return nil, nil
 }
 
 // smtpAuthSASL adapts go-sasl to net/smtp.

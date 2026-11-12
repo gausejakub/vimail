@@ -409,6 +409,22 @@ func (s *Server) registerReadTools() {
 					info.Count = len(payload.UIDs)
 					info.Destination = payload.Destination
 				}
+			case cache.OpMarkUnread:
+				var payload cache.MarkUnreadPayload
+				if json.Unmarshal(op.Payload, &payload) == nil {
+					info.Count = len(payload.UIDs)
+				}
+			case cache.OpFlag:
+				var payload cache.FlagPayload
+				if json.Unmarshal(op.Payload, &payload) == nil {
+					info.Count = len(payload.UIDs)
+				}
+			case cache.OpMove:
+				var payload cache.MovePayload
+				if json.Unmarshal(op.Payload, &payload) == nil {
+					info.Count = len(payload.UIDs)
+					info.Destination = payload.Destination
+				}
 			}
 			out.Operations = append(out.Operations, info)
 		}

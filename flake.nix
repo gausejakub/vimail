@@ -38,13 +38,13 @@
       apps = forAllSystems (pkgs: rec {
         vimail = {
           type = "app";
-          program = "${self.packages.${pkgs.system}.vimail}/bin/vimail";
+          program = "${self.packages.${pkgs.stdenv.hostPlatform.system}.vimail}/bin/vimail";
         };
         default = vimail;
       });
 
       overlays.default = final: _prev: {
-        vimail = self.packages.${final.system}.vimail;
+        vimail = self.packages.${final.stdenv.hostPlatform.system}.vimail;
       };
 
       devShells = forAllSystems (pkgs: {

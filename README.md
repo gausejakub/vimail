@@ -68,7 +68,7 @@ Or add it to a NixOS / home-manager flake:
 ```nix
 inputs.vimail.url = "github:gausejakub/vimail";
 # then:
-environment.systemPackages = [ inputs.vimail.packages.${pkgs.system}.default ];  # or home.packages
+environment.systemPackages = [ inputs.vimail.packages.${pkgs.stdenv.hostPlatform.system}.default ];  # or home.packages
 ```
 
 `nix develop` gives a shell with Go and gopls for hacking on vimail.

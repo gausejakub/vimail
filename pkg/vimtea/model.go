@@ -151,6 +151,7 @@ type options struct {
 	RelativeNumbers        bool           // Whether to show relative line numbers
 	FullScreen             bool           // Whether to use the full terminal screen
 	Wrap                   bool           // Whether to soft-wrap long lines
+	ReadOnly               bool           // Whether the buffer can be changed
 }
 
 // EditorOption is a function that modifies the editor options
@@ -182,7 +183,7 @@ func NewEditor(opts ...EditorOption) Editor {
 	}
 
 	m := &editorModel{
-		buffer:                 newBuffer(options.Content),
+		buffer:                 newReadOnlyAware(newBuffer(options.Content), options.ReadOnly),
 		mode:                   ModeNormal,
 		fullScreen:             options.FullScreen,
 		enableCommandMode:      options.EnableCommandMode,
@@ -237,7 +238,16 @@ func (m *editorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Reset cursor blink on keypress
 		m.cursorBlink = true
 		m.lastBlinkTime = time.Now()
-		return m.handleKeypress(msg)
+		if !m.buffer.readOnly {
+			return m.handleKeypress(msg)
+		}
+		yankBefore, yankAt := m.yankBuffer, m.yankHighlight.StartTime
+		model, cmd := m.handleKeypress(msg)
+		if m.yankBuffer != "" && (m.yankBuffer != yankBefore || !m.yankHighlight.StartTime.Equal(yankAt)) {
+			text := m.yankBuffer
+			cmd = tea.Batch(cmd, func() tea.Msg { return YankMsg{Text: text} })
+		}
+		return model, cmd
 	case tea.WindowSizeMsg:
 		if m.fullScreen {
 			return m.SetSize(msg.Width, msg.Height)
@@ -647,6 +657,21 @@ func WithWrap(enable bool) EditorOption {
 	return func(o *options) {
 		o.Wrap = enable
 	}
+}
+
+// WithReadOnly makes the editor a viewer: motions, search, visual mode and
+// yanks work, while every buffer change and insert mode are refused. Yanks are
+// reported to the host as YankMsg so it can copy them to the system clipboard.
+func WithReadOnly(enable bool) EditorOption {
+	return func(o *options) {
+		o.ReadOnly = enable
+	}
+}
+
+// YankMsg is emitted after a yank in an editor created WithReadOnly, carrying
+// the yanked text (linewise yanks start with "\n", as in the unnamed register).
+type YankMsg struct {
+	Text string
 }
 
 func WithFullScreen() EditorOption {

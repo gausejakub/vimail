@@ -47,6 +47,10 @@ func takeCount(model *editorModel) int {
 // switchMode changes the editor mode and performs necessary setup for the new mode
 // Different modes require different cursor handling and UI state
 func switchMode(model *editorModel, newMode EditorMode) tea.Cmd {
+	if newMode == ModeInsert && model.buffer.readOnly {
+		model.statusMessage = "read-only"
+		newMode = ModeNormal
+	}
 	model.mode = newMode
 
 	switch newMode {

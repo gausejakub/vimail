@@ -461,6 +461,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(cmds...)
 
+	case worker.SyncAccountLateCompleteMsg:
+		m.mailbox = m.mailbox.Reload()
+		if msg.Account == m.msglist.CurrentAccount() {
+			currentAcct, currentFolder := m.msglist.CurrentAccount(), m.msglist.CurrentFolder()
+			cmds = append(cmds, func() tea.Msg {
+				return util.FolderRefreshMsg{Account: currentAcct, Folder: currentFolder}
+			})
+		}
+		text, isErr := msg.Account+": background sync finished", false
+		if msg.Err != nil {
+			text, isErr = msg.Err.Error(), true
+		}
+		cmds = append(cmds, func() tea.Msg { return util.InfoMsg{Text: text, IsError: isErr} })
+		return m, tea.Batch(cmds...)
+
 	case syncTickMsg:
 		logging.Info("sync", "periodic sync tick")
 		if m.coordinator != nil {

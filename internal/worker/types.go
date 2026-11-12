@@ -66,6 +66,13 @@ type SyncAccountCompleteMsg struct {
 	Err     error
 }
 
+// SyncAccountLateCompleteMsg reports the result of an account sync that
+// outlived the TUI's wait and finished in the background.
+type SyncAccountLateCompleteMsg struct {
+	Account string
+	Err     error
+}
+
 // SyncAllCompleteMsg signals that initial sync of all accounts is done.
 type SyncAllCompleteMsg struct {
 	Errors []error

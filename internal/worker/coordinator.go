@@ -51,6 +51,14 @@ type Coordinator struct {
 	wantedMu    sync.Mutex
 	wantedFetch map[string]uint32
 
+	// accountSyncs tracks full account syncs running in this process, so a
+	// second request joins the running one instead of failing on the
+	// cross-process sync lock that this process itself holds.
+	accountSyncMu sync.Mutex
+	accountSyncs  map[string]*accountSync
+	// syncAccountHook replaces syncAccount in tests.
+	syncAccountHook func(acct config.AccountConfig) error
+
 	program *tea.Program // set after bubbletea starts, for async progress messages
 }
 
@@ -129,50 +137,94 @@ func (c *Coordinator) SyncAll() tea.Cmd {
 	var cmds []tea.Cmd
 
 	for _, acct := range c.cfg.Accounts {
-		acct := acct
-		cmds = append(cmds, func() (result tea.Msg) {
-			defer func() {
-				if r := recover(); r != nil {
-					logging.Error("sync", "panic during sync", logging.Acct(acct.Email), logging.KV("panic", fmt.Sprint(r)))
-					result = SyncAccountCompleteMsg{
-						Account: acct.Email,
-						Err:     fmt.Errorf("%s: panic: %v", acct.Email, r),
-					}
-				}
-			}()
-			start := time.Now()
-
-			// Run syncAccount with a timeout to prevent indefinite hangs.
-			type syncResult struct {
-				err error
-			}
-			ch := make(chan syncResult, 1)
-			go func() {
-				_, err := c.syncAccount(acct, false)
-				ch <- syncResult{err: err}
-			}()
-
-			var syncErr error
-			select {
-			case res := <-ch:
-				if res.err != nil {
-					syncErr = fmt.Errorf("%s: %w", acct.Email, res.err)
-					logging.Error("sync", "account sync failed", logging.Acct(acct.Email), logging.Dur(time.Since(start)), logging.Err(res.err))
-				} else {
-					logging.Info("sync", "account sync complete", logging.Acct(acct.Email), logging.Dur(time.Since(start)))
-				}
-			case <-time.After(5 * time.Minute):
-				syncErr = fmt.Errorf("%s: sync timed out after 5 minutes", acct.Email)
-				logging.Error("sync", "account sync timed out", logging.Acct(acct.Email), logging.Dur(time.Since(start)))
-			}
-			return SyncAccountCompleteMsg{
-				Account: acct.Email,
-				Err:     syncErr,
-			}
-		})
+		cmds = append(cmds, c.syncAccountCmd(acct))
 	}
 
 	return tea.Batch(cmds...)
+}
+
+// syncAccountTimeout is how long a TUI account sync is awaited before it is
+// reported as continuing in the background.
+var syncAccountTimeout = 5 * time.Minute
+
+// accountSync is one in-process run of syncAccount; done closes when it ends.
+type accountSync struct {
+	done chan struct{}
+	err  error
+}
+
+// startAccountSync starts a full account sync, or joins the one this process
+// is already running for the account.
+func (c *Coordinator) startAccountSync(acct config.AccountConfig) *accountSync {
+	c.accountSyncMu.Lock()
+	if c.accountSyncs == nil {
+		c.accountSyncs = make(map[string]*accountSync)
+	}
+	if running := c.accountSyncs[acct.Email]; running != nil {
+		c.accountSyncMu.Unlock()
+		logging.Debug("sync", "joining account sync already running", logging.Acct(acct.Email))
+		return running
+	}
+	s := &accountSync{done: make(chan struct{})}
+	c.accountSyncs[acct.Email] = s
+	c.accountSyncMu.Unlock()
+
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logging.Error("sync", "panic during sync", logging.Acct(acct.Email), logging.KV("panic", fmt.Sprint(r)))
+				s.err = fmt.Errorf("panic: %v", r)
+			}
+			c.accountSyncMu.Lock()
+			delete(c.accountSyncs, acct.Email)
+			c.accountSyncMu.Unlock()
+			close(s.done)
+		}()
+		if c.syncAccountHook != nil {
+			s.err = c.syncAccountHook(acct)
+			return
+		}
+		_, s.err = c.syncAccount(acct, false)
+	}()
+	return s
+}
+
+// syncAccountCmd syncs one account for the TUI. A sync that outlives
+// syncAccountTimeout keeps running: the command reports that, and the real
+// result arrives later as SyncAccountLateCompleteMsg.
+func (c *Coordinator) syncAccountCmd(acct config.AccountConfig) tea.Cmd {
+	return func() tea.Msg {
+		start := time.Now()
+		s := c.startAccountSync(acct)
+
+		var syncErr error
+		select {
+		case <-s.done:
+			if s.err != nil {
+				syncErr = fmt.Errorf("%s: %w", acct.Email, s.err)
+				logging.Error("sync", "account sync failed", logging.Acct(acct.Email), logging.Dur(time.Since(start)), logging.Err(s.err))
+			} else {
+				logging.Info("sync", "account sync complete", logging.Acct(acct.Email), logging.Dur(time.Since(start)))
+			}
+		case <-time.After(syncAccountTimeout):
+			syncErr = fmt.Errorf("%s: still syncing after %s, continuing in the background", acct.Email, syncAccountTimeout)
+			logging.Warn("sync", "account sync still running, continuing in background", logging.Acct(acct.Email), logging.Dur(time.Since(start)))
+			go func() {
+				<-s.done
+				var err error
+				if s.err != nil {
+					err = fmt.Errorf("%s: %w", acct.Email, s.err)
+					logging.Error("sync", "background account sync failed", logging.Acct(acct.Email), logging.Dur(time.Since(start)), logging.Err(s.err))
+				} else {
+					logging.Info("sync", "background account sync complete", logging.Acct(acct.Email), logging.Dur(time.Since(start)))
+				}
+				if c.program != nil {
+					c.program.Send(SyncAccountLateCompleteMsg{Account: acct.Email, Err: err})
+				}
+			}()
+		}
+		return SyncAccountCompleteMsg{Account: acct.Email, Err: syncErr}
+	}
 }
 
 // SyncFolder returns a tea.Cmd that syncs a specific folder.

@@ -16,6 +16,42 @@ every merged PR lands here in the same pass that merges it.
 
 ### Security
 
+## [0.13.1] - 2026-11-12
+
+Security release following a full audit of the mail-handling, local storage, network and MCP code. Upgrading is recommended for everyone.
+
+### Changed
+
+- **Breaking (MCP):** the MCP server is read-only by default. Tools that mark, flag, move, delete, restore or save drafts are exposed only with `[mcp] allow_write = true`. Reads, search, `sync` and `verify` are always available. Add that line to keep the previous behavior. (#46)
+- Senders, recipients, subjects, attachment names, drafts and queued outgoing mail are now encrypted in the cache, not only bodies. Existing rows are encrypted once on the first start. An older vimail version reading the upgraded cache shows encrypted text, so downgrading needs a cache rebuild. (#46)
+- "Open in browser" no longer runs scripts or loads remote images from the message. (#46)
+- Logs no longer contain subjects, recipients, search queries or attachment names. (#46)
+- AI compose marks the quoted email as untrusted, runs the agent in an empty directory, and pipes the prompt on stdin for agents whose args have no `{prompt}` placeholder. (#46)
+- Outgoing non-ASCII subjects are RFC 2047 encoded, and a comma-separated To list now reaches every recipient. (#46)
+- Release tarballs are built by CI and ship with `SHA256SUMS` and signed build provenance (`gh attestation verify`). (#46)
+
+### Fixed
+
+- A message with a very long unbroken line or deeply nested brackets no longer freezes the preview. (#46)
+- `go install github.com/gausejakub/vimail@latest` works again. (#46)
+- Deleting purges only the messages vimail deleted (`UID EXPUNGE`), not ones another client had marked. (#46)
+- After a rejected login, reconnects back off instead of retrying immediately, and a password fixed with `vimail setup` is picked up without a restart. (#46)
+- The MCP process no longer rotates or deletes the TUI's log file. (#46)
+- `tls = "none"` now warns on screen and in `vimail setup`, not only in the log. (#46)
+
+### Security
+
+- A received email could inject terminal escape sequences through its subject, sender, body (when replying), attachment names or folder names — enough to rewrite the screen or, in terminals that allow it, overwrite the clipboard with no user action. All message-derived text is now stripped of escape sequences, control characters and bidirectional overrides when cached and when displayed. (#46)
+- Line breaks in To/Subject (reachable through the MCP `send_email` tool) could inject extra headers into outgoing mail. (#46)
+- The cache database was world-readable during the first session; it and its WAL files are now created owner-only, and the data directory is forced to `0700`. Deleted rows are overwritten. (#46)
+- The cache encryption key is never regenerated when the keyring is merely unavailable, which could orphan encrypted mail or silently fall back to plaintext. (#46)
+- Attachment and export names can no longer be `..`, contain backslash paths or disguise their extension; files are created exclusively and never follow symlinks. More executable types trigger the warning. (#46)
+- "Open in browser" used a predictable shared temp path; it now uses a private per-process directory. (#46)
+- A reply could be redirected by an address hidden in the sender's display name. (#46)
+- MCP tools are annotated as read-only or destructive, and message content is labelled untrusted, to reduce prompt-injection risk. (#46)
+- OAuth2 tokens are refused over `tls = "none"`; token refresh has a timeout. The text of sent mail is removed from the queue after delivery. (#46)
+- CI uses read-only permissions and SHA-pinned actions. (#46)
+
 ## [0.13.0] - 2026-11-12
 
 ### Added
@@ -99,7 +135,8 @@ every merged PR lands here in the same pass that merges it.
 - Go 1.26.6 and `golang.org/x/net` v0.58.0 in both modules, clearing all reachable govulncheck advisories (including GO-2026-5028/5029/5030); `SECURITY.md` now states the current scan. (#17)
 - Outbound mail over MCP is opt-in (`[mcp] allow_send`), because any connected MCP client can act as you. (#33)
 
-[Unreleased]: https://github.com/gausejakub/vimail/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/gausejakub/vimail/compare/v0.13.1...HEAD
+[0.13.1]: https://github.com/gausejakub/vimail/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/gausejakub/vimail/compare/v0.12.1...v0.13.0
 [0.12.1]: https://github.com/gausejakub/vimail/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/gausejakub/vimail/compare/v0.11.0...v0.12.0

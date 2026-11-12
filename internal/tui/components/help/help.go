@@ -26,7 +26,8 @@ var bindings = []binding{
 	{"Actions", sectionMarker},
 	{"c", "Compose new message"},
 	{"r", "Reply to message"},
-	{"f", "Forward"},
+	{"f", "Toggle flag/star"},
+	{"U", "Mark unread"},
 	{"dd", "Delete message"},
 	{"u", "Restore from Trash"},
 	{"E", "Export message(s) to ZIP"},
@@ -43,6 +44,8 @@ var bindings = []binding{
 	{"Commands", sectionMarker},
 	{":theme <name>", "Switch theme"},
 	{":search <query>", "Search messages"},
+	{":move <folder>", "Move selected message"},
+	{":verify [folder]", "Verify server/cache state"},
 	{":quit", "Quit vimail"},
 }
 

@@ -38,9 +38,18 @@ func RunSetup(cfg config.Config) error {
 		}
 
 		switch method {
-		case AuthOAuth2Gmail, AuthOAuth2Outlook:
+		case AuthOAuth2Gmail:
+			if acct.OAuthClientID == "" {
+				fmt.Println("  Gmail OAuth requires your own Google Desktop OAuth client:")
+				fmt.Println("  1. Create a Google Cloud project and enable the Gmail API.")
+				fmt.Println("  2. Configure and publish the OAuth consent screen (Testing tokens expire after 7 days).")
+				fmt.Println("  3. Create an OAuth client of type Desktop app.")
+				fmt.Println("  4. Set oauth_client_id and oauth_client_secret on this account in config.toml.")
+			}
+			fallthrough
+		case AuthOAuth2Outlook:
 			r := &OAuth2Resolver{}
-			_, err := r.RunDeviceFlow(acct)
+			_, err := r.RunFlow(acct)
 			if err != nil {
 				fmt.Printf("  OAuth2 setup failed: %v\n", err)
 				fmt.Printf("  You can retry with 'vimail setup' or switch to app-password auth.\n")

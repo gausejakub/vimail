@@ -40,3 +40,18 @@ func TestSyncFolderNowReportsLockContention(t *testing.T) {
 		t.Fatalf("SyncFolderNow error = %v, want ErrSyncLocked", err)
 	}
 }
+
+func TestVerifyFolderNowReportsLockContention(t *testing.T) {
+	store := testQueueStore(t)
+	const account = "alice@example.com"
+	release, ok := store.TryAcquireSyncLock(account)
+	if !ok {
+		t.Fatal("acquire setup sync lock")
+	}
+	defer release()
+	coord := NewCoordinator(config.Config{Accounts: []config.AccountConfig{{Email: account, IMAPHost: "imap.example.com"}}}, store)
+	result := coord.VerifyFolderNow(account, "Inbox", false)
+	if !errors.Is(result.Err, ErrSyncLocked) {
+		t.Fatalf("VerifyFolderNow error=%v, want ErrSyncLocked", result.Err)
+	}
+}

@@ -3,25 +3,45 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
 
 type GeneralConfig struct {
 	PreviewPane bool `toml:"preview_pane"`
+	Motion      bool `toml:"motion"`
 }
 
 type AccountConfig struct {
-	Name        string   `toml:"name"`
-	Email       string   `toml:"email"`
-	IMAPHost    string   `toml:"imap_host"`
-	IMAPPort    int      `toml:"imap_port"`
-	SMTPHost    string   `toml:"smtp_host"`
-	SMTPPort    int      `toml:"smtp_port"`
-	AuthMethod  string   `toml:"auth_method"`  // "plain" | "app-password" | "oauth2-gmail" | "oauth2-outlook"
-	Username    string   `toml:"username"`     // defaults to email if empty
-	TLS         string   `toml:"tls"`          // "tls" (default) | "starttls" | "none"
-	SkipFolders []string `toml:"skip_folders"` // folders to skip syncing (auto-detected for Gmail)
+	Name              string   `toml:"name"`
+	Email             string   `toml:"email"`
+	IMAPHost          string   `toml:"imap_host"`
+	IMAPPort          int      `toml:"imap_port"`
+	SMTPHost          string   `toml:"smtp_host"`
+	SMTPPort          int      `toml:"smtp_port"`
+	AuthMethod        string   `toml:"auth_method"` // "plain" | "app-password" | "oauth2-gmail" | "oauth2-outlook"
+	Username          string   `toml:"username"`    // defaults to email if empty
+	TLS               string   `toml:"tls"`         // "tls" (default) | "starttls" | "none"
+	OAuthClientID     string   `toml:"oauth_client_id"`
+	OAuthClientSecret string   `toml:"oauth_client_secret"`
+	SkipFolders       []string `toml:"skip_folders"` // folders to skip syncing (auto-detected for Gmail)
+}
+
+type SyncConfig struct {
+	VerifyInterval string `toml:"verify_interval"`
+}
+
+func (s SyncConfig) VerificationInterval() (time.Duration, error) {
+	value := strings.TrimSpace(s.VerifyInterval)
+	if value == "" {
+		return 6 * time.Hour, nil
+	}
+	if value == "0" {
+		return 0, nil
+	}
+	return time.ParseDuration(value)
 }
 
 // IsGmail returns true if this account uses Gmail IMAP.
@@ -75,12 +95,14 @@ type Config struct {
 	Theme    ThemeConfig     `toml:"theme"`
 	AI       AIConfig        `toml:"ai"`
 	MCP      MCPConfig       `toml:"mcp"`
+	Sync     SyncConfig      `toml:"sync"`
 }
 
 func DefaultConfig() Config {
 	return Config{
 		General: GeneralConfig{
 			PreviewPane: true,
+			Motion:      true,
 		},
 		Theme: ThemeConfig{
 			Name: "vimail",

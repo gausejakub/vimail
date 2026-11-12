@@ -299,6 +299,22 @@ func (s *MockStore) MarkRead(email, folder, id string) {
 	}
 }
 
+func (s *MockStore) MarkUnread(acct, folder, id string) {
+	for i := range s.messages[acct][folder] {
+		if s.messages[acct][folder][i].ID == id {
+			s.messages[acct][folder][i].Unread = true
+		}
+	}
+}
+
+func (s *MockStore) SetFlagged(acct, folder, id string, flagged bool) {
+	for i := range s.messages[acct][folder] {
+		if s.messages[acct][folder][i].ID == id {
+			s.messages[acct][folder][i].Flagged = flagged
+		}
+	}
+}
+
 func (s *MockStore) DeleteMessage(acctEmail, folder, id string) {
 	acct, ok := s.messages[acctEmail]
 	if !ok {

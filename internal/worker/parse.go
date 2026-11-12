@@ -40,6 +40,8 @@ func ParseEnvelope(uid uint32, env *imap.Envelope, flags []imap.Flag) email.Mess
 			msg.Unread = false
 		case imap.FlagFlagged:
 			msg.Flagged = true
+		case imap.FlagAnswered:
+			msg.Answered = true
 		}
 	}
 

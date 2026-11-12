@@ -12,6 +12,8 @@ type Store interface {
 	DeleteDraft(email, id string)
 	NextDraftID() string
 	MarkRead(email, folder, id string)
+	MarkUnread(email, folder, id string)
+	SetFlagged(email, folder, id string, flagged bool)
 	DeleteMessage(email, folder, id string)
 	DeleteMessages(email, folder string, ids []string)
 	SearchMessages(acctEmail, query string, limit int) []Message

@@ -13,6 +13,7 @@ import (
 	"github.com/gausejakub/vimail/internal/tui/keys"
 	"github.com/gausejakub/vimail/internal/tui/layout"
 	"github.com/gausejakub/vimail/internal/tui/util"
+	"github.com/gausejakub/vimail/internal/worker"
 )
 
 // ---------------------------------------------------------------------------
@@ -143,6 +144,42 @@ func TestInitialState(t *testing.T) {
 	}
 }
 
+func TestSyncAccountCompletionIsCountedOnce(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Accounts = []config.AccountConfig{
+		{Email: "one@example.com"},
+		{Email: "two@example.com"},
+	}
+	m := New(cfg, email.NewMockStore())
+
+	sendMsg(&m, util.SyncStartMsg{})
+	if m.syncPending != 2 {
+		t.Fatalf("pending after start = %d, want 2", m.syncPending)
+	}
+
+	sendMsg(&m, worker.SyncAccountCompleteMsg{Account: "one@example.com"})
+	if m.syncPending != 1 {
+		t.Fatalf("pending after first completion = %d, want 1", m.syncPending)
+	}
+
+	// A late/duplicate completion must not finish the cycle early or arm an
+	// additional periodic timer. This was the seed of an exponential timer
+	// storm that drove syncPending negative and repainted the TUI continuously.
+	updated, cmd := m.Update(worker.SyncAccountCompleteMsg{Account: "one@example.com"})
+	m = updated.(Model)
+	if m.syncPending != 1 {
+		t.Fatalf("pending after duplicate completion = %d, want 1", m.syncPending)
+	}
+	if cmd != nil {
+		t.Fatal("duplicate completion returned a command; want it ignored")
+	}
+
+	sendMsg(&m, worker.SyncAccountCompleteMsg{Account: "two@example.com"})
+	if m.syncPending != 0 {
+		t.Fatalf("pending after final completion = %d, want 0", m.syncPending)
+	}
+}
+
 func TestExternalCacheWriteRefreshesMailbox(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cache.db")
 	dbTUI, err := cache.Open(path)
@@ -168,7 +205,9 @@ func TestExternalCacheWriteRefreshesMailbox(t *testing.T) {
 	for uid := uint32(1); uid <= 2; uid++ {
 		if err := storeTUI.UpsertMessage(account, "Inbox", email.Message{
 			UID: uid, From: "sender@example.com", To: account,
-			Subject: "notification", Date: time.Now(), Unread: true,
+			// Distinct dates keep UID 1 (the externally-read one) under the
+			// cursor, so selecting it on refresh does not mark UID 2 read.
+			Subject: "notification", Date: time.Now().Add(-time.Duration(uid) * time.Minute), Unread: true,
 		}); err != nil {
 			t.Fatalf("seed message %d: %v", uid, err)
 		}

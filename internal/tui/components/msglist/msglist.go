@@ -2,6 +2,7 @@ package msglist
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -37,6 +38,9 @@ type Model struct {
 
 	searchActive bool
 	searchQuery  string
+	motion       bool
+	highlights   map[uint32]float64
+	lastMotion   time.Time
 }
 
 // folderLoadedMsg carries the result of an async folder load.
@@ -113,6 +117,8 @@ func New(store email.Store) Model {
 		totalCount: total,
 		folder:     "Inbox",
 		account:    acctEmail,
+		motion:     true,
+		highlights: make(map[uint32]float64),
 	}
 }
 
@@ -172,17 +178,54 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 	case util.FolderRefreshMsg:
 		if msg.Account == m.account && msg.Folder == m.folder {
+			old := make(map[uint32]bool, len(m.messages))
+			for _, existing := range m.messages {
+				old[existing.UID] = true
+			}
 			m.totalCount = m.store.MessageCount(msg.Account, msg.Folder)
 			// Reload the current window.
 			m.messages = m.store.MessagesForPage(msg.Account, msg.Folder, m.loadOffset, pageSize)
+			if m.motion && len(old) > 0 {
+				for _, arrived := range m.messages {
+					if !old[arrived.UID] {
+						m.highlights[arrived.UID] = 1
+					}
+				}
+			}
 			if m.cursor >= len(m.messages) && len(m.messages) > 0 {
 				m.cursor = len(m.messages) - 1
 			}
 			m.ensureVisible()
 			return m, m.selectCurrent()
 		}
+	case util.MotionTickMsg:
+		if m.lastMotion.IsZero() {
+			m.lastMotion = msg.Now
+			return m, nil
+		}
+		dt := msg.Now.Sub(m.lastMotion).Seconds()
+		if dt > .4 {
+			dt = .4
+		}
+		m.lastMotion = msg.Now
+		for uid, level := range m.highlights {
+			level *= math.Exp(-10 * dt)
+			if level < .01 {
+				delete(m.highlights, uid)
+			} else {
+				m.highlights[uid] = level
+			}
+		}
 	}
 	return m, nil
+}
+
+func (m Model) SetMotion(enabled bool) Model {
+	m.motion = enabled
+	if !enabled {
+		clear(m.highlights)
+	}
+	return m
 }
 
 func (m Model) HandleKey(key string) (Model, tea.Cmd) {
@@ -478,10 +521,10 @@ func (m Model) View() string {
 	if len(m.messages) > 0 {
 		// Column headers
 		addrLabel := "From"
-	if m.isOutboundFolder() {
-		addrLabel = "To"
-	}
-	colHeader := formatRow("", addrLabel, "Subject", "Time", m.width, t.TextMuted(), t.TextMuted(), t.TextMuted(), t.TextMuted(), lipgloss.Color(""), false)
+		if m.isOutboundFolder() {
+			addrLabel = "To"
+		}
+		colHeader := formatRow("", addrLabel, "Subject", "Time", m.width, t.TextMuted(), t.TextMuted(), t.TextMuted(), t.TextMuted(), lipgloss.Color(""), false)
 		lines = append(lines, colHeader)
 
 		// Message rows
@@ -533,6 +576,7 @@ func (m Model) View() string {
 func (m Model) renderMessage(idx int, msg email.Message) string {
 	t := theme.Current()
 	isCursor := idx == m.cursor && m.focused
+	highlight := m.highlights[msg.UID]
 
 	// Check if this row is within the visual selection range.
 	isVisualSelected := false
@@ -561,6 +605,10 @@ func (m Model) renderMessage(idx int, msg email.Message) string {
 		fromFg = t.TextEmphasized()
 		subjFg = t.TextEmphasized()
 	}
+	if !isCursor && !isVisualSelected && highlight > .33 {
+		fromFg = t.Primary()
+		subjFg = t.Primary()
+	}
 
 	if isVisualSelected || isCursor {
 		bg = t.Selection()
@@ -586,7 +634,7 @@ func (m Model) renderMessage(idx int, msg email.Message) string {
 		subject = "[" + prefix + "] " + subject
 	}
 
-	return formatRow(indicator, fromName, subject, timeStr, m.width, indFg, fromFg, subjFg, timeFg, bg, msg.Unread)
+	return formatRow(indicator, fromName, subject, timeStr, m.width, indFg, fromFg, subjFg, timeFg, bg, msg.Unread || highlight > .66)
 }
 
 func formatRow(indicator, from, subject, timeStr string, width int, indFg, fromFg, subjFg, timeFg lipgloss.Color, bg lipgloss.Color, bold bool) string {

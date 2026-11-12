@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS messages (
 	date      DATETIME NOT NULL,
 	unread    BOOLEAN NOT NULL DEFAULT 1,
 	flagged   BOOLEAN NOT NULL DEFAULT 0,
+	answered  BOOLEAN NOT NULL DEFAULT 0,
 	PRIMARY KEY (folder_id, uid)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_folder ON messages(folder_id);
@@ -156,6 +157,7 @@ func Open(path string) (*sql.DB, error) {
 
 	// Track whether attachment metadata has been cached for a message.
 	db.Exec(`ALTER TABLE messages ADD COLUMN attachments_cached BOOLEAN NOT NULL DEFAULT 0`)
+	db.Exec(`ALTER TABLE messages ADD COLUMN answered BOOLEAN NOT NULL DEFAULT 0`)
 
 	// Add operation queue table (migration for existing databases).
 	db.Exec(`CREATE TABLE IF NOT EXISTS pending_ops (

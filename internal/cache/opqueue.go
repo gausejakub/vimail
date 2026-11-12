@@ -10,10 +10,14 @@ import (
 type OpType string
 
 const (
-	OpDelete   OpType = "delete"
-	OpSend     OpType = "send"
-	OpMarkRead OpType = "mark_read"
-	OpRestore  OpType = "restore"
+	OpDelete     OpType = "delete"
+	OpSend       OpType = "send"
+	OpMarkRead   OpType = "mark_read"
+	OpRestore    OpType = "restore"
+	OpMarkUnread OpType = "mark_unread"
+	OpFlag       OpType = "flag"
+	OpMove       OpType = "move"
+	OpVerify     OpType = "verify"
 )
 
 // OpStatus tracks the lifecycle of a queued operation.
@@ -63,6 +67,19 @@ type MarkReadPayload struct {
 // RestorePayload is the JSON payload for restoring messages from Trash.
 type RestorePayload struct {
 	UIDs        []uint32 `json:"uids"`
+	Destination string   `json:"destination"`
+}
+
+type FlagPayload struct {
+	UIDs    []uint32 `json:"uids"`
+	Flagged bool     `json:"flagged"`
+}
+type MarkUnreadPayload struct {
+	UIDs []uint32 `json:"uids"`
+}
+type MovePayload struct {
+	UIDs        []uint32 `json:"uids"`
+	CacheUIDs   []uint32 `json:"cache_uids,omitempty"`
 	Destination string   `json:"destination"`
 }
 
@@ -204,7 +221,7 @@ func (s *SQLiteStore) PendingOps() []QueuedOp {
 		WHERE status = ?
 		   OR (status = ? AND attempts < ?)
 		   OR (status = ? AND (lease_until IS NULL OR lease_until < ?))
-		ORDER BY created_at`,
+		ORDER BY created_at, id`,
 		string(OpPending), string(OpFailed), opMaxAttempts, string(OpRunning), now)
 }
 
@@ -218,14 +235,14 @@ func (s *SQLiteStore) RetryableOps() []QueuedOp {
 		WHERE status = ?
 		   OR (status = ? AND attempts < ? AND (next_attempt_at IS NULL OR next_attempt_at <= ?))
 		   OR (status = ? AND (lease_until IS NULL OR lease_until < ?))
-		ORDER BY created_at`,
+		ORDER BY created_at, id`,
 		string(OpPending), string(OpFailed), opMaxAttempts, now, string(OpRunning), now)
 }
 
 // RecentOps returns the most recent operations (for the :ops log view).
 func (s *SQLiteStore) RecentOps(limit int) []QueuedOp {
 	return s.queryOps(`SELECT id, type, status, account, folder, payload, error, attempts, next_attempt_at, created_at, updated_at
-		FROM pending_ops ORDER BY created_at DESC LIMIT ?`, limit)
+		FROM pending_ops ORDER BY created_at DESC, id DESC LIMIT ?`, limit)
 }
 
 // CleanupOldOps removes completed/failed operations older than the given duration.

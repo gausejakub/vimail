@@ -57,6 +57,34 @@ type markReadResult struct {
 	Note          string   `json:"note"`
 }
 
+type messageStateArgs struct {
+	Account string   `json:"account,omitempty" jsonschema:"account email; may be omitted when exactly one account is configured"`
+	Folder  string   `json:"folder" jsonschema:"folder name"`
+	UID     uint32   `json:"uid,omitempty"`
+	UIDs    []uint32 `json:"uids,omitempty"`
+}
+
+type messageStateResult struct {
+	Account       string   `json:"account"`
+	Folder        string   `json:"folder"`
+	Destination   string   `json:"destination,omitempty"`
+	UIDs          []uint32 `json:"uids"`
+	Count         int      `json:"count"`
+	OperationID   int64    `json:"operation_id,omitempty"`
+	ServerUpdated bool     `json:"server_updated"`
+	Queued        bool     `json:"queued"`
+	Error         string   `json:"error,omitempty"`
+	Note          string   `json:"note"`
+}
+
+type moveMessageArgs struct {
+	Account     string   `json:"account,omitempty"`
+	Folder      string   `json:"folder"`
+	Destination string   `json:"destination"`
+	UID         uint32   `json:"uid,omitempty"`
+	UIDs        []uint32 `json:"uids,omitempty"`
+}
+
 type markAllReadArgs struct {
 	Account string `json:"account,omitempty" jsonschema:"one account email; omit to include every configured account"`
 	Folder  string `json:"folder,omitempty" jsonschema:"one folder to mark read; omit to include every cached mail folder, including Spam and Trash"`
@@ -135,6 +163,25 @@ type syncToolResult struct {
 	MessagesFetched int    `json:"messages_fetched,omitempty"`
 	DurationMs      int64  `json:"duration_ms"`
 	Full            bool   `json:"full"`
+}
+
+type verifyArgs struct {
+	Account string `json:"account,omitempty"`
+	Folder  string `json:"folder,omitempty"`
+	Full    bool   `json:"full,omitempty"`
+}
+type verifyItem struct {
+	Folder         string `json:"folder"`
+	Messages       int    `json:"messages"`
+	StaleRemoved   int    `json:"stale_removed"`
+	MissingAdded   int    `json:"missing_added"`
+	FlagsCorrected int    `json:"flags_corrected"`
+	QuickCheckOK   bool   `json:"quick_check_ok"`
+	Error          string `json:"error,omitempty"`
+}
+type verifyToolResult struct {
+	Account string       `json:"account"`
+	Results []verifyItem `json:"results"`
 }
 
 // resolveCreds resolves account credentials once, on first use, so server
@@ -318,6 +365,69 @@ func (s *Server) registerWriteTools() {
 		return nil, out, nil
 	})
 
+	registerState := func(name, description string, apply func(string, string, []uint32) worker.OperationResult) {
+		sdk.AddTool(s.srv, &sdk.Tool{Name: name, Description: description}, func(ctx context.Context, req *sdk.CallToolRequest, args messageStateArgs) (*sdk.CallToolResult, messageStateResult, error) {
+			acct, err := s.resolveAccount(args.Account)
+			if err != nil {
+				return nil, messageStateResult{}, err
+			}
+			uids, err := normalizeUIDs(args.UID, args.UIDs)
+			if err != nil {
+				return nil, messageStateResult{}, err
+			}
+			if err := validateMessageUIDs(s.store, acct, args.Folder, uids); err != nil {
+				return nil, messageStateResult{}, err
+			}
+			result := apply(acct, args.Folder, uids)
+			out := messageStateResult{Account: acct, Folder: args.Folder, UIDs: uids, Count: len(uids), OperationID: result.OpID, ServerUpdated: result.Delivered, Queued: !result.Delivered, Note: "cache updated; server operation queued for retry"}
+			if result.Delivered {
+				out.Note = "updated in cache and on server"
+			}
+			if result.Err != nil {
+				out.Error = result.Err.Error()
+			}
+			return nil, out, nil
+		})
+	}
+	registerState("mark_unread", "Mark one or many messages unread with optimistic cache and durable server delivery.", s.coord.MarkUnreadMessagesNow)
+	registerState("flag_message", "Flag/star one or many messages with optimistic cache and durable server delivery.", func(a, f string, u []uint32) worker.OperationResult {
+		return s.coord.SetFlaggedMessagesNow(a, f, u, true)
+	})
+	registerState("unflag_message", "Remove the flag/star from one or many messages with optimistic cache and durable server delivery.", func(a, f string, u []uint32) worker.OperationResult {
+		return s.coord.SetFlaggedMessagesNow(a, f, u, false)
+	})
+
+	sdk.AddTool(s.srv, &sdk.Tool{Name: "move_message", Description: "Move one or many messages to another existing folder with optimistic cache and durable server delivery."}, func(ctx context.Context, req *sdk.CallToolRequest, args moveMessageArgs) (*sdk.CallToolResult, messageStateResult, error) {
+		acct, err := s.resolveAccount(args.Account)
+		if err != nil {
+			return nil, messageStateResult{}, err
+		}
+		uids, err := normalizeUIDs(args.UID, args.UIDs)
+		if err != nil {
+			return nil, messageStateResult{}, err
+		}
+		if args.Destination == "" || args.Destination == args.Folder {
+			return nil, messageStateResult{}, fmt.Errorf("destination must be a different folder")
+		}
+		if !folderExists(s.store, acct, args.Destination) {
+			return nil, messageStateResult{}, fmt.Errorf("destination folder %q not found", args.Destination)
+		}
+		if err := validateMessageUIDs(s.store, acct, args.Folder, uids); err != nil {
+			return nil, messageStateResult{}, err
+		}
+		result := s.coord.MoveMessagesNow(acct, args.Folder, args.Destination, uids)
+		// uids are the source-folder handles; the server assigns new UIDs in
+		// the destination, so callers must re-list it rather than reuse these.
+		out := messageStateResult{Account: acct, Folder: args.Folder, Destination: args.Destination, UIDs: uids, Count: len(uids), OperationID: result.OpID, ServerUpdated: result.Delivered, Queued: !result.Delivered, Note: "moved in cache; server operation queued for retry. uids are source-folder UIDs — list the destination folder for new UIDs"}
+		if result.Delivered {
+			out.Note = "moved in cache and on server. uids are source-folder UIDs — list the destination folder for new UIDs"
+		}
+		if result.Err != nil {
+			out.Error = result.Err.Error()
+		}
+		return nil, out, nil
+	})
+
 	sdk.AddTool(s.srv, &sdk.Tool{
 		Name:        "delete_message",
 		Description: "Move one or many messages to Trash. Pass either uid or uids. Never expunges; one batch creates one queued server operation.",
@@ -460,6 +570,31 @@ func (s *Server) registerWriteTools() {
 			out.MessagesFetched = newCount
 		} else {
 			out.NewMessages = newCount
+		}
+		return nil, out, nil
+	})
+
+	sdk.AddTool(s.srv, &sdk.Tool{Name: "verify", Description: "Reconcile cached UIDs and flags with IMAP and check SQLite integrity. Set full=true for PRAGMA integrity_check."}, func(ctx context.Context, req *sdk.CallToolRequest, args verifyArgs) (*sdk.CallToolResult, verifyToolResult, error) {
+		acct, err := s.resolveAccount(args.Account)
+		if err != nil {
+			return nil, verifyToolResult{}, err
+		}
+		folders := []string{args.Folder}
+		if args.Folder == "" {
+			folders = folders[:0]
+			for _, folder := range s.store.FoldersFor(acct) {
+				if folder.Name != "Drafts" {
+					folders = append(folders, folder.Name)
+				}
+			}
+		}
+		out := verifyToolResult{Account: acct}
+		for _, result := range s.coord.VerifyFoldersNow(acct, folders, args.Full) {
+			item := verifyItem{Folder: result.Folder, Messages: result.Messages, StaleRemoved: result.StaleRemoved, MissingAdded: result.MissingAdded, FlagsCorrected: result.FlagsCorrected, QuickCheckOK: result.QuickCheckOK}
+			if result.Err != nil {
+				item.Error = result.Err.Error()
+			}
+			out.Results = append(out.Results, item)
 		}
 		return nil, out, nil
 	})

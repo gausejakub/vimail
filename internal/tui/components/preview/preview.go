@@ -317,11 +317,13 @@ var reANSI = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
 func sanitizeBody(s string) string {
 	// Strip escape sequences and control/bidi characters (also covers mail
 	// cached before ingest-time sanitizing existed).
+	// Decode leftover HTML entities (&zwnj;, &nbsp;, etc.) that may remain
+	// in cached text bodies from imperfect HTML-to-text conversion. This runs
+	// before sanitizing: an entity such as &#x2066; or &#27; must not turn
+	// into a bidi control or an escape after the text was already cleaned.
+	s = html.UnescapeString(s)
 	s = email.SanitizeText(s)
 	s = reANSI.ReplaceAllString(s, "")
-	// Decode leftover HTML entities (&zwnj;, &nbsp;, etc.) that may remain
-	// in cached text bodies from imperfect HTML-to-text conversion.
-	s = html.UnescapeString(s)
 	var b []rune
 	for _, r := range s {
 		switch {

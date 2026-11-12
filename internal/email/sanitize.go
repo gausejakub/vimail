@@ -32,7 +32,15 @@ func isUnsafeRune(r rune) bool {
 		r == 0x200E, r == 0x200F, r == 0x061C, // LRM, RLM, ALM
 		r == 0x2028, r == 0x2029, // line/paragraph separators
 		r == 0xFEFF,                // BOM / zero-width no-break space
-		r >= 0xFFF9 && r <= 0xFFFB: // interlinear annotations
+		r >= 0xFFF9 && r <= 0xFFFB, // interlinear annotations
+		r == 0x180E,                // Mongolian vowel separator (invisible)
+		r >= 0x2060 && r <= 0x2064, // word joiner, invisible operators
+		r >= 0x206A && r <= 0x206F, // deprecated format controls
+		// Unicode tag characters and the variation-selector supplement are
+		// invisible on screen but readable by an AI client: text hidden in
+		// them is a prompt injection the user cannot see ("ASCII smuggling").
+		r >= 0xE0000 && r <= 0xE007F,
+		r >= 0xE0100 && r <= 0xE01EF:
 		return true
 	}
 	return false

@@ -91,3 +91,24 @@ func TestPlainResolverPasswordCmdFailureDoesNotFallBackToKeyring(t *testing.T) {
 		t.Fatal("expected password_cmd error, not a silent keyring fallback")
 	}
 }
+
+func TestRunSecretCmdUsesFirstLineOnly(t *testing.T) {
+	got, err := RunSecretCmd(`printf 'hunter2\r\nuser: alice\nurl: imap.example.com\n'`)
+	if err != nil || got != "hunter2" {
+		t.Fatalf("got %q err=%v, want only the first line", got, err)
+	}
+}
+
+func TestRunSecretCmdTimeoutNotExtendedByChildHoldingPipe(t *testing.T) {
+	old := secretCmdTimeout
+	secretCmdTimeout = 100 * time.Millisecond
+	defer func() { secretCmdTimeout = old }()
+	start := time.Now()
+	_, err := RunSecretCmd(`sleep 20 | cat`)
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("err = %v, want timeout", err)
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("returned after %v; a child holding the pipe extended the timeout", d)
+	}
+}

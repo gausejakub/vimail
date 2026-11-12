@@ -14,6 +14,7 @@ If you discover a security vulnerability, please email **security@vimail.dev** i
 - Passwords and tokens are **never** stored in config files, logs, or on disk in plaintext. The optional `oauth_client_secret` for a bring-your-own OAuth client does live in `config.toml` (kept at `0600`)
 - OAuth2 tokens are refused over an unencrypted connection (`tls = "none"`)
 - Password bytes are zeroed in memory after terminal input
+- `password_cmd` / `key_cmd` use only the first line of the command's output (further lines of a password-manager entry are never sent to a server), have no stdin, and are bounded by a timeout even if a child process lingers. On failure only the command's stderr is reported, never its output, and there is no fallback to the keyring or to an unencrypted cache
 
 ### Encryption at Rest
 
@@ -48,6 +49,9 @@ If you discover a security vulnerability, please email **security@vimail.dev** i
 ### Email Content Safety
 
 - Everything in a received message is treated as hostile. Terminal escape sequences, control characters and bidirectional overrides are stripped from subjects, addresses, bodies, attachment names and folder names, both when mail is cached and when it is drawn, so a message cannot rewrite the screen, set the window title or write to the clipboard (OSC 52)
+- Invisible characters that can hide text are stripped as well: Unicode tag characters, the variation-selector supplement, word joiners and invisible operators. Such text is unseen on screen but readable by an AI client ("ASCII smuggling"), so it is removed when mail is cached, drawn, and returned by the MCP server
+- HTML entities are decoded before sanitizing, so `&#27;` or `&#x2066;` cannot reintroduce an escape or bidi control
+- The Vim reader shows, and copies to the clipboard, the same sanitized text as the preview
 - HTML emails are converted to plain text for TUI display (no script/iframe execution)
 - Remote images are never auto-loaded. "Open in browser" (`o`) adds a Content-Security-Policy that blocks scripts, remote images and redirects
 - Preview rendering is bounded (size cap, cached per message), so a crafted body cannot freeze the UI
@@ -64,6 +68,7 @@ If you discover a security vulnerability, please email **security@vimail.dev** i
 ### MCP Server
 
 - Mail returned to AI clients is labelled as untrusted content; tools carry read-only / destructive annotations
+- Senders, recipients, subjects, bodies and attachment names are sanitized again when returned, so mail cached by an older version cannot carry escape sequences or invisible characters to the client
 - Read-only by default: tools that change the mailbox exist only with `[mcp] allow_write = true`, and `send_email` only with `allow_send = true`
 - No tool takes a file path or reads files; permanent deletion is not exposed
 - Prompt injection through received mail cannot be fully prevented by the server — see the README's MCP section
@@ -71,7 +76,8 @@ If you discover a security vulnerability, please email **security@vimail.dev** i
 ### Process Security
 
 - Graceful shutdown on SIGTERM/SIGINT with credential cleanup
-- No shell injection — `exec.Command` used with separate arguments
+- Nothing from a message ever reaches a command line: external programs (browser, AI agent) are started with `exec.Command` and separate arguments
+- The only shell commands vimail runs are the ones you write in `config.toml` (`password_cmd`, `[cache] key_cmd`, via `sh -c`). Whoever can edit that file can run code as you — vimail keeps it `0600`; keep its directory yours too
 - Parameterized SQL queries throughout (no string concatenation)
 
 ## Dependencies

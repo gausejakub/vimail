@@ -37,3 +37,12 @@ func TestBodyEscapesNeverReachOutput(t *testing.T) {
 		t.Fatalf("escape survived: %q", out)
 	}
 }
+
+// Entities are decoded before sanitizing, so they cannot reintroduce what the
+// sanitizer removes.
+func TestEntityEncodedControlsNeverReachOutput(t *testing.T) {
+	out := preparedBody("a&#x2066;b&#x2069; c&#x061C;d e&#xE0041;f g&#27;[2Jh i&#x202E;j", "")
+	if out != "ab cd ef gh ij" {
+		t.Fatalf("preparedBody = %q", out)
+	}
+}

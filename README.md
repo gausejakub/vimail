@@ -115,7 +115,7 @@ This walks through each configured account and securely stores your password in 
 
 ### Passwords from a password manager (no keyring)
 
-Instead of the OS keyring, vimail can ask a password manager each time it starts. Set `password_cmd` on a `plain` / `app-password` account; vimail runs it with `sh -c` and uses its output (trailing newline stripped) as the password:
+Instead of the OS keyring, vimail can ask a password manager each time it starts. Set `password_cmd` on a `plain` / `app-password` account; vimail runs it with `sh -c` and uses the first line of its output as the password (so multi-line `pass` entries with notes work):
 
 ```toml
 [[accounts]]
@@ -138,7 +138,7 @@ To keep mail you already cached, put the existing key in your password manager i
 
 Notes:
 
-- Each command runs once per process (TUI or `vimail mcp`) and the result stays in memory only. It has no stdin and a 2-minute timeout, so a password manager can show its own unlock prompt.
+- Each command runs once per process (TUI or `vimail mcp`) and the result stays in memory only. It has no stdin and a 2-minute timeout, so a password manager can show its own unlock prompt. Only the first line of output is used.
 - If a command fails, vimail reports its stderr and does **not** fall back to the keyring or to an unencrypted cache.
 - `vimail setup` tests every `password_cmd` / `key_cmd` instead of asking for a password.
 - Commands run with your privileges: keep `config.toml` writable only by you.

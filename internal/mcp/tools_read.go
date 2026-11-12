@@ -206,9 +206,9 @@ func header(m email.Message, includeFolder bool) messageHeader {
 	h := messageHeader{
 		Account: m.Account,
 		UID:     m.UID,
-		From:    m.From,
-		To:      m.To,
-		Subject: m.Subject,
+		From:    email.SanitizeLine(m.From),
+		To:      email.SanitizeLine(m.To),
+		Subject: email.SanitizeLine(m.Subject),
 		Date:    m.Date.Format(time.RFC3339),
 		Unread:  m.Unread,
 		Flagged: m.Flagged,
@@ -261,14 +261,16 @@ func (s *Server) readCachedMessage(account, folder string, uid uint32) (readMess
 	}
 	out := readMessageResult{
 		messageHeader: header(m, true),
-		Body:          m.Body,
-		BodyCached:    bodyCached,
+		// Sanitized again on the way out: the cache may hold mail stored before
+		// a sanitizing rule existed (e.g. invisible Unicode tag characters).
+		Body:       email.SanitizeText(m.Body),
+		BodyCached: bodyCached,
 	}
 	if !bodyCached {
 		out.Note = "body not cached yet — use read_messages with fetch_missing=true or open it in the TUI"
 	}
 	for _, attachment := range m.Attachments {
-		out.Attachments = append(out.Attachments, attachment.Filename)
+		out.Attachments = append(out.Attachments, email.SanitizeLine(attachment.Filename))
 	}
 	return out, nil
 }

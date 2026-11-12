@@ -16,7 +16,9 @@ import (
 var secretCmdTimeout = 2 * time.Minute
 
 // RunSecretCmd runs a user-configured command (e.g. `op read op://…`, `pass show …`)
-// through `sh -c` and returns its stdout with trailing line endings removed.
+// through `sh -c` and returns the first line of its stdout — the convention of
+// `pass` and other managers, whose entries may carry notes on further lines
+// that must not be sent to the mail server as part of the password.
 // stdin is not connected, so the command cannot steal keystrokes from the TUI;
 // stderr is reported on failure, stdout (the secret) never is.
 func RunSecretCmd(command string) (string, error) {
@@ -27,6 +29,9 @@ func RunSecretCmd(command string) (string, error) {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	// A child that outlives the shell keeps the output pipes open; without a
+	// bound, Run would wait for it long after the timeout killed the shell.
+	cmd.WaitDelay = 2 * time.Second
 
 	err := cmd.Run()
 	if ctx.Err() == context.DeadlineExceeded {
@@ -39,7 +44,8 @@ func RunSecretCmd(command string) (string, error) {
 		return "", fmt.Errorf("command failed: %w", err)
 	}
 
-	secret := strings.TrimRight(stdout.String(), "\r\n")
+	secret, _, _ := strings.Cut(stdout.String(), "\n")
+	secret = strings.TrimRight(secret, "\r")
 	if secret == "" {
 		return "", errors.New("command printed nothing")
 	}

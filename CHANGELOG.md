@@ -16,6 +16,21 @@ every merged PR lands here in the same pass that merges it.
 
 ### Security
 
+## [0.15.4] - 2026-11-12
+
+Security release following a third audit. Upgrading is recommended for everyone who opens mail in the browser (`o`) or exports messages.
+
+### Security
+
+- "Open in browser" could be redirected: a message containing `<meta http-equiv="refresh">` sent the browser tab to a sender-chosen address as soon as it opened, because a Content-Security-Policy does not cover it. The message's HTML is now parsed and rebuilt before the browser sees it, without anything that navigates or loads on its own; HTML that cannot be rebuilt is shown as plain text. (#58)
+- Tracking pixels written with `srcset` were loaded by Firefox despite the policy. The rebuild removes remote images, `srcset`, remote CSS `url()` / `@import`, forms, frames and event handlers itself instead of relying on the browser. Links you click still work. (#58)
+- Exported ZIPs contain the same rebuilt `message.html` instead of the raw markup, and attachments are written to an `attachments/` folder under unique names, so an attachment can no longer replace `message.html`, `metadata.txt` or another attachment when the archive is extracted. (#58)
+- The MCP `list_operations` tool sanitizes folder names and error text; AI compose treats a reply's subject as context, not instructions. (#58)
+
+### Fixed
+
+- Searching for text that contains a backslash finds it. (#58)
+
 ## [0.15.3] - 2026-11-12
 
 Security release following a second audit, covering everything added since 0.13.1. Upgrading is recommended, especially if you use the MCP server.
@@ -192,7 +207,8 @@ Security release following a full audit of the mail-handling, local storage, net
 - Go 1.26.6 and `golang.org/x/net` v0.58.0 in both modules, clearing all reachable govulncheck advisories (including GO-2026-5028/5029/5030); `SECURITY.md` now states the current scan. (#17)
 - Outbound mail over MCP is opt-in (`[mcp] allow_send`), because any connected MCP client can act as you. (#33)
 
-[Unreleased]: https://github.com/gausejakub/vimail/compare/v0.15.3...HEAD
+[Unreleased]: https://github.com/gausejakub/vimail/compare/v0.15.4...HEAD
+[0.15.4]: https://github.com/gausejakub/vimail/compare/v0.15.3...v0.15.4
 [0.15.3]: https://github.com/gausejakub/vimail/compare/v0.15.2...v0.15.3
 [0.15.2]: https://github.com/gausejakub/vimail/compare/v0.15.1...v0.15.2
 [0.15.1]: https://github.com/gausejakub/vimail/compare/v0.15.0...v0.15.1

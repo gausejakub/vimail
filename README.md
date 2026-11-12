@@ -56,6 +56,23 @@ Move the binary somewhere on your `$PATH`:
 mv vimail ~/.local/bin/
 ```
 
+### Nix
+
+```sh
+nix run github:gausejakub/vimail            # try it without installing
+nix profile install github:gausejakub/vimail  # install into your user profile
+```
+
+Or add it to a NixOS / home-manager flake:
+
+```nix
+inputs.vimail.url = "github:gausejakub/vimail";
+# then:
+environment.systemPackages = [ inputs.vimail.packages.${pkgs.system}.default ];  # or home.packages
+```
+
+`nix develop` gives a shell with Go and gopls for hacking on vimail.
+
 ### Go install
 
 ```sh

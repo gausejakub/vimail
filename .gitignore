@@ -3,3 +3,4 @@ dist/
 *.swo
 .wrangler/
 /vimail
+result

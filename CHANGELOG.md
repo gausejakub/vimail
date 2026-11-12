@@ -16,6 +16,33 @@ every merged PR lands here in the same pass that merges it.
 
 ### Security
 
+## [0.13.0] - 2026-11-12
+
+### Added
+
+- Gmail OAuth2 sign-in using Authorization Code + PKCE with a local browser callback. You bring your own Google "Desktop app" client ID; `vimail setup` prints the URL, so it also works over SSH. (#45)
+- Outlook OAuth2 with a per-account `oauth_client_id`, using XOAUTH2 for both IMAP and SMTP. (#45)
+- Cache verification: `:verify [folder]`, `:verify full`, the MCP `verify` tool, and a periodic pass (`[sync] verify_interval`, default `6h`, `"0"` disables). It reconciles cached UIDs and flags with the server, checks SQLite integrity, test-decrypts a sample of cached bodies, and sweeps orphaned rows. Queued writes are never reverted. (#45)
+- Flag/unflag (`f`), mark unread (`U`) and `:move <folder>` in the TUI, plus the MCP tools `flag_message`, `unflag_message`, `mark_unread` and `move_message`. Each one updates the cache right away and delivers to the server through the offline operation queue. (#45)
+- A subtle motion layer: sync spinner, progress bar, status messages that clear on their own, and a brief highlight on newly arrived messages. Set `general.motion = false` for static rendering. (#45)
+
+### Changed
+
+- `f` now toggles the flag/star. It was previously listed as "Forward", which was never implemented. (#45)
+- MCP `move_message` returns the source `folder` and UIDs plus a `destination` field. Re-list the destination folder to get the new UIDs. (#45)
+
+### Fixed
+
+- Long-running sessions keep working after OAuth access tokens expire: tokens are refreshed before each reconnect, and rotated refresh tokens are saved. (#45)
+- Queued operations replay in the order they were made, so marking a message read and then unread while offline ends up unread on the server. (#45)
+- Sync no longer piles up periodic timers when an account reports completion twice. (#45)
+- Message lists sort correctly when dates have different timezone offsets. (#45)
+
+### Security
+
+- Upgraded `golang.org/x/net` to v0.62.0 (GO-2026-6860). CI now builds with the latest Go 1.26 patch release (GO-2026-6859). (#45)
+- A stray or forged request to the OAuth callback port with the wrong `state` is rejected without aborting the real sign-in. (#45)
+
 ## [0.12.1] - 2026-08-27
 
 ### Fixed
@@ -72,7 +99,8 @@ every merged PR lands here in the same pass that merges it.
 - Go 1.26.6 and `golang.org/x/net` v0.58.0 in both modules, clearing all reachable govulncheck advisories (including GO-2026-5028/5029/5030); `SECURITY.md` now states the current scan. (#17)
 - Outbound mail over MCP is opt-in (`[mcp] allow_send`), because any connected MCP client can act as you. (#33)
 
-[Unreleased]: https://github.com/gausejakub/vimail/compare/v0.12.1...HEAD
+[Unreleased]: https://github.com/gausejakub/vimail/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/gausejakub/vimail/compare/v0.12.1...v0.13.0
 [0.12.1]: https://github.com/gausejakub/vimail/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/gausejakub/vimail/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/gausejakub/vimail/compare/v0.10.4...v0.11.0

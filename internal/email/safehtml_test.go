@@ -31,6 +31,10 @@ var hostileHTML = map[string]string{
 	"media":             `<video src="` + probeBase + `video" autoplay></video><audio src="` + probeBase + `audio" autoplay></audio><svg><image href="` + probeBase + `svg-image"/></svg>`,
 	"css":               `<style>@import url(` + probeBase + `css-import); body{background:url(` + probeBase + `css-bg)}</style><div style="background:url(` + probeBase + `css-inline)">x</div>`,
 	"base":              `<base href="` + probeBase + `"><img src="base-img">`,
+	"css-escape":        `<style>body{background:u\72l(` + probeBase + `css-escape)}</style><div style="background:\75rl(` + probeBase + `css-escape-attr)">x</div>`,
+	"css-quoted":        `<style>@IMPORT "` + probeBase + `css-import-string"; div{background:URL( '` + probeBase + `css-quoted' )}</style><p style="background-image:image-set('` + probeBase + `css-image-set' 1x)">x</p>`,
+	"css-font":          `<style>@font-face{font-family:x;src:url(` + probeBase + `css-font)} p{font-family:x} li{list-style-image:url("` + probeBase + `css-list")} a{cursor:url(` + probeBase + `css-cursor),auto}</style><p>x</p><ul><li>y</li></ul>`,
+	"css-unclosed":      `<div style="background:url(` + probeBase + `css-unclosed">x</div>`,
 	"picture":           `<picture><source srcset="` + probeBase + `picture-source"><img src="` + probeBase + `picture-img"></picture>`,
 	"svg-use":           `<svg><use href="` + probeBase + `svg-use#a"/><image xlink:href="` + probeBase + `svg-xlink"/><feImage href="` + probeBase + `svg-feimage"/></svg>`,
 	"svg-animate":       `<svg><image href="data:,x"><set attributeName="href" to="` + probeBase + `svg-set"/><animate attributeName="href" values="` + probeBase + `svg-animate"/></image></svg>`,
@@ -61,10 +65,10 @@ func TestBrowserSafeHTMLRemovesNavigatingElements(t *testing.T) {
 }
 
 // No rebuilt body may keep a reference to the remote host outside a link the
-// reader has to click or CSS (which the policy blocks).
+// reader has to click.
 func TestBrowserSafeHTMLRemovesRemoteResourceAttributes(t *testing.T) {
 	for name, in := range hostileHTML {
-		if name == "css" || strings.HasPrefix(name, "refresh") {
+		if strings.HasPrefix(name, "refresh") {
 			continue
 		}
 		out, err := BrowserSafeHTML(in)
@@ -78,6 +82,20 @@ func TestBrowserSafeHTMLRemovesRemoteResourceAttributes(t *testing.T) {
 	out, _ := BrowserSafeHTML(`<a href="javascript:alert(1)">x</a><a href="HTTPS://example.com/a">y</a><img src="data:image/png;base64,AA==" onclick="x()">`)
 	if strings.Contains(out, "javascript") || strings.Contains(out, "onclick") || !strings.Contains(out, `href="HTTPS://example.com/a"`) || !strings.Contains(out, "data:image/png") {
 		t.Errorf("link/attribute filtering wrong: %s", out)
+	}
+}
+
+func TestSafeCSSKeepsLocalStylesAndEmbeddedImages(t *testing.T) {
+	in := `p{color:red;background:url("data:image/png;base64,AA==") no-repeat} .a{background:URL(cid:logo)}`
+	if out, ok := safeCSS(in); !ok || out != in {
+		t.Fatalf("safeCSS changed harmless CSS: ok=%v %q", ok, out)
+	}
+	out, ok := safeCSS(`a{background:url(https://t.example/p.gif)} @import url(x.css); i{background:image-set(url(https://t.example/q.png) 1x, "r.png" 2x)} b{color:blue}`)
+	if !ok || strings.Contains(out, "t.example") || strings.Contains(out, "r.png") || strings.Contains(out, "x.css") || !strings.Contains(out, "b{color:blue}") {
+		t.Fatalf("safeCSS = %q ok=%v", out, ok)
+	}
+	if _, ok := safeCSS(`a{background:u\72l(https://t.example/p.gif)}`); ok {
+		t.Fatal("CSS with escapes must be dropped")
 	}
 }
 

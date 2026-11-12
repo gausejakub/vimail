@@ -63,11 +63,32 @@ func stripActiveNodes(n *html.Node) {
 		} else {
 			if c.Type == html.ElementNode {
 				c.Attr = safeAttributes(c)
+				if strings.EqualFold(c.Data, "style") && !safeStyleElement(c) {
+					n.RemoveChild(c)
+					c = next
+					continue
+				}
 			}
 			stripActiveNodes(c)
 		}
 		c = next
 	}
+}
+
+// safeStyleElement rewrites the CSS inside a <style> element; it reports
+// false when the element has to be dropped.
+func safeStyleElement(n *html.Node) bool {
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		if c.Type != html.TextNode {
+			return false
+		}
+		css, ok := safeCSS(c.Data)
+		if !ok {
+			return false
+		}
+		c.Data = css
+	}
+	return true
 }
 
 // safeAttributes drops the attributes that make a browser fetch something or
@@ -84,6 +105,12 @@ func safeAttributes(n *html.Node) []html.Attribute {
 		switch {
 		case strings.HasPrefix(key, "on"): // event handlers
 			continue
+		case key == "style":
+			css, ok := safeCSS(a.Val)
+			if !ok {
+				continue
+			}
+			a.Val = css
 		case key == "srcset", key == "imagesrcset", key == "ping", key == "manifest",
 			key == "action", key == "formaction":
 			continue
@@ -104,6 +131,91 @@ func safeAttributes(n *html.Node) []html.Attribute {
 		kept = append(kept, a)
 	}
 	return kept
+}
+
+// safeCSS removes what makes CSS fetch remote resources: url() with anything
+// but an embedded data:/cid: target, @import, and the image-set()/src()
+// functions (which also accept a bare string). CSS escapes can spell any of
+// these so that a text scan misses them (u\72l(…)), so a style containing a
+// backslash is dropped entirely; ok is then false.
+func safeCSS(css string) (out string, ok bool) {
+	if strings.Contains(css, "\\") {
+		return "", false
+	}
+	lower := strings.ToLower(css)
+	var b strings.Builder
+	for i := 0; i < len(css); {
+		switch {
+		case strings.HasPrefix(lower[i:], "@import"):
+			// Drop the whole rule, up to and including its ";".
+			if end := strings.IndexByte(css[i:], ';'); end >= 0 {
+				i += end + 1
+			} else {
+				i = len(css)
+			}
+		case strings.HasPrefix(lower[i:], "image-set("):
+			b.WriteString("x-blocked()")
+			i = cssCallEnd(css, i+len("image-set(")) + 1
+		case strings.HasPrefix(lower[i:], "src("):
+			b.WriteString("x-blocked()")
+			i = cssCallEnd(css, i+len("src(")) + 1
+		case strings.HasPrefix(lower[i:], "url("):
+			end := cssURLEnd(css, i+4)
+			target := strings.ToLower(strings.Trim(strings.TrimSpace(css[i+4:end]), `"'`))
+			if hasScheme(strings.TrimSpace(target), "data:", "cid:") && end < len(css) {
+				b.WriteString(css[i : end+1])
+			} else {
+				b.WriteString("url()")
+			}
+			i = end + 1
+		default:
+			b.WriteByte(css[i])
+			i++
+		}
+	}
+	return b.String(), true
+}
+
+// cssURLEnd returns the index of the ")" closing a url( that starts at from,
+// honouring a quoted argument, or len(css) when it is never closed.
+func cssURLEnd(css string, from int) int {
+	i := from
+	for i < len(css) && (css[i] == ' ' || css[i] == '\t' || css[i] == '\n' || css[i] == '\r') {
+		i++
+	}
+	if i < len(css) && (css[i] == '"' || css[i] == '\'') {
+		quote := css[i]
+		for i++; i < len(css) && css[i] != quote; i++ {
+		}
+	}
+	for ; i < len(css); i++ {
+		if css[i] == ')' {
+			return i
+		}
+	}
+	return len(css)
+}
+
+// cssCallEnd returns the index of the ")" closing a function call whose
+// arguments start at from, honouring nested parentheses and quoted strings,
+// or len(css) when it is never closed.
+func cssCallEnd(css string, from int) int {
+	depth := 1
+	for i := from; i < len(css); i++ {
+		switch css[i] {
+		case '"', '\'':
+			quote := css[i]
+			for i++; i < len(css) && css[i] != quote; i++ {
+			}
+		case '(':
+			depth++
+		case ')':
+			if depth--; depth == 0 {
+				return i
+			}
+		}
+	}
+	return len(css)
 }
 
 func hasScheme(val string, prefixes ...string) bool {

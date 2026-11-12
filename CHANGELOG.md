@@ -16,6 +16,15 @@ every merged PR lands here in the same pass that merges it.
 
 ### Security
 
+## [0.15.0] - 2026-11-12
+
+Read and copy from a message the Vim way.
+
+### Added
+
+- Vim reader: press `Enter` in the focused preview pane to open the message (headers, body, attachment list) in a read-only Vim buffer. Move with Vim motions, search with `/`, select with `v` / `V` and copy with `y` (or `yy`, `yiw`, …) straight to the system clipboard (`wl-copy`, `xclip`/`xsel`, `pbcopy`, or OSC 52 over SSH). `q` or `Esc` closes it. (#54)
+- `pkg/vimtea` v0.3.0: `WithReadOnly` viewer mode that refuses every edit and reports yanks as `YankMsg`. (#53)
+
 ## [0.14.1] - 2026-11-12
 
 Fixes for scrolling quickly through a large folder.
@@ -154,7 +163,8 @@ Security release following a full audit of the mail-handling, local storage, net
 - Go 1.26.6 and `golang.org/x/net` v0.58.0 in both modules, clearing all reachable govulncheck advisories (including GO-2026-5028/5029/5030); `SECURITY.md` now states the current scan. (#17)
 - Outbound mail over MCP is opt-in (`[mcp] allow_send`), because any connected MCP client can act as you. (#33)
 
-[Unreleased]: https://github.com/gausejakub/vimail/compare/v0.14.1...HEAD
+[Unreleased]: https://github.com/gausejakub/vimail/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/gausejakub/vimail/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/gausejakub/vimail/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/gausejakub/vimail/compare/v0.13.1...v0.14.0
 [0.13.1]: https://github.com/gausejakub/vimail/compare/v0.13.0...v0.13.1

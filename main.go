@@ -65,10 +65,19 @@ func runSetup() {
 	}
 }
 
-// initCacheKey loads the body-encryption key from the OS keyring, creating it
-// on first run. It never replaces an existing key and never silently writes
-// plaintext next to already-encrypted mail.
-func initCacheKey(store *cache.SQLiteStore) error {
+// initCacheKey loads the body-encryption key from [cache] key_cmd or the OS
+// keyring, creating it in the keyring on first run. It never replaces an
+// existing key and never silently writes plaintext next to already-encrypted mail.
+func initCacheKey(store *cache.SQLiteStore, cfg config.Config) error {
+	if cfg.Cache.KeyCmd != "" {
+		// An explicit key source never falls back to plaintext or the keyring.
+		key, err := auth.CacheKeyFromCmd(cfg.Cache.KeyCmd)
+		if err != nil {
+			return fmt.Errorf("[cache] key_cmd: %w", err)
+		}
+		store.SetEncryptionKey(key)
+		return nil
+	}
 	key, err := auth.GetCacheKey()
 	switch {
 	case err == nil:
@@ -120,7 +129,7 @@ func openStore(cfg config.Config) (*cache.SQLiteStore, *sql.DB, error) {
 	sqlStore := cache.NewSQLiteStore(db)
 
 	// Initialize cache encryption key (stored in OS keyring).
-	if err := initCacheKey(sqlStore); err != nil {
+	if err := initCacheKey(sqlStore, cfg); err != nil {
 		db.Close()
 		return nil, nil, err
 	}

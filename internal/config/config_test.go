@@ -70,3 +70,23 @@ func TestMCPAllowSendOptIn(t *testing.T) {
 		t.Error("allow_send = true not decoded")
 	}
 }
+
+func TestSecretCommandConfig(t *testing.T) {
+	var cfg Config
+	if _, err := toml.Decode(`
+[[accounts]]
+email = "a@example.com"
+password_cmd = "op read 'op://Private/a/password'"
+
+[cache]
+key_cmd = "pass show vimail/key"
+`, &cfg); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got := cfg.Accounts[0].PasswordCmd; got != "op read 'op://Private/a/password'" {
+		t.Errorf("password_cmd = %q", got)
+	}
+	if cfg.Cache.KeyCmd != "pass show vimail/key" {
+		t.Errorf("key_cmd = %q", cfg.Cache.KeyCmd)
+	}
+}

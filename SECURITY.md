@@ -10,7 +10,7 @@ If you discover a security vulnerability, please email **security@vimail.dev** i
 
 ### Credential Storage
 
-- Passwords and OAuth2 tokens are stored in the **OS keyring** (macOS Keychain, Linux Secret Service, Windows Credential Manager) via [go-keyring](https://github.com/zalando/go-keyring)
+- Passwords and OAuth2 tokens are stored in the **OS keyring** (macOS Keychain, Linux Secret Service, Windows Credential Manager) via [go-keyring](https://github.com/zalando/go-keyring), or fetched at startup from a password manager via `password_cmd` / `[cache] key_cmd` (kept in memory only, never written to disk)
 - Passwords and tokens are **never** stored in config files, logs, or on disk in plaintext. The optional `oauth_client_secret` for a bring-your-own OAuth client does live in `config.toml` (kept at `0600`)
 - OAuth2 tokens are refused over an unencrypted connection (`tls = "none"`)
 - Password bytes are zeroed in memory after terminal input

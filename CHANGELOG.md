@@ -16,6 +16,12 @@ every merged PR lands here in the same pass that merges it.
 
 ### Security
 
+## [0.15.2] - 2026-11-12
+
+### Fixed
+
+- The Vim reader opens with the cursor where you were reading (the first body line, or the top of the scrolled preview) instead of on the `From:` line, and `v` / `V` from the preview no longer start a selection at that hidden spot: move to where it should start, then press `v`. (#56)
+
 ## [0.15.1] - 2026-11-12
 
 ### Fixed
@@ -169,7 +175,8 @@ Security release following a full audit of the mail-handling, local storage, net
 - Go 1.26.6 and `golang.org/x/net` v0.58.0 in both modules, clearing all reachable govulncheck advisories (including GO-2026-5028/5029/5030); `SECURITY.md` now states the current scan. (#17)
 - Outbound mail over MCP is opt-in (`[mcp] allow_send`), because any connected MCP client can act as you. (#33)
 
-[Unreleased]: https://github.com/gausejakub/vimail/compare/v0.15.1...HEAD
+[Unreleased]: https://github.com/gausejakub/vimail/compare/v0.15.2...HEAD
+[0.15.2]: https://github.com/gausejakub/vimail/compare/v0.15.1...v0.15.2
 [0.15.1]: https://github.com/gausejakub/vimail/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/gausejakub/vimail/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/gausejakub/vimail/compare/v0.14.0...v0.14.1

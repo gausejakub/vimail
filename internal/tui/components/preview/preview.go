@@ -136,30 +136,7 @@ func (m Model) openInBrowser() tea.Cmd {
 		}
 	}
 
-	// Never let the mail's own markup run scripts, load remote content
-	// (tracking pixels) or redirect the tab: see email.BrowserSafeHTML.
-	// Markup that cannot be rebuilt safely falls back to the text view.
-	content := ""
-	if m.message.HTMLBody != "" {
-		if safe, err := email.BrowserSafeHTML(m.message.HTMLBody); err == nil {
-			content = safe
-		}
-	}
-	if content == "" {
-		// Wrap plain text in minimal HTML for browser viewing.
-		escaped := html.EscapeString(m.message.Body)
-		content = fmt.Sprintf(`<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>%s</title>
-<style>body{font-family:system-ui,sans-serif;max-width:48em;margin:2em auto;padding:0 1em;line-height:1.6;color:#222}
-.header{color:#666;border-bottom:1px solid #ddd;padding-bottom:1em;margin-bottom:1em}</style></head>
-<body><div class="header"><strong>From:</strong> %s<br><strong>To:</strong> %s<br><strong>Subject:</strong> %s</div>
-<pre style="white-space:pre-wrap;word-wrap:break-word">%s</pre></body></html>`,
-			html.EscapeString(m.message.Subject),
-			html.EscapeString(m.message.From),
-			html.EscapeString(m.message.To),
-			html.EscapeString(m.message.Subject),
-			escaped)
-	}
+	content := browserDocument(m.message)
 
 	// Use UID as temp filename — safe integer, no path traversal risk.
 	msgID := fmt.Sprintf("%d", m.message.UID)
@@ -190,6 +167,33 @@ func (m Model) openInBrowser() tea.Cmd {
 		}
 		return util.InfoMsg{Text: "Opened in browser", IsError: false}
 	}
+}
+
+// browserDocument returns the HTML written for the browser: the message's own
+// markup rebuilt by email.BrowserSafeHTML (no scripts, remote content or
+// redirects), or — when there is none, or it cannot be rebuilt safely — the
+// text body in a minimal page.
+func browserDocument(msg *email.Message) string {
+	content := ""
+	if msg.HTMLBody != "" {
+		if safe, err := email.BrowserSafeHTML(msg.HTMLBody); err == nil {
+			content = safe
+		}
+	}
+	if content == "" {
+		content = fmt.Sprintf(`<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>%s</title>
+<style>body{font-family:system-ui,sans-serif;max-width:48em;margin:2em auto;padding:0 1em;line-height:1.6;color:#222}
+.header{color:#666;border-bottom:1px solid #ddd;padding-bottom:1em;margin-bottom:1em}</style></head>
+<body><div class="header"><strong>From:</strong> %s<br><strong>To:</strong> %s<br><strong>Subject:</strong> %s</div>
+<pre style="white-space:pre-wrap;word-wrap:break-word">%s</pre></body></html>`,
+			html.EscapeString(msg.Subject),
+			html.EscapeString(msg.From),
+			html.EscapeString(msg.To),
+			html.EscapeString(msg.Subject),
+			html.EscapeString(msg.Body))
+	}
+	return content
 }
 
 func (m Model) View() string {

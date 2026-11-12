@@ -409,7 +409,7 @@ func (s *Server) registerReadTools() {
 				var payload cache.RestorePayload
 				if json.Unmarshal(op.Payload, &payload) == nil {
 					info.Count = len(payload.UIDs)
-					info.Destination = payload.Destination
+					info.Destination = email.SanitizeLine(payload.Destination)
 				}
 			case cache.OpMarkUnread:
 				var payload cache.MarkUnreadPayload
@@ -425,7 +425,7 @@ func (s *Server) registerReadTools() {
 				var payload cache.MovePayload
 				if json.Unmarshal(op.Payload, &payload) == nil {
 					info.Count = len(payload.UIDs)
-					info.Destination = payload.Destination
+					info.Destination = email.SanitizeLine(payload.Destination)
 				}
 			}
 			out.Operations = append(out.Operations, info)

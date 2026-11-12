@@ -1,6 +1,7 @@
 package preview
 
 import (
+	"github.com/gausejakub/vimail/internal/email"
 	"strings"
 	"testing"
 	"time"
@@ -44,5 +45,37 @@ func TestEntityEncodedControlsNeverReachOutput(t *testing.T) {
 	out := preparedBody("a&#x2066;b&#x2069; c&#x061C;d e&#xE0041;f g&#27;[2Jh i&#x202E;j", "")
 	if out != "ab cd ef gh ij" {
 		t.Fatalf("preparedBody = %q", out)
+	}
+}
+
+// What "open in browser" writes for the browser.
+func TestBrowserDocumentIsRebuiltAndFallsBackToText(t *testing.T) {
+	hostile := &email.Message{
+		Subject:  "Hi",
+		Body:     "plain <b>text</b> body",
+		HTMLBody: `<html><head><meta http-equiv="refresh" content="0;url=https://evil.example/"></head><body><img srcset="https://evil.example/p.gif 1x"><script>x()</script><p>Hello</p></body></html>`,
+	}
+	doc := browserDocument(hostile)
+	lower := strings.ToLower(doc)
+	if !strings.Contains(lower, "content-security-policy") || !strings.Contains(doc, "<p>Hello</p>") {
+		t.Fatalf("rebuilt document lacks the policy or the content: %s", doc)
+	}
+	for _, bad := range []string{"refresh", "evil.example", "<script"} {
+		if strings.Contains(lower, bad) {
+			t.Errorf("rebuilt document still contains %q: %s", bad, doc)
+		}
+	}
+
+	// Markup the parser refuses (nested too deeply) must not reach the browser
+	// raw: the escaped text body is shown instead.
+	unparseable := &email.Message{Body: "plain <b>text</b> body", HTMLBody: strings.Repeat("<div>", 2000) + `<meta http-equiv="refresh" content="0;url=https://evil.example/">`}
+	doc = browserDocument(unparseable)
+	if strings.Contains(doc, "evil.example") || !strings.Contains(doc, "plain &lt;b&gt;text&lt;/b&gt; body") {
+		t.Fatalf("fallback document wrong: %.300s", doc)
+	}
+
+	// Text-only mail: escaped, no markup from the message.
+	if doc := browserDocument(&email.Message{Subject: "<script>s</script>", Body: "<img src=x>"}); strings.Contains(doc, "<script>s") || strings.Contains(doc, "<img src=x>") {
+		t.Fatalf("text body not escaped: %s", doc)
 	}
 }

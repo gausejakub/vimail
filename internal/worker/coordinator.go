@@ -1138,29 +1138,7 @@ func (c *Coordinator) ExportMessages(acctEmail, folder string, messages []email.
 					meta += fmt.Sprintf("  - %s (%d bytes)\n", att.Filename, len(att.Data))
 				}
 			}
-			writeToZip(zw, dirName+"/metadata.txt", []byte(meta))
-
-			// message.txt
-			if body.Text != "" {
-				writeToZip(zw, dirName+"/message.txt", []byte(body.Text))
-			}
-
-			// message.html — the same script-, remote-content- and
-			// redirect-free rebuild that "open in browser" shows; the raw
-			// markup would run unrestricted when opened from the archive.
-			if body.HTML != "" {
-				if safe, err := email.BrowserSafeHTML(body.HTML); err == nil {
-					writeToZip(zw, dirName+"/message.html", []byte(safe))
-				}
-			}
-
-			// attachments — in their own folder with unique names, so a file
-			// called "message.html" or "metadata.txt", or two attachments
-			// with one name, cannot replace another entry on extraction.
-			used := make(map[string]bool, len(attachments))
-			for _, att := range attachments {
-				writeToZip(zw, dirName+"/attachments/"+uniqueName(used, safeFilename(att.Filename)), att.Data)
-			}
+			writeExportEntries(zw, dirName, meta, body, attachments)
 
 			if c.program != nil && len(messages) > 1 {
 				c.program.Send(ExportProgressMsg{Done: i + 1, Total: len(messages)})
@@ -1198,6 +1176,29 @@ func sanitizeExportName(subject string, uid uint32) string {
 		safe = string(runes[:80])
 	}
 	return fmt.Sprintf("%s_%d", safe, uid)
+}
+
+// writeExportEntries writes one message's files into the archive under dir.
+func writeExportEntries(zw *zip.Writer, dir, meta string, body BodyResult, attachments []AttachmentData) {
+	writeToZip(zw, dir+"/metadata.txt", []byte(meta))
+	if body.Text != "" {
+		writeToZip(zw, dir+"/message.txt", []byte(body.Text))
+	}
+	// message.html — the same script-, remote-content- and redirect-free
+	// rebuild that "open in browser" shows; the raw markup would run
+	// unrestricted when opened from the archive.
+	if body.HTML != "" {
+		if safe, err := email.BrowserSafeHTML(body.HTML); err == nil {
+			writeToZip(zw, dir+"/message.html", []byte(safe))
+		}
+	}
+	// Attachments get their own folder and unique names, so a file called
+	// "message.html" or "metadata.txt", or two attachments with one name,
+	// cannot replace another entry on extraction.
+	used := make(map[string]bool, len(attachments))
+	for _, att := range attachments {
+		writeToZip(zw, dir+"/attachments/"+uniqueName(used, safeFilename(att.Filename)), att.Data)
+	}
 }
 
 // uniqueName returns name, or "base (N).ext" when name was already used

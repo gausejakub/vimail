@@ -8,6 +8,12 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// newReadOnlyAware marks b read-only when requested.
+func newReadOnlyAware(b *buffer, readOnly bool) *buffer {
+	b.readOnly = readOnly
+	return b
+}
+
 // Buffer defines the interface for text buffer operations
 // It provides methods for manipulating text content and undo/redo functionality
 type Buffer interface {
@@ -51,6 +57,7 @@ type buffer struct {
 	lines     []string      // Text content as lines
 	undoStack []bufferState // Stack of previous buffer states for undo
 	redoStack []bufferState // Stack of undone states for redo
+	readOnly  bool          // When set, every mutation is a no-op (see WithReadOnly)
 }
 
 // bufferState represents a snapshot of the buffer for undo/redo
@@ -118,6 +125,10 @@ func (b *buffer) visualLineLength(idx int) int {
 // setLine replaces the line at the given index with new content
 // Does nothing if the index is out of bounds
 func (b *buffer) setLine(idx int, content string) {
+	if b.readOnly {
+		return
+	}
+
 	if idx < 0 || idx >= len(b.lines) {
 		return
 	}
@@ -127,6 +138,10 @@ func (b *buffer) setLine(idx int, content string) {
 // insertLine inserts a new line at the given index
 // Does nothing if the index is invalid
 func (b *buffer) insertLine(idx int, content string) {
+	if b.readOnly {
+		return
+	}
+
 	if idx < 0 || idx > len(b.lines) {
 		return
 	}
@@ -149,6 +164,10 @@ func (b *buffer) insertLine(idx int, content string) {
 // If it's the last line, clears it instead of removing it
 // Returns empty string if the index is out of bounds
 func (b *buffer) deleteLine(idx int) string {
+	if b.readOnly {
+		return ""
+	}
+
 	if idx < 0 || idx >= len(b.lines) {
 		return ""
 	}
@@ -168,6 +187,10 @@ func (b *buffer) deleteLine(idx int) string {
 // insertAt inserts text at the specified position
 // Handles both single line and multiline inserts
 func (b *buffer) insertAt(row, col int, text string) {
+	if b.readOnly {
+		return
+	}
+
 	if row < 0 || row >= len(b.lines) {
 		return
 	}
@@ -208,6 +231,10 @@ func (b *buffer) insertAt(row, col int, text string) {
 // deleteAt deletes text between the specified positions
 // by converting to cursor positions and using deleteRange
 func (b *buffer) deleteAt(startRow, startCol, endRow, endCol int) string {
+	if b.readOnly {
+		return ""
+	}
+
 	start := Cursor{Row: startRow, Col: startCol}
 	end := Cursor{Row: endRow, Col: endCol}
 	return b.deleteRange(start, end)
@@ -259,6 +286,10 @@ func (b *buffer) saveUndoState(cursor Cursor) {
 // undo reverts to the previous buffer state
 // Returns a command that updates the cursor position
 func (b *buffer) undo(c Cursor) tea.Cmd {
+	if b.readOnly {
+		return nil
+	}
+
 	return func() tea.Msg {
 		if len(b.undoStack) == 0 {
 			return UndoRedoMsg{Success: false, IsUndo: true}
@@ -295,6 +326,10 @@ func (b *buffer) undo(c Cursor) tea.Cmd {
 // redo reapplies a previously undone change
 // Returns a command that updates the cursor position
 func (b *buffer) redo(c Cursor) tea.Cmd {
+	if b.readOnly {
+		return nil
+	}
+
 	return func() tea.Msg {
 		if len(b.redoStack) == 0 {
 			return UndoRedoMsg{Success: false, IsUndo: false}
@@ -414,6 +449,10 @@ func (b *buffer) getCharRange(start, end Cursor) string {
 // deleteCharRange removes the text in [start, end) (end EXCLUSIVE, same
 // coordinate model as getCharRange) and returns the deleted text.
 func (b *buffer) deleteCharRange(start, end Cursor) string {
+	if b.readOnly {
+		return ""
+	}
+
 	if end.Row < start.Row || (end.Row == start.Row && end.Col < start.Col) {
 		start, end = end, start
 	}
@@ -457,6 +496,10 @@ func (b *buffer) advancePos(p Cursor) Cursor {
 
 // joinLines concatenates two lines, removing the line break between them
 func (b *buffer) joinLines(row, nextRow int) {
+	if b.readOnly {
+		return
+	}
+
 	if row < 0 || nextRow >= len(b.lines) || row >= nextRow {
 		return
 	}
@@ -471,6 +514,10 @@ func (b *buffer) joinLines(row, nextRow int) {
 // deleteRange removes the text between start and end positions and returns the deleted text
 // This is the core function for text deletion operations
 func (b *buffer) deleteRange(start, end Cursor) string {
+	if b.readOnly {
+		return ""
+	}
+
 	// Ensure start is before end
 	if start.Row > end.Row || (start.Row == end.Row && start.Col > end.Col) {
 		start, end = end, start

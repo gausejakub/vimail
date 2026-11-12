@@ -136,12 +136,14 @@ func (m Model) openInBrowser() tea.Cmd {
 		}
 	}
 
-	// Never let the mail's own markup run scripts or load remote content
-	// (tracking pixels, redirects to custom URL schemes) in the browser.
-	const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: cid:; style-src 'unsafe-inline'; font-src data:">` + "\n"
-	content := m.message.HTMLBody
-	if content != "" {
-		content = csp + content
+	// Never let the mail's own markup run scripts, load remote content
+	// (tracking pixels) or redirect the tab: see email.BrowserSafeHTML.
+	// Markup that cannot be rebuilt safely falls back to the text view.
+	content := ""
+	if m.message.HTMLBody != "" {
+		if safe, err := email.BrowserSafeHTML(m.message.HTMLBody); err == nil {
+			content = safe
+		}
 	}
 	if content == "" {
 		// Wrap plain text in minimal HTML for browser viewing.

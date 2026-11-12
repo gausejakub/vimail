@@ -384,11 +384,11 @@ func (s *Server) registerReadTools() {
 		for _, op := range s.store.RecentOps(limit) {
 			info := operationInfo{
 				ID: op.ID, Type: string(op.Type), Status: string(op.Status),
-				Account: op.Account, Folder: op.Folder, Attempts: op.Attempts,
+				Account: op.Account, Folder: email.SanitizeLine(op.Folder), Attempts: op.Attempts,
 				CreatedAt: op.CreatedAt.Format(time.RFC3339), UpdatedAt: op.UpdatedAt.Format(time.RFC3339),
 			}
 			if op.Status != cache.OpCompleted {
-				info.Error = op.Error
+				info.Error = email.SanitizeLine(op.Error) // may quote server responses
 				if !op.NextAttemptAt.IsZero() {
 					info.NextAttemptAt = op.NextAttemptAt.Format(time.RFC3339)
 				}

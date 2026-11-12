@@ -96,3 +96,24 @@ func TestSearchMessagesFindsEncryptedCachedBodies(t *testing.T) {
 		t.Fatalf("encrypted-body search = %+v, want UID 1", got)
 	}
 }
+
+// A backslash in the query is the LIKE escape character: unescaped, it
+// swallowed the trailing wildcard and the search matched nothing.
+func TestSearchMessagesTreatsBackslashLiterally(t *testing.T) {
+	s := testStore(t)
+	const account = "alice@example.com"
+	seedWithFolders(t, s, "Alice", account)
+	date := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	for uid, subject := range map[uint32]string{1: `path C:\temp\report`, 2: "100% done", 3: "plain"} {
+		if err := s.UpsertMessage(account, "Inbox", email.Message{
+			UID: uid, MessageID: subject, From: "x@example.com", Subject: subject, Date: date,
+		}); err != nil {
+			t.Fatalf("UpsertMessage(%d): %v", uid, err)
+		}
+	}
+	for query, want := range map[string]int{`\`: 1, `C:\temp`: 1, "%": 1, "_": 0} {
+		if got := s.SearchMessages(account, query, 10); len(got) != want {
+			t.Errorf("search %q returned %d messages, want %d", query, len(got), want)
+		}
+	}
+}

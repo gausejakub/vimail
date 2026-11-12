@@ -13,12 +13,12 @@ import (
 // ComposeRFC5322 builds a properly formatted RFC 5322 email message.
 // Returns the message ID and the raw message bytes.
 func ComposeRFC5322(from, to, subject, body string) (string, []byte) {
-	msgID := fmt.Sprintf("<%d.%s@vimail>", time.Now().UnixNano(), sanitizeForMsgID(from))
-
 	// Header values can come from MCP tool arguments or replayed queue
 	// payloads. A CR/LF in any of them would let the caller inject arbitrary
-	// headers (Bcc, Reply-To, a forged From) or MIME structure.
+	// headers (Bcc, Reply-To, a forged From) or MIME structure. The
+	// Message-ID is derived from From, so it is built after sanitizing.
 	from, to, subject = headerValue(from), headerValue(to), headerValue(subject)
+	msgID := fmt.Sprintf("<%d.%s@vimail>", time.Now().UnixNano(), sanitizeForMsgID(from))
 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("From: %s\r\n", from))

@@ -873,7 +873,7 @@ func (s *SQLiteStore) SearchMessages(acctEmail, query string, limit int) []email
 		return nil
 	}
 	// Escape LIKE wildcards in user input.
-	escaped := strings.NewReplacer("%", `\%`, "_", `\_`).Replace(query)
+	escaped := strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`).Replace(query)
 	pattern := "%" + escaped + "%"
 
 	// When encryption is enabled, body is encrypted in the DB so we can't

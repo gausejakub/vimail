@@ -20,7 +20,7 @@ func ParseEnvelope(uid uint32, env *imap.Envelope, flags []imap.Flag) email.Mess
 	}
 
 	if env != nil {
-		msg.Subject = env.Subject
+		msg.Subject = email.SanitizeLine(env.Subject)
 		msg.Date = env.Date
 		msg.MessageID = env.MessageID
 
@@ -52,6 +52,8 @@ func formatAddress(addr imap.Address) string {
 	name := addr.Name
 	emailAddr := addr.Addr()
 
+	// Display names and addresses are attacker-controlled header text.
+	name, emailAddr = email.SanitizeLine(name), email.SanitizeLine(emailAddr)
 	if name != "" && emailAddr != "" {
 		return fmt.Sprintf("%s <%s>", name, emailAddr)
 	}
@@ -78,9 +80,9 @@ func ParseBody(data []byte) (BodyResult, error) {
 		// Not valid MIME — treat as raw text.
 		raw := string(data)
 		if looksLikeHTML(raw) {
-			return BodyResult{Text: stripHTML(raw), HTML: raw}, nil
+			return BodyResult{Text: email.SanitizeText(stripHTML(raw)), HTML: raw}, nil
 		}
-		return BodyResult{Text: raw}, nil
+		return BodyResult{Text: email.SanitizeText(raw)}, nil
 	}
 
 	var textBody string
@@ -102,7 +104,9 @@ func ParseBody(data []byte) (BodyResult, error) {
 		display = "(no text content)"
 	}
 
-	return BodyResult{Text: display, HTML: htmlBody, Attachments: attachments}, nil
+	// Sanitize once at ingest so the cache, preview, reply quoting, export
+	// and MCP all receive text that is safe to print to a terminal.
+	return BodyResult{Text: email.SanitizeText(display), HTML: htmlBody, Attachments: attachments}, nil
 }
 
 const (
@@ -201,7 +205,7 @@ func extractFilename(disp, ct string) string {
 			lower := strings.ToLower(param)
 			if strings.HasPrefix(lower, "filename=") || strings.HasPrefix(lower, "name=") {
 				val := param[strings.Index(param, "=")+1:]
-				val = strings.Trim(val, `"' `)
+				val = strings.TrimSpace(email.SanitizeLine(strings.Trim(val, `"' `)))
 				if val != "" {
 					return val
 				}

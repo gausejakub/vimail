@@ -60,7 +60,8 @@ func seededStore(t *testing.T) *cache.SQLiteStore {
 // connect starts the server on an in-memory transport and returns a live
 // client session.
 func connect(t *testing.T, store *cache.SQLiteStore) *sdk.ClientSession {
-	return connectCfg(t, store, config.Config{})
+	// Most tests exercise the write tools, which are opt-in.
+	return connectCfg(t, store, config.Config{MCP: config.MCPConfig{AllowWrite: true}})
 }
 
 // connectCfg is connect with a caller-supplied config (e.g. MCP options).

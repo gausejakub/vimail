@@ -3,8 +3,11 @@ package worker
 import (
 	"encoding/base64"
 	"fmt"
+	"mime"
 	"strings"
 	"time"
+
+	"github.com/gausejakub/vimail/internal/email"
 )
 
 // ComposeRFC5322 builds a properly formatted RFC 5322 email message.
@@ -12,10 +15,15 @@ import (
 func ComposeRFC5322(from, to, subject, body string) (string, []byte) {
 	msgID := fmt.Sprintf("<%d.%s@vimail>", time.Now().UnixNano(), sanitizeForMsgID(from))
 
+	// Header values can come from MCP tool arguments or replayed queue
+	// payloads. A CR/LF in any of them would let the caller inject arbitrary
+	// headers (Bcc, Reply-To, a forged From) or MIME structure.
+	from, to, subject = headerValue(from), headerValue(to), headerValue(subject)
+
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("From: %s\r\n", from))
 	sb.WriteString(fmt.Sprintf("To: %s\r\n", to))
-	sb.WriteString(fmt.Sprintf("Subject: %s\r\n", subject))
+	sb.WriteString(fmt.Sprintf("Subject: %s\r\n", mime.QEncoding.Encode("utf-8", subject)))
 	sb.WriteString(fmt.Sprintf("Date: %s\r\n", time.Now().Format(time.RFC1123Z)))
 	sb.WriteString(fmt.Sprintf("Message-ID: %s\r\n", msgID))
 	sb.WriteString("MIME-Version: 1.0\r\n")
@@ -25,6 +33,12 @@ func ComposeRFC5322(from, to, subject, body string) (string, []byte) {
 	sb.WriteString(body)
 
 	return msgID, []byte(sb.String())
+}
+
+// headerValue makes a string safe to place in a single header line: line
+// breaks and control characters are removed.
+func headerValue(s string) string {
+	return strings.TrimSpace(email.SanitizeLine(s))
 }
 
 func sanitizeForMsgID(s string) string {

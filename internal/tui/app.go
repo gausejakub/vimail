@@ -3,6 +3,7 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"net/mail"
 	"strings"
 	"time"
 
@@ -167,6 +168,15 @@ func (m Model) Init() tea.Cmd {
 		sqlStore.CleanupOldOps(7 * 24 * time.Hour)
 	}
 
+	// An unencrypted account is easy to configure by accident and was only
+	// reported in the log file; say so on screen at every start.
+	for _, acct := range m.cfg.Accounts {
+		if strings.EqualFold(acct.TLS, "none") {
+			text := "WARN: " + acct.Email + " uses tls = \"none\" — password and mail are sent unencrypted"
+			cmds = append(cmds, func() tea.Msg { return util.InfoMsg{Text: text, IsError: true} })
+		}
+	}
+
 	// Trigger initial sync if coordinator is available.
 	if m.coordinator != nil {
 		cmds = append(cmds, func() tea.Msg {
@@ -241,7 +251,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case util.MessageSelectedMsg:
-		logging.Debug("nav", "message selected", logging.MsgUID(msg.Message.UID), logging.KV("subject", msg.Message.Subject))
+		logging.Debug("nav", "message selected", logging.MsgUID(msg.Message.UID))
 		var cmd tea.Cmd
 		m.preview, cmd = m.preview.Update(msg)
 		cmds = append(cmds, cmd)
@@ -257,7 +267,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.coordinator != nil && needsFetch && msg.Message.UID > 0 {
 			cmds = append(cmds, m.coordinator.FetchBody(acct, folder, msg.Message.UID))
 			var cmd tea.Cmd
-			subject := msg.Message.Subject
+			subject := email.SanitizeLine(msg.Message.Subject)
 			if len([]rune(subject)) > 30 {
 				subject = string([]rune(subject)[:30]) + "…"
 			}
@@ -284,7 +294,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case util.ComposeSaveDraftMsg:
-		logging.Info("draft", "saving draft", logging.KV("to", msg.To), logging.KV("subject", msg.Subject))
+		logging.Info("draft", "saving draft")
 		m.compose = m.compose.Hide()
 		m.mode = keys.ModeNormal
 		currentEmail := m.mailbox.SelectedEmail()
@@ -324,7 +334,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case util.ComposeSubmitMsg:
-		logging.Info("send", "compose submitted", logging.KV("to", msg.To), logging.KV("subject", msg.Subject))
+		logging.Info("send", "compose submitted")
 		draftID := m.compose.DraftID()
 		m.compose = m.compose.Hide()
 		m.mode = keys.ModeNormal
@@ -947,7 +957,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case util.SearchResultsMsg:
-		logging.Info("search", "results received", logging.KV("query", msg.Query), logging.KV("count", len(msg.Results)))
+		logging.Info("search", "results received", logging.KV("count", len(msg.Results)))
 		m.msglist = m.msglist.SetSearchResults(msg.Query, msg.Results)
 		if len(msg.Results) > 0 {
 			sel := msg.Results[0]
@@ -1101,20 +1111,16 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, keys.Normal.Reply):
 		if selected := m.msglist.SelectedMessage(); selected != nil {
 			// Extract email from "Name <email>" format
-			replyTo := selected.From
-			if idx := strings.Index(replyTo, "<"); idx >= 0 {
-				end := strings.Index(replyTo, ">")
-				if end > idx {
-					replyTo = replyTo[idx+1 : end]
-				}
-			}
+			replyTo := replyAddress(selected.From)
 			// Build reply subject
-			replySubj := selected.Subject
+			replySubj := email.SanitizeLine(selected.Subject)
 			if !strings.HasPrefix(strings.ToLower(replySubj), "re:") {
 				replySubj = "Re: " + replySubj
 			}
 			// Quoted body as editor content
-			quoted := "\n> " + strings.ReplaceAll(selected.Body, "\n", "\n> ")
+			// The body goes into the editor verbatim, so strip escape
+			// sequences an attacker may have put in the original mail.
+			quoted := "\n> " + strings.ReplaceAll(email.SanitizeText(selected.Body), "\n", "\n> ")
 			m.compose = m.compose.ShowReply(replyTo, replySubj, quoted).SetSize(m.width, m.height)
 			m.mode = keys.ModeNormal
 			cmds = append(cmds, func() tea.Msg {
@@ -1146,7 +1152,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 						}
 					}
 					uid := selected.UID
-					subject := selected.Subject
+					subject := email.SanitizeLine(selected.Subject)
 					if len([]rune(subject)) > 30 {
 						subject = string([]rune(subject)[:30]) + "…"
 					}
@@ -1206,7 +1212,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					if sel.Folder != "" {
 						folder = sel.Folder
 					}
-					subject := sel.Subject
+					subject := email.SanitizeLine(sel.Subject)
 					if len([]rune(subject)) > 30 {
 						subject = string([]rune(subject)[:30]) + "…"
 					}
@@ -1278,7 +1284,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 						var cmd tea.Cmd
 						m.status, cmd = m.status.Update(util.ProcessStartMsg{
 							ID:    "save-attachments",
-							Label: fmt.Sprintf("⇣ %s/%s: saving %s", acct, folder, sel.Attachments[0].Filename),
+							Label: fmt.Sprintf("⇣ %s/%s: saving %s", acct, folder, email.SanitizeLine(sel.Attachments[0].Filename)),
 						})
 						cmds = append(cmds, cmd)
 						cmds = append(cmds, m.coordinator.SaveAttachments(acct, folder, sel.UID, sel.Attachments))
@@ -1498,7 +1504,7 @@ func (m Model) executeCommand(input string) tea.Cmd {
 	if len(parts) == 0 {
 		return nil
 	}
-	logging.Info("command", "executing command", logging.KV("cmd", parts[0]), logging.KV("args", strings.Join(parts[1:], " ")))
+	logging.Info("command", "executing command", logging.KV("cmd", parts[0]))
 
 	switch parts[0] {
 	case "quit", "q":
@@ -1582,7 +1588,7 @@ func (m Model) executeSearch(query string) tea.Cmd {
 	if query == "" {
 		return nil
 	}
-	logging.Info("search", "executing search", logging.KV("query", query))
+	logging.Info("search", "executing search")
 	store := m.store
 	// Search across all accounts (empty string = global).
 	return func() tea.Msg {
@@ -1973,7 +1979,7 @@ func (m Model) attachmentPickerView() string {
 		}
 
 		size := formatSize(att.Size)
-		line := fmt.Sprintf("%s%s %s  %s", cursor, check, att.Filename, size)
+		line := fmt.Sprintf("%s%s %s  %s", cursor, check, email.SanitizeLine(att.Filename), size)
 		rows = append(rows, lipgloss.NewStyle().Foreground(color).Render(line))
 	}
 
@@ -2028,4 +2034,21 @@ func formatAge(t time.Time) string {
 	default:
 		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
 	}
+}
+
+// replyAddress extracts the address to reply to from a From value. The
+// display name is attacker-controlled and may itself contain "<victim@corp>"
+// to redirect the reply, so the address is the LAST angle-bracket group, as
+// in RFC 5322 ("display name" <addr-spec>).
+func replyAddress(from string) string {
+	from = email.SanitizeLine(from)
+	if addr, err := mail.ParseAddress(from); err == nil {
+		return addr.Address
+	}
+	if end := strings.LastIndex(from, ">"); end > 0 {
+		if start := strings.LastIndex(from[:end], "<"); start >= 0 {
+			return strings.TrimSpace(from[start+1 : end])
+		}
+	}
+	return strings.TrimSpace(from)
 }

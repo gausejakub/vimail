@@ -152,6 +152,11 @@ func (w *IMAPWorker) dial(withIDLE bool) (*imapclient.Client, error) {
 	case "starttls":
 		client, err = imapclient.DialStartTLS(addr, opts)
 	case "none":
+		// A bearer token grants full mailbox access and cannot be scoped to
+		// this server; never send one over an unencrypted connection.
+		if w.creds != nil && (w.creds.AuthMethod == auth.AuthOAuth2Gmail || w.creds.AuthMethod == auth.AuthOAuth2Outlook) {
+			return nil, fmt.Errorf("refusing to send an OAuth2 token to %s without TLS (tls = \"none\")", addr)
+		}
 		log.Printf("WARNING: IMAP connecting to %s without TLS — credentials sent in plaintext", addr)
 		client, err = imapclient.DialInsecure(addr, opts)
 	default:
@@ -349,7 +354,7 @@ func (w *IMAPWorker) listMailboxes() ([]string, error) {
 		if noSelect {
 			continue
 		}
-		displayName := FolderName(mbox.Mailbox)
+		displayName := email.SanitizeLine(FolderName(mbox.Mailbox))
 		// Always populate folderMap (needed for IMAP operations like restore).
 		w.folderMap[displayName] = mbox.Mailbox
 		// Skip redundant folders from sync and sidebar.
@@ -851,7 +856,7 @@ func (w *IMAPWorker) fetchBodyDirect(folder string, uid uint32, peek bool) (Body
 								break
 							}
 							if bs, ok := item.(imapclient.FetchItemDataBodySection); ok {
-								data, err := io.ReadAll(bs.Literal)
+								data, err := io.ReadAll(io.LimitReader(bs.Literal, maxBodySize))
 								if err != nil {
 									continue
 								}
@@ -1126,10 +1131,8 @@ func (w *IMAPWorker) MoveToTrash(folder string, uid uint32) error {
 		return fmt.Errorf("STORE +FLAGS \\Deleted uid=%d: %w", uid, err)
 	}
 
-	// EXPUNGE.
-	expungeCmd := w.client.Expunge()
-	if err := expungeCmd.Close(); err != nil {
-		return fmt.Errorf("EXPUNGE: %w", err)
+	if err := w.expunge(seqSet); err != nil {
+		return err
 	}
 
 	return nil
@@ -1183,12 +1186,15 @@ func (w *IMAPWorker) MoveToTrashBatch(folder string, uids []uint32, onProgress f
 	}
 
 	// Single EXPUNGE after all chunks.
+	var all imap.UIDSet
+	for _, uid := range uids {
+		all.AddNum(imap.UID(uid))
+	}
 	cancel = w.opTimer(w.commandDeadline)
-	expungeCmd := w.client.Expunge()
-	err = expungeCmd.Close()
+	err = w.expunge(all)
 	cancel()
 	if err != nil {
-		return fmt.Errorf("EXPUNGE: %w", err)
+		return err
 	}
 
 	return nil
@@ -1253,9 +1259,8 @@ func (w *IMAPWorker) MoveToFolder(srcFolder string, uid uint32, dstFolder string
 		return fmt.Errorf("STORE +FLAGS \\Deleted uid=%d: %w", uid, err)
 	}
 
-	expungeCmd := w.client.Expunge()
-	if err := expungeCmd.Close(); err != nil {
-		return fmt.Errorf("EXPUNGE: %w", err)
+	if err := w.expunge(seqSet); err != nil {
+		return err
 	}
 
 	return nil
@@ -1414,4 +1419,22 @@ func isConnectionError(err error) bool {
 	}
 	_, ok := err.(*net.OpError)
 	return ok
+}
+
+// expunge permanently removes the given just-deleted UIDs from the selected
+// mailbox. With UIDPLUS it uses UID EXPUNGE, so messages another client has
+// flagged \Deleted but not yet expunged are left alone; a plain EXPUNGE would
+// purge those too.
+func (w *IMAPWorker) expunge(uids imap.UIDSet) error {
+	caps := w.client.Caps()
+	if caps.Has(imap.CapUIDPlus) || caps.Has(imap.CapIMAP4rev2) {
+		if err := w.client.UIDExpunge(uids).Close(); err != nil {
+			return fmt.Errorf("UID EXPUNGE: %w", err)
+		}
+		return nil
+	}
+	if err := w.client.Expunge().Close(); err != nil {
+		return fmt.Errorf("EXPUNGE: %w", err)
+	}
+	return nil
 }

@@ -1089,3 +1089,18 @@ func findQuitInCmd(cmd tea.Cmd) bool {
 	}
 	return false
 }
+
+func TestReplyAddressIgnoresSpoofedDisplayName(t *testing.T) {
+	cases := map[string]string{
+		`Alice <alice@example.com>`:                           "alice@example.com",
+		`"<victim@corp.test>" <attacker@evil.test>`:           "attacker@evil.test",
+		`<victim@corp.test> Real Sender <attacker@evil.test>`: "attacker@evil.test",
+		`plain@example.com`:                                   "plain@example.com",
+		"Name\r\nBcc: x@evil.test <a@example.com>":            "a@example.com",
+	}
+	for in, want := range cases {
+		if got := replyAddress(in); got != want {
+			t.Errorf("replyAddress(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

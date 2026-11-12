@@ -289,7 +289,7 @@ func truncateBody(message *readMessageResult, maxChars int) {
 // explicit through list_recent_messages fresh=true or read_messages
 // fetch_missing=true.
 func (s *Server) registerReadTools() {
-	sdk.AddTool(s.srv, &sdk.Tool{
+	addTool(s, &sdk.Tool{
 		Name:        "list_recent_messages",
 		Description: "List unique received messages in a time window across all accounts in one call. Excludes Sent, Drafts, and Trash; collapses Gmail label copies; set fresh=true to sync every included account first. Use read_messages to inspect selected bodies in one batch.",
 	}, func(ctx context.Context, req *sdk.CallToolRequest, args listRecentMessagesArgs) (*sdk.CallToolResult, listRecentMessagesResult, error) {
@@ -355,7 +355,7 @@ func (s *Server) registerReadTools() {
 		return nil, out, nil
 	})
 
-	sdk.AddTool(s.srv, &sdk.Tool{
+	addTool(s, &sdk.Tool{
 		Name:        "list_accounts",
 		Description: "List the configured email accounts.",
 	}, func(ctx context.Context, req *sdk.CallToolRequest, args listAccountsArgs) (*sdk.CallToolResult, listAccountsResult, error) {
@@ -367,7 +367,7 @@ func (s *Server) registerReadTools() {
 		return nil, out, nil
 	})
 
-	sdk.AddTool(s.srv, &sdk.Tool{
+	addTool(s, &sdk.Tool{
 		Name:        "list_operations",
 		Description: "List recent mailbox write operations and their delivery state. Use this to verify whether mark-read, delete, restore, or send operations completed, remain queued/retrying, or failed.",
 	}, func(ctx context.Context, req *sdk.CallToolRequest, args listOperationsArgs) (*sdk.CallToolResult, listOperationsResult, error) {
@@ -432,7 +432,7 @@ func (s *Server) registerReadTools() {
 		return nil, out, nil
 	})
 
-	sdk.AddTool(s.srv, &sdk.Tool{
+	addTool(s, &sdk.Tool{
 		Name:        "list_folders",
 		Description: "List an account's folders with unread and total message counts.",
 	}, func(ctx context.Context, req *sdk.CallToolRequest, args listFoldersArgs) (*sdk.CallToolResult, listFoldersResult, error) {
@@ -452,7 +452,7 @@ func (s *Server) registerReadTools() {
 		return nil, out, nil
 	})
 
-	sdk.AddTool(s.srv, &sdk.Tool{
+	addTool(s, &sdk.Tool{
 		Name:        "list_messages",
 		Description: "List message headers in a folder, newest first, paged. Data comes from the local cache and is as fresh as the last sync.",
 	}, func(ctx context.Context, req *sdk.CallToolRequest, args listMessagesArgs) (*sdk.CallToolResult, listMessagesResult, error) {
@@ -488,7 +488,7 @@ func (s *Server) registerReadTools() {
 		return nil, out, nil
 	})
 
-	sdk.AddTool(s.srv, &sdk.Tool{
+	addTool(s, &sdk.Tool{
 		Name:        "read_message",
 		Description: "Read a full message, including its cached body and attachment names. Bodies are fetched lazily by the sync process; body_cached reports whether one is available yet.",
 	}, func(ctx context.Context, req *sdk.CallToolRequest, args readMessageArgs) (*sdk.CallToolResult, readMessageResult, error) {
@@ -507,7 +507,7 @@ func (s *Server) registerReadTools() {
 		return nil, out, nil
 	})
 
-	sdk.AddTool(s.srv, &sdk.Tool{
+	addTool(s, &sdk.Tool{
 		Name:        "read_messages",
 		Description: "Read body excerpts and attachment names for up to 50 message handles in one call. Set fetch_missing=true when details matter; uncached bodies are fetched from IMAP without marking messages read. Reports truncation and per-message errors; use read_message for a complete long body.",
 	}, func(ctx context.Context, req *sdk.CallToolRequest, args readMessagesArgs) (*sdk.CallToolResult, readMessagesResult, error) {
@@ -558,7 +558,7 @@ func (s *Server) registerReadTools() {
 		return nil, out, nil
 	})
 
-	sdk.AddTool(s.srv, &sdk.Tool{
+	addTool(s, &sdk.Tool{
 		Name:        "search_messages",
 		Description: "Search the local cache across subject, sender, recipients, and cached bodies. Results contain real folder/UID handles and report when the requested limit truncated the result set.",
 	}, func(ctx context.Context, req *sdk.CallToolRequest, args searchMessagesArgs) (*sdk.CallToolResult, searchMessagesResult, error) {
@@ -585,7 +585,7 @@ func (s *Server) registerReadTools() {
 		for _, m := range matches {
 			out.Messages = append(out.Messages, header(m, true))
 		}
-		logging.Debug("mcp", "search_messages", logging.Acct(acct), logging.KV("query", args.Query), logging.KV("returned", len(out.Messages)), logging.KV("truncated", out.Truncated))
+		logging.Debug("mcp", "search_messages", logging.Acct(acct), logging.KV("returned", len(out.Messages)), logging.KV("truncated", out.Truncated))
 		return nil, out, nil
 	})
 }

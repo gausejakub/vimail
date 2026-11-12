@@ -87,6 +87,11 @@ type AIConfig struct {
 // is absent) the send_email tool is not registered at all.
 type MCPConfig struct {
 	AllowSend bool `toml:"allow_send"`
+	// AllowWrite exposes the tools that change mailbox state (mark, flag,
+	// move, delete, restore, drafts). Off by default: mail is untrusted input
+	// to the AI client, so a prompt-injected client should not be able to
+	// alter or hide mail unless the user opted in.
+	AllowWrite bool `toml:"allow_write"`
 }
 
 type Config struct {

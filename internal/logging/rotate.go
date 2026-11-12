@@ -16,8 +16,13 @@ var (
 	retentionCheckInterval = time.Hour
 )
 
-func logPath(logDir string) string     { return filepath.Join(logDir, "vimail.log") }
-func rotatedPath(logDir string) string { return filepath.Join(logDir, "vimail.log.1") }
+// activeLogName is the file this process logs to. The TUI and the MCP server
+// use different files; rotation and retention must act on the process's own
+// file, never on the other process's.
+var activeLogName = "vimail.log"
+
+func logPath(logDir string) string     { return filepath.Join(logDir, activeLogName) }
+func rotatedPath(logDir string) string { return filepath.Join(logDir, activeLogName+".1") }
 
 // rotateIfNeeded checks the current log file and rotates or deletes as needed.
 // Called once at Init() before opening the file. Live sessions repeat the same

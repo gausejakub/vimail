@@ -19,7 +19,9 @@ import (
 	"github.com/gausejakub/vimail/internal/logging"
 	vmcp "github.com/gausejakub/vimail/internal/mcp"
 	"github.com/gausejakub/vimail/internal/tui"
+	"github.com/gausejakub/vimail/internal/tui/components/preview"
 	"github.com/gausejakub/vimail/internal/worker"
+	"github.com/zalando/go-keyring"
 
 	// Import theme package to trigger init() registrations.
 	_ "github.com/gausejakub/vimail/internal/theme"
@@ -63,6 +65,41 @@ func runSetup() {
 	}
 }
 
+// initCacheKey loads the body-encryption key from the OS keyring, creating it
+// on first run. It never replaces an existing key and never silently writes
+// plaintext next to already-encrypted mail.
+func initCacheKey(store *cache.SQLiteStore) error {
+	key, err := auth.GetCacheKey()
+	switch {
+	case err == nil:
+		if len(key) != 32 {
+			return fmt.Errorf("cache encryption key in the OS keyring is invalid (%d bytes, want 32); remove the %q keyring entry and the cache to start fresh", len(key), "vimail/_cache_encryption_key")
+		}
+		store.SetEncryptionKey(key)
+		return nil
+	case errors.Is(err, keyring.ErrNotFound):
+		// First run — generate and store a new key.
+		newKey, genErr := cache.GenerateEncryptionKey()
+		if genErr == nil {
+			genErr = auth.StoreCacheKey(newKey)
+		}
+		if genErr == nil {
+			store.SetEncryptionKey(newKey)
+			logging.Info("app", "cache encryption key initialized")
+			return nil
+		}
+		err = genErr
+	}
+	// The keyring is unavailable (locked, no Secret Service, …). Generating a
+	// new key here would orphan mail encrypted with the real one.
+	if store.HasEncryptedBodies() {
+		return fmt.Errorf("the OS keyring is unavailable (%w) and the cache holds encrypted mail; unlock the keyring and try again", err)
+	}
+	logging.Warn("app", "OS keyring unavailable — cached message bodies will be stored UNENCRYPTED", logging.Err(err))
+	fmt.Fprintf(os.Stderr, "vimail: warning: OS keyring unavailable (%v); cached message bodies will be stored unencrypted\n", err)
+	return nil
+}
+
 // openStore opens the SQLite cache, initializes the body-encryption key from
 // the OS keyring, and seeds accounts from config. Shared bootstrap for the
 // TUI and MCP entry points; the caller owns closing the returned db.
@@ -72,6 +109,9 @@ func openStore(cfg config.Config) (*cache.SQLiteStore, *sql.DB, error) {
 	if err := os.MkdirAll(dbDir, 0700); err != nil {
 		return nil, nil, fmt.Errorf("failed to create data dir: %w", err)
 	}
+	// MkdirAll leaves an existing directory's mode alone; the cache holds
+	// mail, so make sure other local users cannot enter it.
+	_ = os.Chmod(dbDir, 0700)
 	db, err := cache.Open(filepath.Join(dbDir, "cache.db"))
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to open cache: %w", err)
@@ -80,18 +120,15 @@ func openStore(cfg config.Config) (*cache.SQLiteStore, *sql.DB, error) {
 	sqlStore := cache.NewSQLiteStore(db)
 
 	// Initialize cache encryption key (stored in OS keyring).
-	if encKey, err := auth.GetCacheKey(); err == nil {
-		sqlStore.SetEncryptionKey(encKey)
-	} else {
-		// First run — generate and store a new key.
-		if newKey, err := cache.GenerateEncryptionKey(); err == nil {
-			if err := auth.StoreCacheKey(newKey); err == nil {
-				sqlStore.SetEncryptionKey(newKey)
-				logging.Info("app", "cache encryption key initialized")
-			} else {
-				logging.Warn("app", "failed to store cache encryption key — bodies stored unencrypted", logging.Err(err))
-			}
-		}
+	if err := initCacheKey(sqlStore); err != nil {
+		db.Close()
+		return nil, nil, err
+	}
+	// One-time upgrade: older versions stored headers in plaintext.
+	if n, err := sqlStore.EncryptLegacyRows(); err != nil {
+		logging.Warn("app", "encrypting legacy cache rows failed", logging.Err(err))
+	} else if n > 0 {
+		logging.Info("app", "encrypted legacy cache rows", logging.KV("rows", n))
 	}
 
 	// Seed accounts from config.
@@ -239,7 +276,8 @@ func runTUI() {
 		coord.DisconnectAll()
 	}
 
-	// Clean up temp files.
-	tmpDir := filepath.Join(os.TempDir(), "vimail")
-	os.RemoveAll(tmpDir)
+	// Clean up temp files (decrypted HTML opened in the browser), including
+	// the fixed path used by older versions.
+	preview.CleanupTemp()
+	os.RemoveAll(filepath.Join(os.TempDir(), "vimail"))
 }

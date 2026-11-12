@@ -22,6 +22,10 @@ func RunSetup(cfg config.Config) error {
 
 	for _, acct := range cfg.Accounts {
 		fmt.Printf("\n── Setting up: %s (%s) ──\n", acct.Name, acct.Email)
+		if strings.EqualFold(acct.TLS, "none") {
+			fmt.Println("  WARNING: tls = \"none\" — the password and all mail for this account")
+			fmt.Println("  travel unencrypted. Use \"tls\" or \"starttls\" unless the server is local.")
+		}
 
 		method := ParseAuthMethod(acct.AuthMethod)
 

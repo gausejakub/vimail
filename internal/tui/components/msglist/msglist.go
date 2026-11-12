@@ -707,15 +707,7 @@ func displayName(addr string) string {
 }
 
 func sanitize(s string) string {
-	var b []rune
-	for _, r := range s {
-		if r == '\n' || r == '\r' || r == '\t' {
-			b = append(b, ' ')
-		} else if r >= 0x20 || r == 0 {
-			b = append(b, r)
-		}
-	}
-	return string(b)
+	return email.SanitizeLine(s)
 }
 
 // truncate cuts a string to maxWidth runes.

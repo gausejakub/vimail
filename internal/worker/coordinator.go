@@ -40,6 +40,11 @@ type Coordinator struct {
 	// account+"\x00"+folder, so a burst of stale-UID errors starts one sync.
 	syncInFlight map[string]bool
 
+	// markReadFlushScheduled marks accounts with a pending deferred mark-read
+	// flush (see MarkRead), so a burst of selections shares one IMAP STORE.
+	markReadMu             sync.Mutex
+	markReadFlushScheduled map[string]bool
+
 	program *tea.Program // set after bubbletea starts, for async progress messages
 }
 
@@ -424,8 +429,97 @@ func (c *Coordinator) fetchBodyNow(acctEmail, folder string, uid uint32, peek bo
 
 // MarkRead returns a tea.Cmd that marks a message as read on the IMAP server.
 // The operation is queued so it can be retried if the connection is lost.
+//
+// It is the TUI's per-selection path: the op is queued durably right away,
+// but delivery is deferred by markReadFlushDelay so scrolling through many
+// messages sends one batched STORE per folder instead of one IMAP round trip
+// (plus a connection check) per message, which used to starve sync and body
+// fetches on the shared connection.
 func (c *Coordinator) MarkRead(acctEmail, folder string, uid uint32) tea.Cmd {
-	return c.MarkReadMessages(acctEmail, folder, []uint32{uid})
+	return func() tea.Msg {
+		if _, err := c.store.QueueOp(cache.OpMarkRead, acctEmail, folder, cache.MarkReadPayload{UIDs: []uint32{uid}}); err != nil {
+			logging.Warn("mark_read", "queue mark-read failed", logging.Acct(acctEmail), logging.Fld(folder), logging.Err(err))
+			return nil
+		}
+		c.scheduleMarkReadFlush(acctEmail)
+		return nil
+	}
+}
+
+// markReadFlushDelay is how long MarkRead waits to collect further selections
+// before delivering them in one batch.
+var markReadFlushDelay = 1500 * time.Millisecond
+
+func (c *Coordinator) scheduleMarkReadFlush(acctEmail string) {
+	c.markReadMu.Lock()
+	if c.markReadFlushScheduled == nil {
+		c.markReadFlushScheduled = make(map[string]bool)
+	}
+	if c.markReadFlushScheduled[acctEmail] {
+		c.markReadMu.Unlock()
+		return
+	}
+	c.markReadFlushScheduled[acctEmail] = true
+	c.markReadMu.Unlock()
+
+	time.AfterFunc(markReadFlushDelay, func() {
+		// Clear the flag before collecting: an op queued from now on schedules
+		// a new flush, and every earlier one is visible to this collection.
+		c.markReadMu.Lock()
+		delete(c.markReadFlushScheduled, acctEmail)
+		c.markReadMu.Unlock()
+		c.flushMarkReads(acctEmail)
+	})
+}
+
+// flushMarkReads delivers every queued UID mark-read of the account as one
+// batch per folder.
+func (c *Coordinator) flushMarkReads(acctEmail string) {
+	acct, ok := c.accountByEmail(acctEmail)
+	if !ok {
+		return
+	}
+	batches := claimMarkReadBatches(c.store, acctEmail)
+	if len(batches) == 0 {
+		return
+	}
+	w, err := c.ensureIMAPWorkerForWrite(acct)
+	if err != nil {
+		logging.Warn("mark_read", "IMAP worker unavailable", logging.Acct(acctEmail), logging.Err(err))
+		for _, b := range batches {
+			for _, id := range b.opIDs {
+				c.store.FailOp(id, err.Error())
+			}
+		}
+		return
+	}
+	retryMarkReadBatches(c.store, acctEmail, batches, w.MarkReadBatch)
+}
+
+// claimMarkReadBatches claims the account's pending UID mark-read ops and
+// groups them by folder. Whole-folder (All) ops are left to the regular drain.
+func claimMarkReadBatches(store *cache.SQLiteStore, acctEmail string) map[string]*markReadBatch {
+	batches := make(map[string]*markReadBatch)
+	for _, op := range store.PendingOps() {
+		if op.Account != acctEmail || op.Type != cache.OpMarkRead {
+			continue
+		}
+		var payload cache.MarkReadPayload
+		if err := json.Unmarshal(op.Payload, &payload); err != nil || payload.All {
+			continue
+		}
+		if !store.StartOp(op.ID) {
+			continue // claimed by another drainer, or still backing off
+		}
+		b := batches[op.Folder]
+		if b == nil {
+			b = &markReadBatch{}
+			batches[op.Folder] = b
+		}
+		b.uids = append(b.uids, payload.UIDs...)
+		b.opIDs = append(b.opIDs, op.ID)
+	}
+	return batches
 }
 
 // MarkReadMessages queues and executes one batched mark-read operation.

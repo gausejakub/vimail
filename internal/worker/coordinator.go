@@ -45,6 +45,12 @@ type Coordinator struct {
 	markReadMu             sync.Mutex
 	markReadFlushScheduled map[string]bool
 
+	// wantedFetch is the UID the TUI most recently selected per account. It is
+	// set on the UI goroutine when a FetchBody command is created, so it follows
+	// the user's real selection order rather than goroutine scheduling.
+	wantedMu    sync.Mutex
+	wantedFetch map[string]uint32
+
 	program *tea.Program // set after bubbletea starts, for async progress messages
 }
 
@@ -359,8 +365,30 @@ func (c *Coordinator) VerifyAll(full bool) tea.Cmd {
 	}
 }
 
-// FetchBody returns a tea.Cmd that lazily fetches a message body.
+// fetchDebounce delays a TUI body fetch so that scrolling past a message
+// (holding j/k) does not start an IMAP fetch for every message on the way.
+var fetchDebounce = 150 * time.Millisecond
+
+func (c *Coordinator) setWantedFetch(acctEmail string, uid uint32) {
+	c.wantedMu.Lock()
+	defer c.wantedMu.Unlock()
+	if c.wantedFetch == nil {
+		c.wantedFetch = make(map[string]uint32)
+	}
+	c.wantedFetch[acctEmail] = uid
+}
+
+func (c *Coordinator) wantedFetchUID(acctEmail string) uint32 {
+	c.wantedMu.Lock()
+	defer c.wantedMu.Unlock()
+	return c.wantedFetch[acctEmail]
+}
+
+// FetchBody returns a tea.Cmd that lazily fetches a message body. It must be
+// called from the bubbletea Update loop: creating the command records uid as
+// the account's wanted message, superseding earlier selections.
 func (c *Coordinator) FetchBody(acctEmail, folder string, uid uint32) tea.Cmd {
+	c.setWantedFetch(acctEmail, uid)
 	return func() (result tea.Msg) {
 		defer func() {
 			if r := recover(); r != nil {
@@ -373,12 +401,20 @@ func (c *Coordinator) FetchBody(acctEmail, folder string, uid uint32) tea.Cmd {
 				}
 			}
 		}()
+		time.Sleep(fetchDebounce)
+		if wanted := c.wantedFetchUID(acctEmail); wanted != uid {
+			return FetchBodyResult{Account: acctEmail, Folder: folder, UID: uid,
+				Err: fmt.Errorf("%w: UID %d superseded by UID %d", ErrFetchSuperseded, uid, wanted)}
+		}
 		logging.Debug("fetch", "fetching body", logging.Acct(acctEmail), logging.Fld(folder), logging.MsgUID(uid))
 		start := time.Now()
-		res, err := c.FetchBodyNow(acctEmail, folder, uid)
-		if err != nil {
+		res, err := c.fetchBodyForTUI(acctEmail, folder, uid)
+		switch {
+		case errors.Is(err, ErrFetchSuperseded):
+			logging.Debug("fetch", "body fetch superseded", logging.Acct(acctEmail), logging.Fld(folder), logging.MsgUID(uid), logging.Dur(time.Since(start)))
+		case err != nil:
 			logging.Error("fetch", "body fetch failed", logging.Acct(acctEmail), logging.Fld(folder), logging.MsgUID(uid), logging.Dur(time.Since(start)), logging.Err(err))
-		} else {
+		default:
 			logging.Debug("fetch", "body fetched", logging.Acct(acctEmail), logging.Fld(folder), logging.MsgUID(uid), logging.Dur(time.Since(start)))
 		}
 		return FetchBodyResult{
@@ -404,6 +440,22 @@ func (c *Coordinator) FetchBodyNow(acctEmail, folder string, uid uint32) (BodyRe
 // setting its IMAP \Seen flag. MCP review uses this path to remain read-only.
 func (c *Coordinator) PeekBodyNow(acctEmail, folder string, uid uint32) (BodyResult, error) {
 	return c.fetchBodyNow(acctEmail, folder, uid, true)
+}
+
+// fetchBodyForTUI fetches like FetchBodyNow, but keeps the worker's wanted
+// UID in step with the TUI's latest selection instead of this request's UID,
+// so a fetch that started late cannot override a newer selection.
+func (c *Coordinator) fetchBodyForTUI(acctEmail, folder string, uid uint32) (BodyResult, error) {
+	acct, ok := c.accountByEmail(acctEmail)
+	if !ok {
+		return BodyResult{}, fmt.Errorf("no such account: %s", acctEmail)
+	}
+	w, err := c.ensureIMAPWorkerMode(acct, false)
+	if err != nil {
+		return BodyResult{}, err
+	}
+	w.SetWantedFetchUID(c.wantedFetchUID(acctEmail))
+	return w.FetchBodyDirect(folder, uid)
 }
 
 func (c *Coordinator) fetchBodyNow(acctEmail, folder string, uid uint32, peek bool) (BodyResult, error) {

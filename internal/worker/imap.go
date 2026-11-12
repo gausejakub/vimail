@@ -2,6 +2,7 @@ package worker
 
 import (
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -284,15 +285,38 @@ func (w *IMAPWorker) opTimer(d time.Duration) func() {
 	return func() { t.Stop() }
 }
 
-// fetchOpTimer is like opTimer but for the dedicated fetch client.
-func (w *IMAPWorker) fetchOpTimer(d time.Duration) func() {
+// fetchOpTimer is like opTimer but for the dedicated fetch client. timedOut
+// reports whether the deadline fired, so callers can surface a timeout instead
+// of the protocol error the forced close leaves behind.
+func (w *IMAPWorker) fetchOpTimer(d time.Duration) (cancel func(), timedOut func() bool) {
+	var fired atomic.Bool
 	t := time.AfterFunc(d, func() {
+		fired.Store(true)
 		log.Printf("IMAP fetch op timeout (%v) for %s — force-closing fetch connection", d, w.acct.Email)
 		if w.fetchClient != nil {
 			w.fetchClient.Close()
 		}
 	})
-	return func() { t.Stop() }
+	return func() { t.Stop() }, fired.Load
+}
+
+// ErrFetchSuperseded reports that a body fetch was skipped because the user
+// selected another message first. It is expected while scrolling, not a failure.
+var ErrFetchSuperseded = errors.New("fetch superseded")
+
+// readBodyLiteral reads a FETCH body literal up to maxBodySize and always
+// consumes the rest, so an oversized body or a read error cannot leave the
+// literal open and desynchronize the connection for every later command.
+func readBodyLiteral(r io.Reader) ([]byte, error) {
+	return readLimitedDrain(r, maxBodySize)
+}
+
+func readLimitedDrain(r io.Reader, limit int64) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, limit))
+	if _, drainErr := io.Copy(io.Discard, r); err == nil {
+		err = drainErr
+	}
+	return data, err
 }
 
 // IsConnected returns true if the IMAP client exists.
@@ -705,7 +729,7 @@ func (w *IMAPWorker) FetchBody(folder string, uid uint32) (BodyResult, error) {
 				break
 			}
 			if bs, ok := item.(imapclient.FetchItemDataBodySection); ok {
-				data, err := io.ReadAll(io.LimitReader(bs.Literal, maxBodySize))
+				data, err := readBodyLiteral(bs.Literal)
 				if err != nil {
 					continue
 				}
@@ -756,15 +780,18 @@ func (w *IMAPWorker) PeekBodyDirect(folder string, uid uint32) (BodyResult, erro
 }
 
 func (w *IMAPWorker) fetchBodyDirect(folder string, uid uint32, peek bool) (BodyResult, error) {
+	// Skip if the user has already moved on — before queueing for the lock,
+	// and again after, since the wait can be long.
+	if wanted := w.wantedFetchUID.Load(); wanted != 0 && wanted != uid {
+		return BodyResult{}, fmt.Errorf("%w: UID %d superseded by UID %d", ErrFetchSuperseded, uid, wanted)
+	}
 	w.fetchMu.Lock()
 	defer w.fetchMu.Unlock()
-
-	// Skip if user has already moved to a different message.
 	if wanted := w.wantedFetchUID.Load(); wanted != 0 && wanted != uid {
-		return BodyResult{}, fmt.Errorf("fetch skipped: UID %d superseded by UID %d", uid, wanted)
+		return BodyResult{}, fmt.Errorf("%w: UID %d superseded by UID %d", ErrFetchSuperseded, uid, wanted)
 	}
 
-	cancel := w.fetchOpTimer(fetchBodyDeadline)
+	cancel, timedOut := w.fetchOpTimer(fetchBodyDeadline)
 	defer cancel()
 
 	client := w.fetchClient
@@ -814,7 +841,7 @@ func (w *IMAPWorker) fetchBodyDirect(folder string, uid uint32, peek bool) (Body
 				break
 			}
 			if bs, ok := item.(imapclient.FetchItemDataBodySection); ok {
-				data, err := io.ReadAll(io.LimitReader(bs.Literal, maxBodySize))
+				data, err := readBodyLiteral(bs.Literal)
 				if err != nil {
 					continue
 				}
@@ -829,6 +856,9 @@ func (w *IMAPWorker) fetchBodyDirect(folder string, uid uint32, peek bool) (Body
 	}
 
 	if err := fetchCmd.Close(); err != nil {
+		if timedOut() {
+			return result, fmt.Errorf("FETCH body: timed out after %s", fetchBodyDeadline)
+		}
 		return result, fmt.Errorf("FETCH body: %w", err)
 	}
 
@@ -856,7 +886,7 @@ func (w *IMAPWorker) fetchBodyDirect(folder string, uid uint32, peek bool) (Body
 								break
 							}
 							if bs, ok := item.(imapclient.FetchItemDataBodySection); ok {
-								data, err := io.ReadAll(io.LimitReader(bs.Literal, maxBodySize))
+								data, err := readBodyLiteral(bs.Literal)
 								if err != nil {
 									continue
 								}
@@ -920,7 +950,7 @@ func (w *IMAPWorker) FetchRawMessage(folder string, uid uint32) ([]byte, error) 
 				break
 			}
 			if bs, ok := item.(imapclient.FetchItemDataBodySection); ok {
-				data, err := io.ReadAll(io.LimitReader(bs.Literal, maxBodySize))
+				data, err := readBodyLiteral(bs.Literal)
 				if err == nil {
 					raw = data
 				}

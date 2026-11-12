@@ -2,6 +2,7 @@ package tui
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/mail"
 	"strings"
@@ -542,7 +543,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, cmd)
 			// Also update the message list so reply has the body.
 			m.msglist = m.msglist.UpdateBody(msg.UID, msg.Body, msg.HTMLBody, msg.Attachments)
-		} else if strings.Contains(msg.Err.Error(), "superseded") {
+		} else if errors.Is(msg.Err, worker.ErrFetchSuperseded) {
 			// Fetch was skipped because user moved to another message — ignore silently.
 			logging.Debug("fetch", "skipped stale fetch", logging.MsgUID(msg.UID))
 		} else {

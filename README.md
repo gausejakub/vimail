@@ -258,12 +258,12 @@ After adding accounts, run `vimail setup` to store credentials.
 | `gg` / `G` | Jump to top / bottom |
 | `500gg` / `500G` | Jump to line N |
 | `Ctrl+D` / `Ctrl+U` | Half-page scroll (preview) |
-| `Enter` (preview pane) | Open the message in the Vim reader (see below) |
+| `Enter` (message list) / `Enter`, `v`, `/` (preview pane) | Open the message in the Vim reader (see below) |
 | `Tab` / `Shift+Tab` | Next / previous pane |
 
 ### Vim reader
 
-Focus the preview pane (`l` / `Tab`) and press `Enter` to open the message in a read-only Vim buffer — headers, body and attachment list:
+Press `Enter` on a message, or focus the preview pane (`l` / `Tab`) and press `Enter` or any Vim reading key (`v`, `V`, `/`, `w`, `y`, …), to open the message in a read-only Vim buffer — headers, body and attachment list. The key you pressed is applied right away, so `v` in the preview starts a selection:
 
 - Move with Vim motions: `h j k l`, `w b e W B E`, `0 ^ $`, `gg G`, `{count}`, `f`/`t`, `Ctrl+D` / `Ctrl+U`, `/` `?` `n` `N`
 - Select with `v` / `V`, then `y` to copy; `yy`, `yiw`, `yaW`, `yi(`, `y$` … work too
@@ -283,7 +283,7 @@ Focus the preview pane (`l` / `Tab`) and press `Enter` to open the message in a 
 | `E` | Export message(s) to ZIP |
 | `o` | Open in browser |
 | `R` | Refresh |
-| `Enter` | Open draft (in Drafts folder) |
+| `Enter` | Open draft (in Drafts folder), otherwise open the Vim reader |
 | `Ctrl+S` | Send message (in compose) |
 | `Esc` | Close overlay / save draft / clear search |
 | `/` | Search all accounts and folders |

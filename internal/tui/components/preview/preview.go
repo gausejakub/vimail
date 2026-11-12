@@ -274,7 +274,7 @@ func (m Model) View() string {
 	// Hint for browser viewing
 	allLines = append(allLines,
 		"",
-		lipgloss.NewStyle().Foreground(t.TextMuted()).Render("Press 'o' to open in browser · Enter in this pane: Vim reader"),
+		lipgloss.NewStyle().Foreground(t.TextMuted()).Render("Enter/v: Vim reader · o: browser"),
 	)
 
 	// Apply scroll offset

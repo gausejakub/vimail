@@ -2,12 +2,14 @@ package preview
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/gausejakub/vimail/internal/theme"
 	"github.com/gausejakub/vimail/pkg/vimtea"
+	"github.com/muesli/reflow/wordwrap"
 )
 
 // readerKeys open the reader from the preview pane and are then applied in it.
@@ -64,7 +66,46 @@ func (m Model) StartReading() (Model, tea.Cmd) {
 	)
 	m.reading = true
 	m = m.sizeReader()
-	return m, m.reader.Init()
+	init := m.reader.Init()
+	// Put the cursor where the user was reading: the first body line, or the
+	// body line at the top of the scrolled preview (then scrolled to the top).
+	row := m.readerStartRow()
+	keys := strconv.Itoa(row) + "G"
+	if m.scrollOffset > previewHeaderRows {
+		keys += "zt"
+	}
+	for _, r := range keys {
+		updated, _ := m.reader.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m.reader = updated.(vimtea.Editor)
+	}
+	return m, init
+}
+
+// previewHeaderRows is the header block height in the plain preview (From,
+// To, Date, Subject, separator); readerBodyRow is the 1-based reader line of
+// the first body line (From, To, Date, Subject, blank line).
+const (
+	previewHeaderRows = 5
+	readerBodyRow     = 6
+)
+
+// readerStartRow maps the preview's scroll position to the reader line shown
+// at the top of the pane.
+func (m Model) readerStartRow() int {
+	if m.scrollOffset <= previewHeaderRows {
+		return readerBodyRow
+	}
+	skip := m.scrollOffset - previewHeaderRows // wrapped body rows scrolled past
+	width := max(10, m.width-1)
+	lines := strings.Split(preparedBody(m.message.Body, m.message.HTMLBody), "\n")
+	seen := 0
+	for i, line := range lines {
+		seen += strings.Count(wordwrap.String(breakLongWords(line, width), width), "\n") + 1
+		if seen > skip {
+			return readerBodyRow + i
+		}
+	}
+	return readerBodyRow + len(lines) - 1
 }
 
 // StopReading closes the Vim reader.

@@ -8,7 +8,7 @@ import (
 	"github.com/gausejakub/vimail/pkg/vimtea"
 )
 
-func TestVInPreviewPaneOpensReaderInVisualMode(t *testing.T) {
+func TestVInPreviewPaneOpensReaderThenSelects(t *testing.T) {
 	m := testApp()
 	send(&m, "l")
 	if m.focusedPane != layout.PanePreview {
@@ -21,8 +21,13 @@ func TestVInPreviewPaneOpensReaderInVisualMode(t *testing.T) {
 	if m.mode == keys.ModeVisual {
 		t.Fatal("v also started the message-list visual mode")
 	}
+	// The opening v only shows the cursor; the next v starts the selection there.
+	if got := m.preview.ReaderMode(); got != vimtea.ModeNormal {
+		t.Fatalf("reader mode = %v, want normal after the opening v", got)
+	}
+	send(&m, "v")
 	if got := m.preview.ReaderMode(); got != vimtea.ModeVisual {
-		t.Fatalf("reader mode = %v, want visual (key applied after opening)", got)
+		t.Fatalf("reader mode = %v, want visual after the second v", got)
 	}
 	send(&m, "esc") // ends the selection
 	send(&m, "q")   // closes the reader

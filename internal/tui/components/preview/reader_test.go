@@ -1,6 +1,7 @@
 package preview
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -157,5 +158,26 @@ func TestReaderHintDoesNotRepeatMode(t *testing.T) {
 		if got := readerHint(status, mode); got != want {
 			t.Errorf("readerHint(%q) = %q, want %q", status, got, want)
 		}
+	}
+}
+
+func TestReaderCursorStartsOnFirstBodyLine(t *testing.T) {
+	m := readerModel(t)
+	if _, msgs := press(m, "y", "y"); len(yanks(msgs)) != 1 || yanks(msgs)[0] != "\nTracking code: ABC-123" {
+		t.Fatalf("yy at start = %q, want the first body line", yanks(msgs))
+	}
+}
+
+func TestReaderCursorStartsWhereThePreviewWasScrolled(t *testing.T) {
+	var body []string
+	for i := 1; i <= 60; i++ {
+		body = append(body, fmt.Sprintf("line %02d", i))
+	}
+	m := New().SetSize(80, 20)
+	m, _ = m.Update(util.MessageSelectedMsg{Message: email.Message{UID: 1, Subject: "S", Body: strings.Join(body, "\n")}})
+	m.scrollOffset = previewHeaderRows + 30 // 30 body rows scrolled past
+	m, _ = m.StartReading()
+	if _, msgs := press(m, "y", "y"); len(yanks(msgs)) != 1 || yanks(msgs)[0] != "\nline 31" {
+		t.Fatalf("yy at start = %q, want line 31 (top of the scrolled preview)", yanks(msgs))
 	}
 }

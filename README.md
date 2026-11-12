@@ -263,7 +263,7 @@ After adding accounts, run `vimail setup` to store credentials.
 
 ### Vim reader
 
-Press `Enter` on a message, or focus the preview pane (`l` / `Tab`) and press `Enter` or any Vim reading key (`v`, `V`, `/`, `w`, `y`, …), to open the message in a read-only Vim buffer — headers, body and attachment list. The key you pressed is applied right away, so `v` in the preview starts a selection:
+Press `Enter` on a message, or focus the preview pane (`l` / `Tab`) and press `Enter` or any Vim reading key (`v`, `V`, `/`, `w`, `y`, …), to open the message in a read-only Vim buffer — headers, body and attachment list. The cursor starts at the line you were reading (the first body line, or the top of the scrolled preview). `v` / `V` from the preview just open the reader — move to where the selection should start and press `v` again; other keys such as `/` act right away:
 
 - Move with Vim motions: `h j k l`, `w b e W B E`, `0 ^ $`, `gg G`, `{count}`, `f`/`t`, `Ctrl+D` / `Ctrl+U`, `/` `?` `n` `N`
 - Select with `v` / `V`, then `y` to copy; `yy`, `yiw`, `yaW`, `yi(`, `y$` … work too

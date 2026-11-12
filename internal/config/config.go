@@ -27,6 +27,13 @@ type AccountConfig struct {
 	OAuthClientID     string   `toml:"oauth_client_id"`
 	OAuthClientSecret string   `toml:"oauth_client_secret"`
 	SkipFolders       []string `toml:"skip_folders"` // folders to skip syncing (auto-detected for Gmail)
+	PasswordCmd       string   `toml:"password_cmd"` // plain/app-password: command printing the password, used instead of the OS keyring
+}
+
+// CacheConfig controls the local mail cache.
+type CacheConfig struct {
+	// KeyCmd prints the base64 cache encryption key; when set, the OS keyring is not used for it.
+	KeyCmd string `toml:"key_cmd"`
 }
 
 type SyncConfig struct {
@@ -101,6 +108,7 @@ type Config struct {
 	AI       AIConfig        `toml:"ai"`
 	MCP      MCPConfig       `toml:"mcp"`
 	Sync     SyncConfig      `toml:"sync"`
+	Cache    CacheConfig     `toml:"cache"`
 }
 
 func DefaultConfig() Config {

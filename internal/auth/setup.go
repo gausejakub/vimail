@@ -29,6 +29,20 @@ func RunSetup(cfg config.Config) error {
 
 		method := ParseAuthMethod(acct.AuthMethod)
 
+		if acct.PasswordCmd != "" {
+			if method == AuthOAuth2Gmail || method == AuthOAuth2Outlook {
+				fmt.Println("  Note: password_cmd is ignored for OAuth2 accounts; tokens are kept in the OS keyring.")
+			} else {
+				fmt.Println("  Uses password_cmd — nothing is stored. Testing it…")
+				if _, err := RunSecretCmd(acct.PasswordCmd); err != nil {
+					fmt.Printf("  password_cmd failed: %v\n", err)
+				} else {
+					fmt.Println("  password_cmd OK.")
+				}
+				continue
+			}
+		}
+
 		// Check if credentials already exist.
 		if hasCredentials(acct.Email, method) {
 			fmt.Printf("  Credentials already configured.\n")
@@ -82,6 +96,15 @@ func RunSetup(cfg config.Config) error {
 				return fmt.Errorf("storing password for %s: %w", acct.Email, err)
 			}
 			fmt.Println("  Password stored in OS keyring.")
+		}
+	}
+
+	if cfg.Cache.KeyCmd != "" {
+		fmt.Println("\n── Cache encryption key ──")
+		if _, err := CacheKeyFromCmd(cfg.Cache.KeyCmd); err != nil {
+			fmt.Printf("  [cache] key_cmd failed: %v\n", err)
+		} else {
+			fmt.Println("  [cache] key_cmd OK (not using the OS keyring).")
 		}
 	}
 

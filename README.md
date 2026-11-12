@@ -98,7 +98,7 @@ Subcommands:
 | Command | Purpose |
 |---------|---------|
 | `vimail` | Launch the TUI |
-| `vimail setup` | Store account credentials in the OS keyring |
+| `vimail setup` | Store account credentials in the OS keyring (or test `password_cmd` / `key_cmd`) |
 | `vimail mcp` | Run the MCP server on stdio for AI clients (see [MCP server](#mcp-server-ai-clients)) |
 | `vimail help` | Show usage |
 
@@ -112,6 +112,36 @@ vimail setup
 ```
 
 This walks through each configured account and securely stores your password in the OS keyring. If credentials already exist, it will ask before overwriting.
+
+### Passwords from a password manager (no keyring)
+
+Instead of the OS keyring, vimail can ask a password manager each time it starts. Set `password_cmd` on a `plain` / `app-password` account; vimail runs it with `sh -c` and uses its output (trailing newline stripped) as the password:
+
+```toml
+[[accounts]]
+name = "Personal"
+email = "alice@example.com"
+# ...
+password_cmd = "op read 'op://Private/Mail alice/password'"   # 1Password CLI
+# password_cmd = "pass show mail/alice"                        # pass
+# password_cmd = "secret-tool lookup service mail user alice"  # libsecret
+```
+
+The cache encryption key can come from a command too, so vimail never touches the keyring. Store a key generated with `openssl rand -base64 32` in your password manager, then:
+
+```toml
+[cache]
+key_cmd = "op read 'op://Private/vimail cache key/password'"
+```
+
+To keep mail you already cached, put the existing key in your password manager instead (macOS: `security find-generic-password -s vimail -a _cache_encryption_key -w`); a new key means vimail starts with a fresh cache (`rm ~/.local/share/vimail/cache.db`).
+
+Notes:
+
+- Each command runs once per process (TUI or `vimail mcp`) and the result stays in memory only. It has no stdin and a 2-minute timeout, so a password manager can show its own unlock prompt.
+- If a command fails, vimail reports its stderr and does **not** fall back to the keyring or to an unencrypted cache.
+- `vimail setup` tests every `password_cmd` / `key_cmd` instead of asking for a password.
+- Commands run with your privileges: keep `config.toml` writable only by you.
 
 ## Configuration
 

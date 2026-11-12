@@ -1104,6 +1104,13 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.focusedPane == layout.PanePreview && m.preview.HasMessage() && preview.OpensReader(msg.String()) {
 		var start, cmd tea.Cmd
 		m.preview, start = m.preview.StartReading()
+		if k := msg.String(); k == "v" || k == "V" {
+			// The cursor was not visible before: let the user place it first
+			// instead of anchoring a selection at an arbitrary point.
+			return m, tea.Batch(start, func() tea.Msg {
+				return util.InfoMsg{Text: "Vim reader: move to the start, then " + k + " to select"}
+			})
+		}
 		m.preview, cmd = m.preview.ReaderUpdate(msg)
 		return m, tea.Batch(start, cmd)
 	}

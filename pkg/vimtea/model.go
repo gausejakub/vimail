@@ -6,6 +6,8 @@ package vimtea
 import (
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -95,7 +97,7 @@ type editorModel struct {
 
 	// Pending action state (for f/F/t/T/r and operator+find combos)
 	pendingAction  string // "f","F","t","T","r","df","dF","dt","dT","cf",... or ""
-	lastFindChar   byte   // last char used in f/F/t/T (for ;/,)
+	lastFindChar   rune   // last char used in f/F/t/T (for ;/,)
 	lastFindAction string // "f","F","t","T" (for ;/,)
 
 	// Search state
@@ -308,7 +310,9 @@ func (m *editorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *editorModel) clampCursor() {
 	clamp := func(c Cursor) Cursor {
 		c.Row = max(0, min(c.Row, m.buffer.lineCount()-1))
-		c.Col = max(0, min(c.Col, m.buffer.lineLength(c.Row)))
+		// On a character boundary: a column inside a multi-byte character
+		// would split it at the next edit or draw.
+		c.Col = runeStart(m.buffer.Line(c.Row), max(c.Col, 0))
 		return c
 	}
 	m.cursor = clamp(m.cursor)
@@ -330,12 +334,17 @@ func repeatCount(count, size int) int {
 	return max(1, min(count, maxRepeatBytes/size))
 }
 
-// isTypedChar reports whether key is a single printable character that may
-// be inserted into the buffer or a prompt. Control characters are refused:
+// isTypedChar reports whether key is a single printable character — of any
+// script, so "č" or "ž" as much as "a" — that may be inserted into the buffer
+// or a prompt. Control characters are refused:
 // they can arrive as plain runes (a paste, some terminals) and would be drawn
 // raw, where the terminal interprets them.
 func isTypedChar(key string) bool {
-	return len(key) == 1 && key[0] >= 0x20 && key[0] != 0x7f
+	r, size := utf8.DecodeRuneInString(key)
+	if size == 0 || size != len(key) || r == utf8.RuneError {
+		return false // not exactly one valid character (e.g. "ctrl+x")
+	}
+	return !unicode.IsControl(r)
 }
 
 // GetSelectionBoundary returns the start and end cursors of the current selection

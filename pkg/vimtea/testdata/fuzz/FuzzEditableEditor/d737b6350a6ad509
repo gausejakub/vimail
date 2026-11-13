@@ -1,0 +1,5 @@
+go test fuzz v1
+string("00")
+string("x333330PPPPPPPP")
+int(10)
+int(23)

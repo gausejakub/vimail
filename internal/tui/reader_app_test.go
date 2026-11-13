@@ -2,6 +2,7 @@ package tui
 
 import (
 	"github.com/gausejakub/vimail/internal/tui/components/preview"
+	"strings"
 	"testing"
 
 	"github.com/gausejakub/vimail/internal/tui/keys"
@@ -92,5 +93,19 @@ func TestReaderYankDoesNotTouchRealClipboardInTests(t *testing.T) {
 	sendKeys(&m, "enter", "y", "y")
 	if len(copied) != 1 || copied[0] == "" {
 		t.Fatalf("yy in the reader copied %q, want one line through the hook", copied)
+	}
+}
+
+// Typing accented characters into the message body (the editor used to accept
+// only single-byte keys, so "č" was silently dropped).
+func TestComposeAcceptsAccentedCharacters(t *testing.T) {
+	m := testApp()
+	sendKeys(&m, "c", "tab", "tab", "i")
+	for _, r := range "Čau, příliš žluťoučký kůň!" {
+		send(&m, string(r))
+	}
+	send(&m, "esc")
+	if view := m.View(); !strings.Contains(view, "Čau, příliš žluťoučký kůň!") {
+		t.Fatalf("typed text missing from the compose view")
 	}
 }

@@ -63,7 +63,7 @@ func switchMode(model *editorModel, newMode EditorMode) tea.Cmd {
 		// In normal mode, cursor can't be at end of line
 		if model.buffer.lineLength(model.cursor.Row) > 0 &&
 			model.cursor.Col >= model.buffer.lineLength(model.cursor.Row) {
-			model.cursor.Col = max(0, model.buffer.lineLength(model.cursor.Row)-1)
+			model.cursor.Col = lastRuneStart(model.buffer.Line(model.cursor.Row))
 		}
 		model.isVisualLine = false
 		model.statusMessage = ""
@@ -224,9 +224,8 @@ func beginVisualLineSelection(model *editorModel) tea.Cmd {
 }
 
 func appendAfterCursor(model *editorModel) tea.Cmd {
-	if model.cursor.Col < model.buffer.lineLength(model.cursor.Row) {
-		model.cursor.Col++
-	}
+	// After the character under the cursor, whatever its width in bytes.
+	model.cursor.Col = runeEnd(model.buffer.Line(model.cursor.Row), model.cursor.Col)
 	return switchMode(model, ModeInsert)
 }
 
@@ -280,9 +279,10 @@ func insertCharacter(model *editorModel, char string) (tea.Model, tea.Cmd) {
 	}
 
 	line := model.buffer.Line(model.cursor.Row)
-	newLine := line[:model.cursor.Col] + char + line[model.cursor.Col:]
+	col := runeStart(line, model.cursor.Col)
+	newLine := line[:col] + char + line[col:]
 	model.buffer.setLine(model.cursor.Row, newLine)
-	model.cursor.Col++
+	model.cursor.Col = col + len(char)
 
 	return model, nil
 }
@@ -292,8 +292,10 @@ func handleInsertBackspace(model *editorModel) tea.Cmd {
 
 	if model.cursor.Col > 0 {
 
-		model.buffer.deleteAt(model.cursor.Row, model.cursor.Col-1, model.cursor.Row, model.cursor.Col-1)
-		model.cursor.Col--
+		// Remove the whole character before the cursor, however many bytes.
+		prev := prevRuneStart(model.buffer.Line(model.cursor.Row), model.cursor.Col)
+		model.buffer.deleteAt(model.cursor.Row, prev, model.cursor.Row, prev)
+		model.cursor.Col = prev
 	} else if model.cursor.Row > 0 {
 
 		prevLineLen := model.buffer.lineLength(model.cursor.Row - 1)
@@ -336,9 +338,7 @@ func handleInsertEnterKey(m *editorModel) tea.Cmd {
 
 func moveCursorLeft(model *editorModel) tea.Cmd {
 	withCountPrefix(model, func() {
-		if model.cursor.Col > 0 {
-			model.cursor.Col--
-		}
+		model.cursor.Col = prevRuneStart(model.buffer.Line(model.cursor.Row), model.cursor.Col)
 	})
 	model.desiredCol = model.cursor.Col
 	return nil
@@ -367,11 +367,12 @@ func moveCursorUp(model *editorModel) tea.Cmd {
 }
 
 func moveCursorRight(model *editorModel) tea.Cmd {
-	lineLen := model.buffer.lineLength(model.cursor.Row)
+	line := model.buffer.Line(model.cursor.Row)
+	last := lastRuneStart(line)
 
 	withCountPrefix(model, func() {
-		if lineLen > 0 && model.cursor.Col < lineLen-1 {
-			model.cursor.Col++
+		if model.cursor.Col < last {
+			model.cursor.Col = runeEnd(line, model.cursor.Col)
 		}
 	})
 	model.desiredCol = model.cursor.Col
@@ -379,9 +380,9 @@ func moveCursorRight(model *editorModel) tea.Cmd {
 }
 
 func moveCursorRightOrNextLine(model *editorModel) tea.Cmd {
-	lineLen := model.buffer.lineLength(model.cursor.Row)
-	if lineLen > 0 && model.cursor.Col < lineLen-1 {
-		model.cursor.Col++
+	line := model.buffer.Line(model.cursor.Row)
+	if model.cursor.Col < lastRuneStart(line) {
+		model.cursor.Col = runeEnd(line, model.cursor.Col)
 	} else if model.cursor.Row < model.buffer.lineCount()-1 {
 		model.cursor.Row++
 		model.cursor.Col = 0
@@ -472,7 +473,7 @@ func addCommandCharacter(model *editorModel, char string) (tea.Model, tea.Cmd) {
 
 func commandBackspace(model *editorModel) tea.Cmd {
 	if len(model.commandBuffer) > 0 {
-		model.commandBuffer = model.commandBuffer[:len(model.commandBuffer)-1]
+		model.commandBuffer = model.commandBuffer[:prevRuneStart(model.commandBuffer, len(model.commandBuffer))]
 	}
 	return nil
 }
@@ -564,7 +565,7 @@ func deleteCharAtCursor(model *editorModel) tea.Cmd {
 	count := takeCount(model)
 	lineLen := model.buffer.lineLength(model.cursor.Row)
 	if lineLen > 0 && model.cursor.Col < lineLen {
-		end := min(model.cursor.Col+count, lineLen)
+		end := advanceRunes(model.buffer.Line(model.cursor.Row), model.cursor.Col, count)
 		// x yanks what it deletes into the unnamed register, like Vim.
 		model.yankBuffer = model.buffer.deleteCharRange(
 			Cursor{Row: model.cursor.Row, Col: model.cursor.Col},
@@ -573,7 +574,7 @@ func deleteCharAtCursor(model *editorModel) tea.Cmd {
 
 		newLineLen := model.buffer.lineLength(model.cursor.Row)
 		if model.cursor.Col >= newLineLen && newLineLen > 0 {
-			model.cursor.Col = newLineLen - 1
+			model.cursor.Col = lastRuneStart(model.buffer.Line(model.cursor.Row))
 		}
 	}
 	return nil
@@ -652,6 +653,8 @@ func pasteAfter(model *editorModel) tea.Cmd {
 	// Character-wise paste
 	currLine := model.buffer.Line(model.cursor.Row)
 	insertPos := model.cursor.Col
+	// p inserts after the character under the cursor, whatever its width.
+	after := runeEnd(currLine, insertPos)
 
 	// Check if the yanked text contains newlines (multi-line character-wise yank)
 	if strings.Contains(model.yankBuffer, "\n") {
@@ -662,7 +665,7 @@ func pasteAfter(model *editorModel) tea.Cmd {
 		firstLine := lines[0]
 		remainderOfLine := ""
 		if insertPos < len(currLine) {
-			remainderOfLine = currLine[insertPos+1:]
+			remainderOfLine = currLine[after:]
 		}
 
 		// Set the first line with the content before cursor + first part of yanked text
@@ -670,7 +673,7 @@ func pasteAfter(model *editorModel) tea.Cmd {
 			model.buffer.setLine(model.cursor.Row, currLine+firstLine)
 		} else {
 			model.buffer.setLine(model.cursor.Row,
-				currLine[:insertPos+1]+firstLine)
+				currLine[:after]+firstLine)
 		}
 
 		// Insert middle lines as new lines
@@ -696,7 +699,7 @@ func pasteAfter(model *editorModel) tea.Cmd {
 			model.cursor.Col = len(lines[len(lines)-1])
 		} else {
 			// For single line pastes, position at the end of what was pasted
-			model.cursor.Col = insertPos + len(firstLine) + 1
+			model.cursor.Col = after + len(firstLine)
 		}
 
 		if model.mode != ModeInsert && model.cursor.Col > 0 {
@@ -709,10 +712,10 @@ func pasteAfter(model *editorModel) tea.Cmd {
 			model.buffer.setLine(model.cursor.Row, currLine+text)
 		} else {
 			model.buffer.setLine(model.cursor.Row,
-				currLine[:insertPos+1]+text+currLine[insertPos+1:])
+				currLine[:after]+text+currLine[after:])
 		}
 
-		model.cursor.Col = insertPos + len(text) + 1
+		model.cursor.Col = after + len(text)
 		if model.mode != ModeInsert && model.cursor.Col > 0 {
 			model.cursor.Col--
 		}

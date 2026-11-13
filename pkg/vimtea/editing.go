@@ -3,6 +3,7 @@ package vimtea
 import (
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -69,7 +70,7 @@ func substituteChar(m *editorModel) tea.Cmd {
 	saved := false
 	if len(line) > 0 && m.cursor.Col < len(line) {
 		m.buffer.saveUndoState(m.cursor)
-		end := min(m.cursor.Col+count, len(line))
+		end := advanceRunes(line, m.cursor.Col, count)
 		m.yankBuffer = line[m.cursor.Col:end]
 		m.buffer.setLine(m.cursor.Row, line[:m.cursor.Col]+line[end:])
 		saved = true
@@ -95,18 +96,23 @@ func toggleCase(m *editorModel) tea.Cmd {
 	m.buffer.saveUndoState(m.cursor)
 	for range count {
 		line = m.buffer.Line(m.cursor.Row)
-		ch := rune(line[m.cursor.Col])
+		col := runeStart(line, m.cursor.Col)
+		ch, size := utf8.DecodeRuneInString(line[col:])
 		var toggled rune
 		if unicode.IsUpper(ch) {
 			toggled = unicode.ToLower(ch)
 		} else {
 			toggled = unicode.ToUpper(ch)
 		}
-		m.buffer.setLine(m.cursor.Row, line[:m.cursor.Col]+string(toggled)+line[m.cursor.Col+1:])
-		if m.cursor.Col >= len(line)-1 {
+		m.buffer.setLine(m.cursor.Row, line[:col]+string(toggled)+line[col+size:])
+		// Advance past the toggled character (its byte length may differ),
+		// stopping on the last one.
+		next := col + len(string(toggled))
+		if next >= m.buffer.lineLength(m.cursor.Row) {
+			m.cursor.Col = col
 			break
 		}
-		m.cursor.Col++
+		m.cursor.Col = next
 	}
 	m.desiredCol = m.cursor.Col
 	return nil
@@ -124,7 +130,7 @@ func toggleCaseVisual(m *editorModel) tea.Cmd {
 		}
 		endCol := len(line)
 		if row == end.Row {
-			endCol = min(end.Col+1, len(line))
+			endCol = runeEnd(line, end.Col)
 		}
 		var sb strings.Builder
 		sb.WriteString(line[:startCol])
@@ -154,7 +160,7 @@ func lowercaseVisual(m *editorModel) tea.Cmd {
 		}
 		endCol := len(line)
 		if row == end.Row {
-			endCol = min(end.Col+1, len(line))
+			endCol = runeEnd(line, end.Col)
 		}
 		m.buffer.setLine(row, line[:startCol]+strings.ToLower(line[startCol:endCol])+line[endCol:])
 	}
@@ -174,7 +180,7 @@ func uppercaseVisual(m *editorModel) tea.Cmd {
 		}
 		endCol := len(line)
 		if row == end.Row {
-			endCol = min(end.Col+1, len(line))
+			endCol = runeEnd(line, end.Col)
 		}
 		m.buffer.setLine(row, line[:startCol]+strings.ToUpper(line[startCol:endCol])+line[endCol:])
 	}

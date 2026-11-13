@@ -70,26 +70,40 @@ func wrapRenderedLine(s string, width int) []string {
 		return []string{s}
 	}
 
-	visLen := ansi.StringWidth(s)
-	if visLen <= width {
-		return []string{s}
-	}
-
+	// One pass over the line. (Cutting each chunk out with ansiSubstring
+	// rescanned the line from its start every time, which is quadratic: a
+	// 500 KB single-line message took seconds per frame.)
 	var lines []string
-	offset := 0
-	for offset < visLen {
-		end := offset + width
-		if end > visLen {
-			end = visLen
+	var cur strings.Builder
+	activeAnsi := ""
+	vis := 0
+	for i := 0; i < len(s); {
+		if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '[' {
+			j := i + 2
+			for j < len(s) && !((s[j] >= 'A' && s[j] <= 'Z') || (s[j] >= 'a' && s[j] <= 'z')) {
+				j++
+			}
+			if j < len(s) {
+				j++ // include the terminating letter
+			}
+			activeAnsi = s[i:j]
+			cur.WriteString(activeAnsi)
+			i = j
+			continue
 		}
-		lines = append(lines, ansiSubstring(s, offset, end))
-		offset = end
+		if vis == width {
+			lines = append(lines, cur.String())
+			cur.Reset()
+			vis = 0
+			// Carry the active style into the next visual row.
+			cur.WriteString(activeAnsi)
+		}
+		_, size := utf8.DecodeRuneInString(s[i:])
+		cur.WriteString(s[i : i+size])
+		vis++
+		i += size
 	}
-
-	if len(lines) == 0 {
-		return []string{""}
-	}
-
+	lines = append(lines, cur.String())
 	return lines
 }
 
@@ -371,8 +385,8 @@ func (m *editorModel) renderRegularCursorLine(line string) string {
 	}
 
 	// Process remaining characters after cursor
-	if m.cursor.Col < len(line)-1 {
-		for _, r := range line[m.cursor.Col+1:] {
+	if after := runeEnd(line, m.cursor.Col); after < len(line) {
+		for _, r := range line[after:] {
 			if r == '\t' {
 				spaces := tabWidth - (visualCol % tabWidth)
 				sb.WriteString(strings.Repeat(" ", spaces))

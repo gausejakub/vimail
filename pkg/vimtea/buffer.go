@@ -384,8 +384,8 @@ func (b *buffer) getRange(start, end Cursor) string {
 	// Handle single line case
 	if start.Row == end.Row {
 		line := b.Line(start.Row)
-		endCol := min(end.Col+1, len(line))
-		return line[start.Col:endCol]
+		endCol := runeEnd(line, end.Col)
+		return line[min(runeStart(line, start.Col), endCol):endCol]
 	}
 
 	// Handle multi-line case
@@ -393,7 +393,7 @@ func (b *buffer) getRange(start, end Cursor) string {
 
 	// First line (from start column to end of line)
 	firstLine := b.Line(start.Row)
-	result.WriteString(firstLine[start.Col:])
+	result.WriteString(firstLine[runeStart(firstLine, start.Col):])
 	result.WriteString("\n")
 
 	// Middle lines (full lines)
@@ -404,7 +404,7 @@ func (b *buffer) getRange(start, end Cursor) string {
 
 	// Last line (from beginning to end column)
 	lastLine := b.Line(end.Row)
-	endCol := min(end.Col+1, len(lastLine))
+	endCol := runeEnd(lastLine, end.Col)
 	result.WriteString(lastLine[:endCol])
 
 	return result.String()
@@ -423,8 +423,8 @@ func (b *buffer) getCharRange(start, end Cursor) string {
 
 	if start.Row == end.Row {
 		line := b.Line(start.Row)
-		s := min(start.Col, len(line))
-		e := min(end.Col, len(line))
+		s := runeStart(line, start.Col)
+		e := runeCeil(line, end.Col)
 		if s >= e {
 			return ""
 		}
@@ -433,7 +433,7 @@ func (b *buffer) getCharRange(start, end Cursor) string {
 
 	var sb strings.Builder
 	first := b.Line(start.Row)
-	sb.WriteString(first[min(start.Col, len(first)):])
+	sb.WriteString(first[runeStart(first, start.Col):])
 	sb.WriteString("\n")
 	for i := start.Row + 1; i < end.Row && i < b.lineCount(); i++ {
 		sb.WriteString(b.Line(i))
@@ -441,7 +441,7 @@ func (b *buffer) getCharRange(start, end Cursor) string {
 	}
 	if end.Row < b.lineCount() {
 		last := b.Line(end.Row)
-		sb.WriteString(last[:min(end.Col, len(last))])
+		sb.WriteString(last[:runeCeil(last, end.Col)])
 	}
 	return sb.String()
 }
@@ -461,8 +461,8 @@ func (b *buffer) deleteCharRange(start, end Cursor) string {
 
 	if start.Row == end.Row {
 		line := b.Line(start.Row)
-		s := min(start.Col, len(line))
-		e := min(end.Col, len(line))
+		s := runeStart(line, start.Col)
+		e := runeCeil(line, end.Col)
 		b.setLine(start.Row, line[:s]+line[e:])
 		return deleted
 	}
@@ -472,9 +472,9 @@ func (b *buffer) deleteCharRange(start, end Cursor) string {
 	tail := ""
 	if end.Row < b.lineCount() {
 		last := b.Line(end.Row)
-		tail = last[min(end.Col, len(last)):]
+		tail = last[runeCeil(last, end.Col):]
 	}
-	b.setLine(start.Row, first[:min(start.Col, len(first))]+tail)
+	b.setLine(start.Row, first[:runeStart(first, start.Col)]+tail)
 	for range endRow - start.Row {
 		b.deleteLine(start.Row + 1)
 	}
@@ -529,8 +529,8 @@ func (b *buffer) deleteRange(start, end Cursor) string {
 	// Handle single line case
 	if start.Row == end.Row {
 		line := b.Line(start.Row)
-		endCol := min(end.Col+1, len(line))
-		b.setLine(start.Row, line[:start.Col]+line[endCol:])
+		endCol := runeEnd(line, end.Col)
+		b.setLine(start.Row, line[:min(runeStart(line, start.Col), endCol)]+line[endCol:])
 		return deletedText
 	}
 
@@ -543,10 +543,10 @@ func (b *buffer) deleteRange(start, end Cursor) string {
 	// Handle multi-line case
 	firstLine := b.Line(start.Row)
 	lastLine := b.Line(end.Row)
-	endCol := min(end.Col+1, len(lastLine))
+	endCol := runeEnd(lastLine, end.Col)
 
 	// Join the start of first line with the end of last line
-	b.setLine(start.Row, firstLine[:start.Col]+lastLine[endCol:])
+	b.setLine(start.Row, firstLine[:runeStart(firstLine, start.Col)]+lastLine[endCol:])
 
 	// Remove all lines in between
 	for range end.Row - start.Row {

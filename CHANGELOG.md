@@ -16,6 +16,22 @@ every merged PR lands here in the same pass that merges it.
 
 ### Security
 
+## [0.15.5] - 2026-11-13
+
+Security and stability release following a fourth audit, which fuzz-tested everything that reads or draws mail. Upgrading is recommended for everyone.
+
+### Security
+
+- A message could crash vimail every time it was selected, and so on every launch if it was the newest: an HTML-only mail whose text version comes out empty (an image-only newsletter, for example) hit a broken pattern in the preview. (#60)
+- "Open in browser" and export no longer crash on a message whose CSS contains certain non-ASCII characters (a regression in 0.15.4). (#60)
+- Drafts saved by an AI client through the MCP server are sanitized when saved and again when opened, so they cannot put escape sequences on the terminal. (#60)
+- Folder and account names are sanitized when drawn, not only when fetched; the editor refuses control characters in typed or pasted text. (#60)
+
+### Fixed
+
+- Compose no longer crashes in a very small terminal window. (#60)
+- Editor: a very long numeric prefix (a stuck digit key) can no longer freeze vimail or exhaust memory, and screen motions (`H`, `M`, `L`) in a tiny pane no longer break the next command. (#60)
+
 ## [0.15.4] - 2026-11-12
 
 Security release following a third audit. Upgrading is recommended for everyone who opens mail in the browser (`o`) or exports messages.
@@ -207,7 +223,8 @@ Security release following a full audit of the mail-handling, local storage, net
 - Go 1.26.6 and `golang.org/x/net` v0.58.0 in both modules, clearing all reachable govulncheck advisories (including GO-2026-5028/5029/5030); `SECURITY.md` now states the current scan. (#17)
 - Outbound mail over MCP is opt-in (`[mcp] allow_send`), because any connected MCP client can act as you. (#33)
 
-[Unreleased]: https://github.com/gausejakub/vimail/compare/v0.15.4...HEAD
+[Unreleased]: https://github.com/gausejakub/vimail/compare/v0.15.5...HEAD
+[0.15.5]: https://github.com/gausejakub/vimail/compare/v0.15.4...v0.15.5
 [0.15.4]: https://github.com/gausejakub/vimail/compare/v0.15.3...v0.15.4
 [0.15.3]: https://github.com/gausejakub/vimail/compare/v0.15.2...v0.15.3
 [0.15.2]: https://github.com/gausejakub/vimail/compare/v0.15.1...v0.15.2

@@ -7,7 +7,7 @@
     let
       systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
-      version = "0.15.4";
+      version = "0.15.5";
     in
     {
       packages = forAllSystems (pkgs: rec {
@@ -20,7 +20,7 @@
           # the published pkg/vimtea module from go.mod, not the local go.work checkout.
           env.GOWORK = "off";
           env.CGO_ENABLED = "0";
-          vendorHash = "sha256-wN1uAnNuZEKOxVyR3AuGNgTknTTMjI1R35RLPB0FLA8=";
+          vendorHash = "sha256-vL2vo1u3d3g4a1REPymUbZoYjM8YDYn205Js9GXKCRQ=";
 
           subPackages = [ "." ];
           ldflags = [ "-s" "-w" ];

@@ -113,9 +113,23 @@ vimail setup
 
 This walks through each configured account and securely stores your password in the OS keyring. If credentials already exist, it will ask before overwriting.
 
-### Passwords from a password manager (no keyring)
+### Where passwords are stored
 
-Instead of the OS keyring, vimail can ask a password manager each time it starts. Set `password_cmd` on a `plain` / `app-password` account; vimail runs it with `sh -c` and uses the first line of its output as the password (so multi-line `pass` entries with notes work):
+You do not need a password manager: by default vimail uses the credential store that comes with your system, and nothing is ever written to `config.toml`.
+
+| System | Default store (used by `vimail setup`) |
+|--------|----------------------------------------|
+| macOS | **Keychain** — entries appear in Keychain Access under the service name `vimail` |
+| Linux | **Secret Service** — GNOME Keyring, KWallet, or KeePassXC acting as the Secret Service provider |
+| Windows | **Credential Manager** (when built from source; there are no prebuilt Windows binaries yet) |
+
+OAuth2 tokens (Gmail, Outlook) and the key that encrypts the local mail cache live in the same store.
+
+If you would rather keep passwords somewhere else — a password manager, an encrypted file, a hardware-backed store — use `password_cmd`, described next. Both ways can be mixed: one account from the keyring, another from a command.
+
+### Passwords from a password manager or another store
+
+Instead of the OS keyring, vimail can ask another program for the password each time it starts. Set `password_cmd` on a `plain` / `app-password` account; vimail runs it with `sh -c` and uses the first line of its output as the password (so multi-line `pass` entries with notes work):
 
 ```toml
 [[accounts]]
@@ -123,9 +137,15 @@ name = "Personal"
 email = "alice@example.com"
 # ...
 password_cmd = "op read 'op://Private/Mail alice/password'"   # 1Password CLI
-# password_cmd = "pass show mail/alice"                        # pass
-# password_cmd = "secret-tool lookup service mail user alice"  # libsecret
+# password_cmd = "pass show mail/alice"                        # pass (GPG)
+# password_cmd = "gopass show -o mail/alice"                   # gopass
+# password_cmd = "rbw get 'Mail alice'"                        # Bitwarden (rbw)
+# password_cmd = "bw get password 'Mail alice'"                # Bitwarden CLI (unlocked session)
+# password_cmd = "secret-tool lookup service mail user alice"  # any Secret Service item (Linux)
+# password_cmd = "security find-generic-password -s mail -a alice -w"  # your own macOS Keychain item
 ```
+
+Any program that prints the password works; these are only common ones.
 
 The cache encryption key can come from a command too, so vimail never touches the keyring. Store a key generated with `openssl rand -base64 32` in your password manager, then:
 

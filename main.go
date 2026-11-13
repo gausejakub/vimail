@@ -23,8 +23,7 @@ import (
 	"github.com/gausejakub/vimail/internal/worker"
 	"github.com/zalando/go-keyring"
 
-	// Import theme package to trigger init() registrations.
-	_ "github.com/gausejakub/vimail/internal/theme"
+	"github.com/gausejakub/vimail/internal/theme"
 )
 
 func main() {
@@ -224,6 +223,13 @@ func runTUI() {
 	}
 
 	logging.Info("app", "vimail starting", logging.KV("accounts", len(cfg.Accounts)))
+
+	// User theme files (~/.config/vimail/themes/<name>.toml), before the TUI
+	// activates the configured theme.
+	for _, err := range theme.LoadUserThemes(config.ThemesDir()) {
+		logging.Warn("app", "theme file", logging.Err(err))
+		fmt.Fprintf(os.Stderr, "vimail: %v\n", err)
+	}
 
 	// If real accounts are configured, use SQLiteStore + Coordinator.
 	// Otherwise fall back to MockStore for development.

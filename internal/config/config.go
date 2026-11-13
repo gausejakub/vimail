@@ -134,6 +134,11 @@ func configPath() string {
 	return filepath.Join(home, ".config", "vimail", "config.toml")
 }
 
+// ThemesDir is where user theme files (<name>.toml) are read from.
+func ThemesDir() string {
+	return filepath.Join(filepath.Dir(configPath()), "themes")
+}
+
 func Load() (Config, error) {
 	cfg := DefaultConfig()
 

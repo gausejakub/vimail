@@ -1,0 +1,7 @@
+go test fuzz v1
+string("Inbo2")
+string("Alice <a@example.com>")
+string("Hell\x95\x90\x93\x0f\xf1o")
+string("body text\nline 2")
+string("")
+[]byte("\x00\x02\x06\b")

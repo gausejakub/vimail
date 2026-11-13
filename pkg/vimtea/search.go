@@ -37,7 +37,7 @@ func (m *editorModel) handleSearchInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	default:
-		if len(key) == 1 {
+		if isTypedChar(key) {
 			m.searchBuffer += key
 		}
 		return m, nil

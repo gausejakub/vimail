@@ -1,0 +1,7 @@
+go test fuzz v1
+string("Šabaony 🗂")
+string("名前 <n@exampl\x1eety\xd0\xd2e.jp>")
+string("日本語 👩\u200d💻 é")
+string("{\"a\":[1,{\"b\":2}]}")
+string("")
+[]byte("\x05\x05\x01\t\t\a\x03")

@@ -314,7 +314,7 @@ func (m Model) View() string {
 		if it.isAccount {
 			acct := m.accounts[it.accountIdx]
 			prefix := "> "
-			label := acct.Name
+			label := email.SanitizeLine(acct.Name)
 			text := prefix + label
 			if m.syncing[acct.Email] {
 				suffix := " ⟳"
@@ -338,6 +338,9 @@ func (m Model) View() string {
 		} else {
 			acct := m.accounts[it.accountIdx]
 			folder := m.folders[acct.Email][it.folderIdx]
+			// Drawn name only: folder names are sanitized when fetched, but a
+			// cache written by an older version may hold one that is not.
+			folder.Name = email.SanitizeLine(folder.Name)
 
 			fPrefix := "    "
 			if isCursor {

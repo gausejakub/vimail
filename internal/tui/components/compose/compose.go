@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/gausejakub/vimail/internal/ai"
 	"github.com/gausejakub/vimail/internal/config"
+	"github.com/gausejakub/vimail/internal/email"
 	"github.com/gausejakub/vimail/internal/logging"
 	"github.com/gausejakub/vimail/internal/theme"
 	"github.com/gausejakub/vimail/internal/tui/keys"
@@ -243,11 +244,14 @@ func (m Model) View() string {
 
 	t := theme.Current()
 	dialogWidth, dialogHeight := m.dialogSize()
-	innerWidth := dialogWidth - 6 // border (2) + padding (4)
+	// border (2) + padding (4). Never below a few columns: in a very small
+	// terminal the arithmetic below would go negative and panic, taking the
+	// message being written with it.
+	innerWidth := max(dialogWidth-6, 4)
 
 	// Set input widths
 	for i := range m.inputs {
-		m.inputs[i].Width = innerWidth - len(m.inputs[i].Prompt)
+		m.inputs[i].Width = max(innerWidth-len(m.inputs[i].Prompt), 1)
 	}
 
 	title := lipgloss.NewStyle().
@@ -335,9 +339,11 @@ func (m Model) ShowDraft(id, to, subject, body string) Model {
 	for i := range m.inputs {
 		m.inputs[i].Blur()
 	}
-	m.inputs[fieldTo].SetValue(to)
-	m.inputs[fieldSubject].SetValue(subject)
-	m.editor = newEditor(body)
+	// A draft is not necessarily the user's own typing: an AI client can save
+	// one through the MCP server, and the editor draws its buffer as is.
+	m.inputs[fieldTo].SetValue(email.SanitizeLine(to))
+	m.inputs[fieldSubject].SetValue(email.SanitizeLine(subject))
+	m.editor = newEditor(email.SanitizeText(body))
 	m.editorMode = vimtea.ModeNormal
 	m.aiPending = false
 	m.registerAICommand()

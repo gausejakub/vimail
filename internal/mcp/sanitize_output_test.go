@@ -45,3 +45,25 @@ func TestListOperationsSanitizesFolderAndError(t *testing.T) {
 		t.Fatalf("folder=%q error=%q", op.Folder, op.Error)
 	}
 }
+
+// A draft saved by an AI client is stored clean, so the TUI never has to
+// trust it.
+func TestSaveDraftSanitizesArguments(t *testing.T) {
+	store := seededStore(t)
+	session := connect(t, store)
+	var out saveDraftResult
+	call(t, session, "save_draft", map[string]any{
+		"to": "bob@example.com\r\nBcc: evil@example.com", "subject": "Hi\x1b[2J",
+		"body": "hello\x1b]52;c;QUJD\x07\nworld",
+	}, &out)
+	for _, d := range store.MessagesForPage(testAcct, "Drafts", 0, 0) {
+		if d.ID != out.ID {
+			continue
+		}
+		if d.To != "bob@example.com  Bcc: evil@example.com" || d.Subject != "Hi" || d.Body != "hello\nworld" {
+			t.Fatalf("stored draft to=%q subject=%q body=%q", d.To, d.Subject, d.Body)
+		}
+		return
+	}
+	t.Fatal("draft not stored")
+}

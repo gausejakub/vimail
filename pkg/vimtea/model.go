@@ -239,10 +239,13 @@ func (m *editorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cursorBlink = true
 		m.lastBlinkTime = time.Now()
 		if !m.buffer.readOnly {
-			return m.handleKeypress(msg)
+			model, cmd := m.handleKeypress(msg)
+			m.clampCursor()
+			return model, cmd
 		}
 		yankBefore, yankAt := m.yankBuffer, m.yankHighlight.StartTime
 		model, cmd := m.handleKeypress(msg)
+		m.clampCursor()
 		if m.yankBuffer != "" && (m.yankBuffer != yankBefore || !m.yankHighlight.StartTime.Equal(yankAt)) {
 			text := m.yankBuffer
 			cmd = tea.Batch(cmd, func() tea.Msg { return YankMsg{Text: text} })
@@ -295,6 +298,44 @@ func (m *editorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, cmd
+}
+
+// clampCursor restores the invariant every command relies on — the cursor
+// and the visual anchor are inside the buffer — after each key. A command
+// that computes a row from the viewport (H, M, L in a zero-height pane, a
+// large count) could otherwise leave a negative or past-the-end position
+// that the next command indexes with.
+func (m *editorModel) clampCursor() {
+	clamp := func(c Cursor) Cursor {
+		c.Row = max(0, min(c.Row, m.buffer.lineCount()-1))
+		c.Col = max(0, min(c.Col, m.buffer.lineLength(c.Row)))
+		return c
+	}
+	m.cursor = clamp(m.cursor)
+	m.visualStart = clamp(m.visualStart)
+}
+
+// maxCountPrefix caps a numeric prefix such as the 12 in "12j".
+const maxCountPrefix = 100000
+
+// maxRepeatBytes caps what a counted paste may produce.
+const maxRepeatBytes = 8 << 20
+
+// repeatCount limits count so that count copies of size bytes stay within
+// maxRepeatBytes (always allowing a single copy).
+func repeatCount(count, size int) int {
+	if size <= 0 || count <= 1 {
+		return max(count, 1)
+	}
+	return max(1, min(count, maxRepeatBytes/size))
+}
+
+// isTypedChar reports whether key is a single printable character that may
+// be inserted into the buffer or a prompt. Control characters are refused:
+// they can arrive as plain runes (a paste, some terminals) and would be drawn
+// raw, where the terminal interprets them.
+func isTypedChar(key string) bool {
+	return len(key) == 1 && key[0] >= 0x20 && key[0] != 0x7f
 }
 
 // GetSelectionBoundary returns the start and end cursors of the current selection
@@ -368,7 +409,7 @@ func (m *editorModel) handleKeypress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		} else {
 			// Insert regular characters
-			if len(msg.String()) == 1 {
+			if isTypedChar(msg.String()) {
 				return insertCharacter(m, msg.String())
 			}
 		}
@@ -384,7 +425,7 @@ func (m *editorModel) handleKeypress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		} else {
 			// Add character to command buffer
-			if len(msg.String()) == 1 {
+			if isTypedChar(msg.String()) {
 				return addCommandCharacter(m, msg.String())
 			}
 		}
@@ -426,7 +467,10 @@ func (m *editorModel) handlePrefixKeypress(mode EditorMode) func(msg tea.KeyMsg)
 		// move-to-start-of-line binding.
 		if len(m.keySequence) == 0 && len(keyStr) == 1 && keyStr[0] >= '0' && keyStr[0] <= '9' &&
 			(keyStr != "0" || m.countPrefix > 0) {
-			m.countPrefix = m.countPrefix*10 + int(keyStr[0]-'0')
+			// Bounded: a long run of digits (a stuck key, pasted text) would
+			// otherwise overflow, or make "j" loop for minutes and "p"
+			// allocate without limit.
+			m.countPrefix = min(m.countPrefix*10+int(keyStr[0]-'0'), maxCountPrefix)
 			return m, nil
 		}
 

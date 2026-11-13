@@ -142,7 +142,10 @@ func safeCSS(css string) (out string, ok bool) {
 	if strings.Contains(css, "\\") {
 		return "", false
 	}
-	lower := strings.ToLower(css)
+	// ASCII-only lowercasing keeps byte offsets identical to css. (CSS
+	// keywords are ASCII case-insensitive; Unicode lowercasing can change a
+	// string's length, e.g. "İ", and offsets into it would then be wrong.)
+	lower := asciiLower(css)
 	var b strings.Builder
 	for i := 0; i < len(css); {
 		switch {
@@ -162,7 +165,10 @@ func safeCSS(css string) (out string, ok bool) {
 		case strings.HasPrefix(lower[i:], "url("):
 			end := cssURLEnd(css, i+4)
 			target := strings.ToLower(strings.Trim(strings.TrimSpace(css[i+4:end]), `"'`))
-			if hasScheme(strings.TrimSpace(target), "data:", "cid:") && end < len(css) {
+			// An embedded image is kept; "(" cannot appear in a valid
+			// unquoted URL, and keeping it would hide a nested url( from
+			// this scan.
+			if hasScheme(strings.TrimSpace(target), "data:", "cid:") && end < len(css) && !strings.Contains(target, "(") {
 				b.WriteString(css[i : end+1])
 			} else {
 				b.WriteString("url()")
@@ -174,6 +180,18 @@ func safeCSS(css string) (out string, ok bool) {
 		}
 	}
 	return b.String(), true
+}
+
+// asciiLower lowercases A–Z only, so the result has exactly the bytes of s
+// at the same offsets.
+func asciiLower(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if c >= 'A' && c <= 'Z' {
+			b[i] = c + 'a' - 'A'
+		}
+	}
+	return string(b)
 }
 
 // cssURLEnd returns the index of the ")" closing a url( that starts at from,

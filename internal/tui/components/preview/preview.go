@@ -127,6 +127,18 @@ func CleanupTemp() {
 	}
 }
 
+// OpenExternal hands a file to the desktop's default application (the
+// browser, for the HTML written by openInBrowser). It is a variable so that
+// tests can replace it: a test that presses "o" must never launch a real
+// browser on the developer's desktop.
+var OpenExternal = func(path string) error {
+	opener := "open"
+	if runtime.GOOS != "darwin" {
+		opener = "xdg-open"
+	}
+	return exec.Command(opener, path).Start()
+}
+
 // openInBrowser writes the HTML body to a temp file and opens it.
 // Falls back to wrapping plain text in HTML when no HTML part exists.
 func (m Model) openInBrowser() tea.Cmd {
@@ -158,11 +170,7 @@ func (m Model) openInBrowser() tea.Cmd {
 		if err != nil {
 			return util.InfoMsg{Text: "Failed to write HTML: " + err.Error(), IsError: true}
 		}
-		opener := "open"
-		if runtime.GOOS != "darwin" {
-			opener = "xdg-open"
-		}
-		if err := exec.Command(opener, path).Start(); err != nil {
+		if err := OpenExternal(path); err != nil {
 			return util.InfoMsg{Text: "Failed to open browser: " + err.Error(), IsError: true}
 		}
 		return util.InfoMsg{Text: "Opened in browser", IsError: false}
@@ -494,20 +502,29 @@ func prettyJSON(s string) string {
 	return result.String()
 }
 
+// Compiled once at start-up: a pattern Go cannot compile then fails every
+// run, not only when a message happens to reach this code. (The previous
+// single pattern used a backreference, which RE2 rejects, and panicked the
+// first time an HTML-only message with no text was selected.)
+var (
+	reStyleBlock  = regexp.MustCompile(`(?is)<style[^>]*>.*?</style>`)
+	reScriptBlock = regexp.MustCompile(`(?is)<script[^>]*>.*?</script>`)
+	reBR          = regexp.MustCompile(`(?i)<br\s*/?>`)
+	reBlockTag    = regexp.MustCompile(`(?i)</?(p|div|tr|li|h[1-6])[^>]*>`)
+	reAnyTag      = regexp.MustCompile(`<[^>]*>`)
+)
+
 // basicHTMLStrip is a simple regex-based HTML tag remover for preview fallback.
 // Used when the text body is empty but HTML is available.
 func basicHTMLStrip(h string) string {
 	// Remove style and script blocks.
-	reBlock := regexp.MustCompile(`(?is)<(style|script)[^>]*>.*?</\1>`)
-	h = reBlock.ReplaceAllString(h, "")
+	h = reStyleBlock.ReplaceAllString(h, "")
+	h = reScriptBlock.ReplaceAllString(h, "")
 	// Replace <br> and block-level tags with newlines.
-	reBR := regexp.MustCompile(`(?i)<br\s*/?>`)
 	h = reBR.ReplaceAllString(h, "\n")
-	reBlock2 := regexp.MustCompile(`(?i)</?(p|div|tr|li|h[1-6])[^>]*>`)
-	h = reBlock2.ReplaceAllString(h, "\n")
+	h = reBlockTag.ReplaceAllString(h, "\n")
 	// Strip remaining tags.
-	reTags := regexp.MustCompile(`<[^>]*>`)
-	h = reTags.ReplaceAllString(h, "")
+	h = reAnyTag.ReplaceAllString(h, "")
 	// Decode entities.
 	h = html.UnescapeString(h)
 	return h

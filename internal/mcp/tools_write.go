@@ -220,9 +220,9 @@ func (s *Server) registerWriteTools() {
 		s.store.SaveDraft(acct, email.Message{
 			ID:      id,
 			From:    acct,
-			To:      args.To,
-			Subject: args.Subject,
-			Body:    args.Body,
+			To:      email.SanitizeLine(args.To),
+			Subject: email.SanitizeLine(args.Subject),
+			Body:    email.SanitizeText(args.Body),
 			Date:    time.Now(),
 		})
 		logging.Info("mcp", "draft saved", logging.Acct(acct), logging.KV("draft_id", id))

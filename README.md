@@ -342,6 +342,39 @@ Press `Enter` on a message, or focus the preview pane (`l` / `Tab`) and press `E
 - `omarchy` — adapts to the [Omarchy](https://omarchy.org) ecosystem. When Omarchy's active theme palette (`~/.local/state/omarchy/current/theme/colors.toml`) exists, vimail uses its exact semantic colors (accent, selection, muted, background shades); otherwise it falls back to the terminal's ANSI-16 palette, which Omarchy repaints on every theme switch anyway. After switching Omarchy themes, run `:theme omarchy` to re-read the palette.
 - `system` — plain terminal ANSI-16 colors; also matches any terminal-theming setup.
 
+### Your own theme
+
+Put a TOML file in `~/.config/vimail/themes/`; `mytheme.toml` becomes the theme `mytheme` (`:theme mytheme`, or `name = "mytheme"` under `[theme]`). Every key is optional — what you leave out comes from the base theme:
+
+```toml
+base = "gruvbox"              # optional: a built-in theme to start from (default "vimail")
+
+background           = "#211f1d"
+background_secondary = "#2a2825"
+background_darker    = "#1a1816"   # status bar
+text            = "#cfc8bd"
+text_muted      = "#a39c91"        # senders and times of read mail, folder names
+text_emphasized = "#efe8dc"        # unread mail
+primary   = "#cf7a45"              # headings, focused border, unread marker
+secondary = "#7aa39e"
+accent    = "#e3b86a"              # unread counts
+selection      = "#5e3f2c"         # the row under the cursor
+selection_text = "#f3ece0"
+border_normal  = "#5e5953"
+border_focused = "#cf7a45"
+border_dim     = "#363330"
+error = "#d9684f"
+warning = "#d9a648"
+success = "#a3ad82"
+info = "#7aa39e"
+normal_mode = "#cf7a45"
+insert_mode = "#8a9468"
+visual_mode = "#d9a648"
+command_mode = "#b094a0"
+```
+
+Colors are `#rrggbb`. For a readable result keep `text`, `text_muted` and `text_emphasized` at a contrast of 4.5:1 or more against `background`, and `selection_text` against `selection`. The file is read again every time the theme is activated, so a script that generates it (from your desktop theme, say) only needs `:theme mytheme` to apply a change. Problems in a file are reported at start-up and in the log; the rest of the theme still loads.
+
 ## AI Compose Assistant
 
 vimail can use any CLI-based AI tool to help draft, rewrite, or reply to emails. Type `:ai` in the compose editor and the current body is sent to the AI agent — the response replaces the editor content.

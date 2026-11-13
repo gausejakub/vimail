@@ -16,6 +16,17 @@ every merged PR lands here in the same pass that merges it.
 
 ### Security
 
+## [0.15.6] - 2026-11-13
+
+### Security
+
+- A message whose body is one enormous line (minified HTML or JSON) froze the Vim reader for seconds per key press. Lines are now wrapped in a single pass, so a 500 KB line draws in about 10 ms. (#61)
+
+### Fixed
+
+- Accented and non-Latin characters can be typed in compose and in the reader's search: the editor used to accept only single-byte keys, so `č`, `ž`, `é` and the like were silently dropped. (#61)
+- Moving, deleting, replacing, yanking and searching in text with such characters works one character at a time instead of one byte at a time, so a character can no longer be split in half. (#61)
+
 ## [0.15.5] - 2026-11-13
 
 Security and stability release following a fourth audit, which fuzz-tested everything that reads or draws mail. Upgrading is recommended for everyone.
@@ -223,7 +234,8 @@ Security release following a full audit of the mail-handling, local storage, net
 - Go 1.26.6 and `golang.org/x/net` v0.58.0 in both modules, clearing all reachable govulncheck advisories (including GO-2026-5028/5029/5030); `SECURITY.md` now states the current scan. (#17)
 - Outbound mail over MCP is opt-in (`[mcp] allow_send`), because any connected MCP client can act as you. (#33)
 
-[Unreleased]: https://github.com/gausejakub/vimail/compare/v0.15.5...HEAD
+[Unreleased]: https://github.com/gausejakub/vimail/compare/v0.15.6...HEAD
+[0.15.6]: https://github.com/gausejakub/vimail/compare/v0.15.5...v0.15.6
 [0.15.5]: https://github.com/gausejakub/vimail/compare/v0.15.4...v0.15.5
 [0.15.4]: https://github.com/gausejakub/vimail/compare/v0.15.3...v0.15.4
 [0.15.3]: https://github.com/gausejakub/vimail/compare/v0.15.2...v0.15.3

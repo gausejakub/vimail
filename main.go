@@ -242,12 +242,11 @@ func runTUI() {
 		coord = worker.NewCoordinator(cfg, sqlStore)
 
 		// Resolve credentials (non-fatal errors just log).
-		if errs := coord.ResolveCredentials(); len(errs) > 0 {
-			for _, e := range errs {
-				logging.Error("auth", "credential resolution failed", logging.Err(e))
-				fmt.Fprintf(os.Stderr, "vimail: auth warning: %v\n", e)
-			}
-		}
+		// In the background: looking up passwords (keyring, or one password
+		// manager command per account) must not delay the first frame. The
+		// first sync waits for its own account's credentials and reports a
+		// failure in the status bar.
+		go coord.ResolveCredentials()
 	} else {
 		store = email.NewMockStore()
 		logging.Info("app", "no accounts configured, using mock store")

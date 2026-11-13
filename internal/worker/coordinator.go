@@ -35,6 +35,8 @@ type Coordinator struct {
 	// connectMu serializes lazy worker creation per account without blocking
 	// independent accounts from connecting concurrently.
 	connectMu map[string]*sync.Mutex
+	// credMu serializes credential resolution per account (see ensureCredentials).
+	credMu map[string]*sync.Mutex
 
 	// syncInFlight tracks coalesced per-folder recovery syncs, keyed by
 	// account+"\x00"+folder, so a burst of stale-UID errors starts one sync.
@@ -84,11 +86,25 @@ func (c *Coordinator) SetProgram(p *tea.Program) {
 // ResolveCredentials resolves and caches credentials for all accounts.
 // Should be called before SyncAll.
 func (c *Coordinator) ResolveCredentials() []error {
+	// All accounts at once: each lookup may run a password-manager command
+	// (password_cmd) or ask the keyring, and they are independent.
+	results := make([]error, len(c.cfg.Accounts))
+	var wg sync.WaitGroup
+	for i, acct := range c.cfg.Accounts {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := c.ensureCredentials(acct); err != nil {
+				logging.Error("auth", "credential resolution failed", logging.Acct(acct.Email), logging.Err(err))
+				results[i] = fmt.Errorf("%s: %w", acct.Email, err)
+			}
+		}()
+	}
+	wg.Wait()
 	var errs []error
-	for _, acct := range c.cfg.Accounts {
-		if err := c.ensureCredentials(acct); err != nil {
-			logging.Error("auth", "credential resolution failed", logging.Acct(acct.Email), logging.Err(err))
-			errs = append(errs, fmt.Errorf("%s: %w", acct.Email, err))
+	for _, err := range results {
+		if err != nil {
+			errs = append(errs, err)
 		}
 	}
 	return errs
@@ -97,25 +113,50 @@ func (c *Coordinator) ResolveCredentials() []error {
 // ensureCredentials resolves one account lazily. This lets standalone MCP
 // writes establish their own worker without requiring a sync first.
 func (c *Coordinator) ensureCredentials(acct config.AccountConfig) error {
-	c.mu.Lock()
-	creds := c.creds[acct.Email]
-	if creds != nil {
-		c.mu.Unlock()
+	if c.cachedCredentials(acct.Email) != nil {
 		return nil
 	}
 
-	// Hold the coordinator lock through resolution so concurrent first writes
-	// cannot prompt for or resolve the same account credentials repeatedly.
-	resolver := auth.NewResolver(acct)
-	resolved, err := resolver.Resolve(acct)
+	// One resolution per account at a time, so concurrent first uses cannot
+	// prompt for or resolve the same credentials repeatedly. The lock is per
+	// account, not the coordinator's: a slow lookup (a password manager
+	// waiting to be unlocked) must not block the other accounts or the UI.
+	mu := c.accountCredMutex(acct.Email)
+	mu.Lock()
+	defer mu.Unlock()
+	if c.cachedCredentials(acct.Email) != nil {
+		return nil
+	}
+
+	resolved, err := auth.NewResolver(acct).Resolve(acct)
 	if err != nil {
-		c.mu.Unlock()
 		return err
 	}
 	logging.Debug("auth", "credentials resolved", logging.Acct(acct.Email))
+	c.mu.Lock()
 	c.creds[acct.Email] = resolved
 	c.mu.Unlock()
 	return nil
+}
+
+func (c *Coordinator) cachedCredentials(account string) *auth.Credentials {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.creds[account]
+}
+
+func (c *Coordinator) accountCredMutex(account string) *sync.Mutex {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.credMu == nil {
+		c.credMu = make(map[string]*sync.Mutex)
+	}
+	mu := c.credMu[account]
+	if mu == nil {
+		mu = &sync.Mutex{}
+		c.credMu[account] = mu
+	}
+	return mu
 }
 
 func (c *Coordinator) accountConnectMutex(account string) *sync.Mutex {
@@ -2075,11 +2116,34 @@ func (c *Coordinator) DisconnectAll() {
 	c.smtp = make(map[string]*SMTPWorker)
 	c.mu.Unlock()
 
-	for email, w := range workers {
-		w.Disconnect()
-		logging.Debug("connect", "IMAP disconnected", logging.Acct(email))
+	// Say goodbye to every server at once and do not wait long for the
+	// answers: a polite LOGOUT can take seconds (one slow server used to hold
+	// up quitting for all of them), and the connections close with the
+	// process anyway. Queued operations are durable and unaffected.
+	done := make(chan struct{})
+	go func() {
+		var wg sync.WaitGroup
+		for email, w := range workers {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				w.Disconnect()
+				logging.Debug("connect", "IMAP disconnected", logging.Acct(email))
+			}()
+		}
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(disconnectAllWait):
+		logging.Debug("connect", "not waiting for remaining logouts")
 	}
 }
+
+// disconnectAllWait bounds how long quitting waits for servers to acknowledge
+// the logout.
+var disconnectAllWait = 400 * time.Millisecond
 
 // authFailure tracks consecutive rejected logins for one account.
 type authFailure struct {

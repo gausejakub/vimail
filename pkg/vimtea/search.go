@@ -30,7 +30,7 @@ func (m *editorModel) handleSearchInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "backspace":
 		if len(m.searchBuffer) > 0 {
-			m.searchBuffer = m.searchBuffer[:len(m.searchBuffer)-1]
+			m.searchBuffer = m.searchBuffer[:prevRuneStart(m.searchBuffer, len(m.searchBuffer))]
 		} else {
 			m.searchMode = false
 			m.statusMessage = ""

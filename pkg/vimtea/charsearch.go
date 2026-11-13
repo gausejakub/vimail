@@ -30,65 +30,65 @@ func (m *editorModel) handlePendingAction(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch action {
 	case "f":
-		executeFindForward(m, byte(ch), false)
-		m.lastFindChar = byte(ch)
+		executeFindForward(m, ch, false)
+		m.lastFindChar = ch
 		m.lastFindAction = "f"
 	case "F":
-		executeFindBackward(m, byte(ch), false)
-		m.lastFindChar = byte(ch)
+		executeFindBackward(m, ch, false)
+		m.lastFindChar = ch
 		m.lastFindAction = "F"
 	case "t":
-		executeFindForward(m, byte(ch), true)
-		m.lastFindChar = byte(ch)
+		executeFindForward(m, ch, true)
+		m.lastFindChar = ch
 		m.lastFindAction = "t"
 	case "T":
-		executeFindBackward(m, byte(ch), true)
-		m.lastFindChar = byte(ch)
+		executeFindBackward(m, ch, true)
+		m.lastFindChar = ch
 		m.lastFindAction = "T"
 	case "r":
-		executeReplaceChar(m, byte(ch))
+		executeReplaceChar(m, ch)
 	// Visual mode find
 	case "vf":
-		executeFindForward(m, byte(ch), false)
-		m.lastFindChar = byte(ch)
+		executeFindForward(m, ch, false)
+		m.lastFindChar = ch
 		m.lastFindAction = "f"
 	case "vF":
-		executeFindBackward(m, byte(ch), false)
-		m.lastFindChar = byte(ch)
+		executeFindBackward(m, ch, false)
+		m.lastFindChar = ch
 		m.lastFindAction = "F"
 	case "vt":
-		executeFindForward(m, byte(ch), true)
-		m.lastFindChar = byte(ch)
+		executeFindForward(m, ch, true)
+		m.lastFindChar = ch
 		m.lastFindAction = "t"
 	case "vT":
-		executeFindBackward(m, byte(ch), true)
-		m.lastFindChar = byte(ch)
+		executeFindBackward(m, ch, true)
+		m.lastFindChar = ch
 		m.lastFindAction = "T"
 	// Operator + find combos
 	case "df":
-		executeOperatorFind(m, byte(ch), "d", "f")
+		executeOperatorFind(m, ch, "d", "f")
 	case "dF":
-		executeOperatorFind(m, byte(ch), "d", "F")
+		executeOperatorFind(m, ch, "d", "F")
 	case "dt":
-		executeOperatorFind(m, byte(ch), "d", "t")
+		executeOperatorFind(m, ch, "d", "t")
 	case "dT":
-		executeOperatorFind(m, byte(ch), "d", "T")
+		executeOperatorFind(m, ch, "d", "T")
 	case "cf":
-		executeOperatorFind(m, byte(ch), "c", "f")
+		executeOperatorFind(m, ch, "c", "f")
 	case "cF":
-		executeOperatorFind(m, byte(ch), "c", "F")
+		executeOperatorFind(m, ch, "c", "F")
 	case "ct":
-		executeOperatorFind(m, byte(ch), "c", "t")
+		executeOperatorFind(m, ch, "c", "t")
 	case "cT":
-		executeOperatorFind(m, byte(ch), "c", "T")
+		executeOperatorFind(m, ch, "c", "T")
 	case "yf":
-		executeOperatorFind(m, byte(ch), "y", "f")
+		executeOperatorFind(m, ch, "y", "f")
 	case "yF":
-		executeOperatorFind(m, byte(ch), "y", "F")
+		executeOperatorFind(m, ch, "y", "F")
 	case "yt":
-		executeOperatorFind(m, byte(ch), "y", "t")
+		executeOperatorFind(m, ch, "y", "t")
 	case "yT":
-		executeOperatorFind(m, byte(ch), "y", "T")
+		executeOperatorFind(m, ch, "y", "T")
 	}
 
 	m.keySequence = []string{}
@@ -98,51 +98,47 @@ func (m *editorModel) handlePendingAction(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // executeFindForward scans right on the current line for ch.
 // If till is true, stops one position before the match (t motion).
-func executeFindForward(m *editorModel, ch byte, till bool) {
+func executeFindForward(m *editorModel, ch rune, till bool) {
 	line := m.buffer.Line(m.cursor.Row)
-	for i := m.cursor.Col + 1; i < len(line); i++ {
-		if line[i] == ch {
-			if till {
-				m.cursor.Col = i - 1
-			} else {
-				m.cursor.Col = i
-			}
-			m.desiredCol = m.cursor.Col
-			return
-		}
+	i := findRuneForward(line, runeEnd(line, m.cursor.Col), ch)
+	if i < 0 {
+		return
 	}
+	if till {
+		i = prevRuneStart(line, i)
+	}
+	m.cursor.Col = i
+	m.desiredCol = m.cursor.Col
 }
 
 // executeFindBackward scans left on the current line for ch.
 // If till is true, stops one position after the match (T motion).
-func executeFindBackward(m *editorModel, ch byte, till bool) {
+func executeFindBackward(m *editorModel, ch rune, till bool) {
 	line := m.buffer.Line(m.cursor.Row)
-	for i := m.cursor.Col - 1; i >= 0; i-- {
-		if line[i] == ch {
-			if till {
-				m.cursor.Col = i + 1
-			} else {
-				m.cursor.Col = i
-			}
-			m.desiredCol = m.cursor.Col
-			return
-		}
+	i := findRuneBackward(line, m.cursor.Col, ch)
+	if i < 0 {
+		return
 	}
+	if till {
+		i = runeEnd(line, i)
+	}
+	m.cursor.Col = i
+	m.desiredCol = m.cursor.Col
 }
 
 // executeReplaceChar replaces the character at cursor with ch, staying in normal mode.
-func executeReplaceChar(m *editorModel, ch byte) {
+func executeReplaceChar(m *editorModel, ch rune) {
 	line := m.buffer.Line(m.cursor.Row)
 	if len(line) == 0 || m.cursor.Col >= len(line) {
 		return
 	}
 	m.buffer.saveUndoState(m.cursor)
-	newLine := line[:m.cursor.Col] + string(ch) + line[m.cursor.Col+1:]
-	m.buffer.setLine(m.cursor.Row, newLine)
+	col := runeStart(line, m.cursor.Col)
+	m.buffer.setLine(m.cursor.Row, line[:col]+string(ch)+line[runeEnd(line, col):])
 }
 
 // executeOperatorFind performs an operator (d/c/y) combined with a find motion (f/F/t/T).
-func executeOperatorFind(m *editorModel, ch byte, op, find string) {
+func executeOperatorFind(m *editorModel, ch rune, op, find string) {
 	line := m.buffer.Line(m.cursor.Row)
 	if len(line) == 0 {
 		return
@@ -156,32 +152,16 @@ func executeOperatorFind(m *editorModel, ch byte, op, find string) {
 	targetCol := -1
 	switch find {
 	case "f":
-		for i := m.cursor.Col + 1; i < len(line); i++ {
-			if line[i] == ch {
-				targetCol = i
-				break
-			}
-		}
+		targetCol = findRuneForward(line, runeEnd(line, m.cursor.Col), ch)
 	case "F":
-		for i := m.cursor.Col - 1; i >= 0; i-- {
-			if line[i] == ch {
-				targetCol = i
-				break
-			}
-		}
+		targetCol = findRuneBackward(line, m.cursor.Col, ch)
 	case "t":
-		for i := m.cursor.Col + 1; i < len(line); i++ {
-			if line[i] == ch {
-				targetCol = i - 1
-				break
-			}
+		if i := findRuneForward(line, runeEnd(line, m.cursor.Col), ch); i >= 0 {
+			targetCol = prevRuneStart(line, i)
 		}
 	case "T":
-		for i := m.cursor.Col - 1; i >= 0; i-- {
-			if line[i] == ch {
-				targetCol = i + 1
-				break
-			}
+		if i := findRuneBackward(line, m.cursor.Col, ch); i >= 0 {
+			targetCol = runeEnd(line, i)
 		}
 	}
 
@@ -197,7 +177,7 @@ func executeOperatorFind(m *editorModel, ch byte, op, find string) {
 	switch find {
 	case "f", "t":
 		start = Cursor{Row: m.cursor.Row, Col: m.cursor.Col}
-		end = Cursor{Row: m.cursor.Row, Col: targetCol + 1}
+		end = Cursor{Row: m.cursor.Row, Col: runeEnd(line, targetCol)}
 	case "F", "T":
 		start = Cursor{Row: m.cursor.Row, Col: targetCol}
 		end = Cursor{Row: m.cursor.Row, Col: m.cursor.Col}
@@ -217,7 +197,7 @@ func executeOperatorFind(m *editorModel, ch byte, op, find string) {
 	case "y":
 		text := m.buffer.getCharRange(start, end)
 		m.cursor = start
-		setupYankHighlight(m, start, Cursor{Row: end.Row, Col: end.Col - 1}, text, false)
+		setupYankHighlight(m, start, Cursor{Row: end.Row, Col: prevRuneStart(line, end.Col)}, text, false)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -78,6 +79,8 @@ func FuzzEditableEditor(f *testing.F) {
 	f.Add("(a [b] c)", "ci(X\x1bda[u", 0, 0)
 	f.Add("one two three", "wcwx\x1b.2dwD", 12, 2)
 	f.Add("x", ":zr\r/x\rnrZvU", 40, 10)
+	f.Add("žlutý kůň\nčau 日本語 👍", "wdwxpa\u00e9\x1b~rčvey$hP", 40, 10)
+	f.Add("čšř", "llxxiž\x7f\x7fš\x1bfřdTčJ", 10, 3)
 	f.Fuzz(func(t *testing.T, content, keys string, width, height int) {
 		if len(content) > 4000 || len(keys) > 60 || width < 0 || height < 0 || width > 300 || height > 100 {
 			return
@@ -91,6 +94,7 @@ func FuzzEditableEditor(f *testing.F) {
 				}
 			}()
 			e := NewEditor(WithContent(content), WithWrap(true), WithEnableStatusBar(false))
+			validInput := utf8.ValidString(content) && utf8.ValidString(keys)
 			m := e.(*editorModel)
 			e.SetSize(width, height)
 			_ = m.View()
@@ -122,6 +126,17 @@ func FuzzEditableEditor(f *testing.F) {
 					}
 				}
 				_ = m.View()
+				if validInput {
+					if text := m.buffer.text(); !utf8.ValidString(text) {
+						t.Errorf("key %q split a character: buffer %q (content %q keys %q)", r, text, content, keys)
+						return
+					}
+					line := m.buffer.Line(m.cursor.Row)
+					if c := m.cursor.Col; c < len(line) && !utf8.RuneStart(line[c]) {
+						t.Errorf("key %q left the cursor inside a character: col %d of %q (content %q keys %q)", r, c, line, content, keys)
+						return
+					}
+				}
 			}
 		}()
 		select {

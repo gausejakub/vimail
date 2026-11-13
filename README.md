@@ -269,6 +269,7 @@ Press `Enter` on a message, or focus the preview pane (`l` / `Tab`) and press `E
 - Select with `v` / `V`, then `y` to copy; `yy`, `yiw`, `yaW`, `yi(`, `y$` … work too
 - Copies go to the system clipboard (`wl-copy`, `xclip`/`xsel`, `pbcopy`; OSC 52 as a fallback, also over SSH)
 - `q` or `Esc` closes the reader; the buffer cannot be edited
+- Text in any script works in the reader and in compose: accented and non-Latin characters can be typed, deleted, searched, and moved over one character at a time
 
 ### Actions
 

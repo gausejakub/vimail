@@ -181,3 +181,18 @@ func TestReaderCursorStartsWhereThePreviewWasScrolled(t *testing.T) {
 		t.Fatalf("yy at start = %q, want line 31 (top of the scrolled preview)", yanks(msgs))
 	}
 }
+
+// A body that is one huge line must not freeze the reader.
+func TestReaderHandlesHugeSingleLineBody(t *testing.T) {
+	m := New().SetSize(80, 24)
+	m, _ = m.Update(util.MessageSelectedMsg{Message: email.Message{UID: 1, Subject: "minified", Body: strings.Repeat("{\"k\":\"čaj\"},", 40_000)}})
+	start := time.Now()
+	m, _ = m.StartReading()
+	for range 5 {
+		m, _ = press(m, "w", "$", "0")
+		_ = m.View()
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("reader took %v on a ~500 KB single-line body", d)
+	}
+}

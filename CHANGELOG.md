@@ -16,6 +16,18 @@ every merged PR lands here in the same pass that merges it.
 
 ### Security
 
+## [0.16.0] - 2026-11-13
+
+### Added
+
+- Your own theme: a TOML file in `~/.config/vimail/themes/` becomes a theme named after the file. Set any of the 22 colors and take the rest from a built-in theme; the file is re-read on `:theme <name>`, so a generated theme (from a desktop palette, for example) applies without a restart. (#64)
+
+### Changed
+
+- vimail opens faster: the screen is drawn first and passwords are looked up in the background, all accounts at once. With `password_cmd` each account is a separate command, and four accounts used to delay start-up by most of a second. (#63)
+- Quitting no longer waits for mail servers to acknowledge the logout; one slow server could hold `q` up for several seconds. (#63)
+- README: the credentials section now leads with where passwords are stored by default (macOS Keychain, Secret Service on Linux, Credential Manager on Windows) and lists more `password_cmd` examples. (#62)
+
 ## [0.15.6] - 2026-11-13
 
 ### Security
@@ -234,7 +246,8 @@ Security release following a full audit of the mail-handling, local storage, net
 - Go 1.26.6 and `golang.org/x/net` v0.58.0 in both modules, clearing all reachable govulncheck advisories (including GO-2026-5028/5029/5030); `SECURITY.md` now states the current scan. (#17)
 - Outbound mail over MCP is opt-in (`[mcp] allow_send`), because any connected MCP client can act as you. (#33)
 
-[Unreleased]: https://github.com/gausejakub/vimail/compare/v0.15.6...HEAD
+[Unreleased]: https://github.com/gausejakub/vimail/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/gausejakub/vimail/compare/v0.15.6...v0.16.0
 [0.15.6]: https://github.com/gausejakub/vimail/compare/v0.15.5...v0.15.6
 [0.15.5]: https://github.com/gausejakub/vimail/compare/v0.15.4...v0.15.5
 [0.15.4]: https://github.com/gausejakub/vimail/compare/v0.15.3...v0.15.4

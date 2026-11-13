@@ -96,3 +96,64 @@ func TestEditableEditorDoesNotEmitYankMsg(t *testing.T) {
 		t.Fatalf("editable editor emitted %q", got)
 	}
 }
+
+// Control characters delivered as plain runes (pasted text) must not end up
+// in the buffer or in a prompt, where they would be drawn raw.
+func TestControlCharactersAreNotInserted(t *testing.T) {
+	ctl := func(r rune) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}} }
+
+	m := testEditor("abc")
+	sendKeys(m, "i")
+	for _, r := range []rune{0x1b, 0x1d, 0x07, 0x7f, 'x'} {
+		m.Update(ctl(r))
+	}
+	if got := m.buffer.text(); got != "xabc" {
+		t.Fatalf("buffer = %q, want only the printable character inserted", got)
+	}
+
+	m = newReadOnlyEditor("abc")
+	sendKeys(m, "/")
+	for _, r := range []rune{0x1d, 0x1b, 'b'} {
+		m.Update(ctl(r))
+	}
+	if m.searchBuffer != "b" {
+		t.Fatalf("search buffer = %q", m.searchBuffer)
+	}
+}
+
+// A huge numeric prefix must neither overflow, loop for minutes, nor make a
+// paste allocate without limit.
+func TestHugeCountPrefixIsBounded(t *testing.T) {
+	m := testEditor("line one\nline two")
+	sendKeys(m, "y", "y")
+	for range 30 {
+		sendKeys(m, "9")
+	}
+	if m.countPrefix != maxCountPrefix {
+		t.Fatalf("countPrefix = %d, want capped at %d", m.countPrefix, maxCountPrefix)
+	}
+	sendKeys(m, "p") // would be 10^30 copies
+	if n := m.buffer.lineCount(); n < 2 || n > maxCountPrefix+2 {
+		t.Fatalf("buffer has %d lines after a capped paste", n)
+	}
+	for range 30 {
+		sendKeys(m, "9")
+	}
+	sendKeys(m, "j") // must return promptly
+	if got := repeatCount(1<<40, 1<<20); got != 8 {
+		t.Fatalf("repeatCount = %d, want 8 (8 MiB / 1 MiB)", got)
+	}
+}
+
+// Screen-relative motions in a pane with no height used to leave the cursor
+// on row -1, and the next linewise command indexed the buffer with it.
+func TestCursorStaysInsideBufferInZeroHeightPane(t *testing.T) {
+	m := testEditor("only line")
+	m.SetSize(40, 0)
+	for _, keys := range [][]string{{"L", "V", "x"}, {"M", "d", "d"}, {"H", "V", "y"}, {"L", "y", "y"}, {"G", "L", "J"}} {
+		sendKeys(m, keys...)
+		if m.cursor.Row < 0 || m.cursor.Row >= m.buffer.lineCount() || m.cursor.Col < 0 {
+			t.Fatalf("after %v cursor = %+v", keys, m.cursor)
+		}
+	}
+}

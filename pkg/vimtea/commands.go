@@ -704,7 +704,7 @@ func pasteAfter(model *editorModel) tea.Cmd {
 		}
 	} else {
 		// Single-line paste - original behavior, repeated count times
-		text := strings.Repeat(model.yankBuffer, count)
+		text := strings.Repeat(model.yankBuffer, repeatCount(count, len(model.yankBuffer)))
 		if insertPos >= len(currLine) {
 			model.buffer.setLine(model.cursor.Row, currLine+text)
 		} else {
@@ -779,7 +779,7 @@ func pasteBefore(model *editorModel) tea.Cmd {
 		}
 	} else {
 		// Single-line paste - original behavior, repeated count times
-		text := strings.Repeat(model.yankBuffer, count)
+		text := strings.Repeat(model.yankBuffer, repeatCount(count, len(model.yankBuffer)))
 		model.buffer.setLine(model.cursor.Row,
 			currLine[:insertPos]+text+currLine[insertPos:])
 
@@ -792,6 +792,11 @@ func pasteBefore(model *editorModel) tea.Cmd {
 
 // repeatLines returns lines repeated count times (count <= 1 returns it as is).
 func repeatLines(lines []string, count int) []string {
+	size := len(lines) // at least one byte per line (its newline)
+	for _, l := range lines {
+		size += len(l)
+	}
+	count = repeatCount(count, size)
 	if count <= 1 {
 		return lines
 	}

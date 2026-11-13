@@ -79,3 +79,15 @@ func TestBrowserDocumentIsRebuiltAndFallsBackToText(t *testing.T) {
 		t.Fatalf("text body not escaped: %s", doc)
 	}
 }
+
+// An HTML-only message whose text conversion is empty takes the regex
+// fallback; it used to panic on an uncompilable pattern.
+func TestHTMLOnlyMessageWithoutTextRenders(t *testing.T) {
+	got := preparedBody("", `<html><head><style>p{color:red}</style><script>x()</script></head><body><p>Hello</p><br><div>World</div></body></html>`)
+	if !strings.Contains(got, "Hello") || !strings.Contains(got, "World") || strings.Contains(got, "color:red") || strings.Contains(got, "x()") {
+		t.Fatalf("preparedBody = %q", got)
+	}
+	if got := preparedBody("", `<img src="https://example.com/banner.png">`); got == "" {
+		t.Fatal("image-only message rendered as nothing")
+	}
+}

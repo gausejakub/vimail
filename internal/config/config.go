@@ -156,13 +156,14 @@ type MCPConfig struct {
 }
 
 type Config struct {
-	General  GeneralConfig   `toml:"general"`
-	Accounts []AccountConfig `toml:"accounts"`
-	Theme    ThemeConfig     `toml:"theme"`
-	AI       AIConfig        `toml:"ai"`
-	MCP      MCPConfig       `toml:"mcp"`
-	Sync     SyncConfig      `toml:"sync"`
-	Cache    CacheConfig     `toml:"cache"`
+	General  GeneralConfig       `toml:"general"`
+	Accounts []AccountConfig     `toml:"accounts"`
+	Theme    ThemeConfig         `toml:"theme"`
+	AI       AIConfig            `toml:"ai"`
+	MCP      MCPConfig           `toml:"mcp"`
+	Sync     SyncConfig          `toml:"sync"`
+	Cache    CacheConfig         `toml:"cache"`
+	Notify   NotificationsConfig `toml:"notifications"`
 }
 
 func DefaultConfig() Config {
@@ -256,4 +257,51 @@ func (a AccountConfig) SignatureFor(from string) string {
 		sig = string(data)
 	}
 	return sig
+}
+
+// NotificationsConfig controls desktop notifications for new mail.
+type NotificationsConfig struct {
+	Enabled bool `toml:"enabled"`
+	// HideSubject shows only the sender, for shared screens.
+	HideSubject bool `toml:"hide_subject"`
+	// Folders to watch (display names); empty means Inbox.
+	Folders []string `toml:"folders"`
+	// Accounts to watch; empty means all.
+	Accounts []string `toml:"accounts"`
+	// Command replaces the platform notifier (notify-send on Linux,
+	// osascript on macOS). It is run directly, without a shell, with the
+	// title and the body appended as the last two arguments.
+	Command []string `toml:"command"`
+}
+
+// Watches reports whether new mail in the account's folder should notify.
+func (n NotificationsConfig) Watches(account, folder string) bool {
+	if !n.Enabled {
+		return false
+	}
+	if len(n.Accounts) > 0 {
+		found := false
+		for _, a := range n.Accounts {
+			if strings.EqualFold(a, account) {
+				found = true
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	for _, f := range n.WatchedFolders() {
+		if f == folder {
+			return true
+		}
+	}
+	return false
+}
+
+// WatchedFolders returns the folders to watch.
+func (n NotificationsConfig) WatchedFolders() []string {
+	if len(n.Folders) == 0 {
+		return []string{"Inbox"}
+	}
+	return n.Folders
 }

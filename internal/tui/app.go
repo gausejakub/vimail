@@ -354,7 +354,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			})
 			return m, tea.Batch(cmds...)
 		}
-		m.compose = m.compose.ShowDraft(draft).WithIdentities(m.identities(acct)).WithSignatures(m.signatureFor(acct)).SetSize(m.width, m.height)
+		m.compose = m.compose.ShowDraft(draft).WithIdentities(m.identities(acct)).WithSignatures(m.signatureFor(acct)).WithPGP(m.pgpDefaults(acct)).SetSize(m.width, m.height)
 		cmds = append(cmds, m.loadContactsCmd())
 		m.mode = keys.ModeNormal
 		cmds = append(cmds, func() tea.Msg {
@@ -581,6 +581,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				Folder:      msg.Folder,
 				UID:         msg.UID,
 				Body:        msg.Body,
+				Security:    msg.Security,
 				HTMLBody:    msg.HTMLBody,
 				Attachments: msg.Attachments,
 			}
@@ -1231,7 +1232,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case key.Matches(msg, keys.Normal.Compose):
-		m.compose = m.compose.Show().WithMarkdownDefault(m.markdownDefault(m.mailbox.SelectedEmail())).WithIdentities(m.identities(m.mailbox.SelectedEmail())).WithSignatures(m.signatureFor(m.mailbox.SelectedEmail())).SetSize(m.width, m.height)
+		m.compose = m.compose.Show().WithMarkdownDefault(m.markdownDefault(m.mailbox.SelectedEmail())).WithIdentities(m.identities(m.mailbox.SelectedEmail())).WithSignatures(m.signatureFor(m.mailbox.SelectedEmail())).WithPGP(m.pgpDefaults(m.mailbox.SelectedEmail())).SetSize(m.width, m.height)
 		cmds = append(cmds, m.loadContactsCmd())
 		m.mode = keys.ModeInsert
 		cmds = append(cmds, func() tea.Msg {
@@ -1252,7 +1253,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			} else {
 				d = m.replyDraft(acct, orig, key.Matches(msg, keys.Normal.ReplyAll))
 			}
-			m.compose = m.compose.ShowReply(d).WithMarkdownDefault(m.markdownDefault(acct)).WithIdentities(m.identities(acct)).WithSignatures(m.signatureFor(acct)).SetSize(m.width, m.height)
+			m.compose = m.compose.ShowReply(d).WithMarkdownDefault(m.markdownDefault(acct)).WithIdentities(m.identities(acct)).WithSignatures(m.signatureFor(acct)).WithPGP(m.pgpDefaults(acct)).SetSize(m.width, m.height)
 			cmds = append(cmds, m.loadContactsCmd())
 			m.mode = keys.ModeNormal
 			cmds = append(cmds, func() tea.Msg {
@@ -2540,4 +2541,41 @@ func (m Model) signatureFor(acct string) func(from string) string {
 func (m Model) markdownDefault(acct string) bool {
 	a, ok := m.cfg.Account(acct)
 	return ok && a.Markdown
+}
+
+// pgpDefaults returns an account's OpenPGP defaults and the check the
+// composer runs before sending. The check is nil when OpenPGP is off.
+func (m Model) pgpDefaults(acct string) (sign, encrypt bool, check func(email.Draft) error) {
+	if m.coordinator == nil || m.coordinator.PGP() == nil {
+		return false, false, nil
+	}
+	client := m.coordinator.PGP()
+	a, _ := m.cfg.Account(acct)
+	return a.PGPSign, a.PGPEncrypt, func(d email.Draft) error {
+		from := d.From
+		if from == "" {
+			from = acct
+		}
+		self, ok := email.SingleAddress(from)
+		if !ok {
+			return fmt.Errorf("no sender address to sign or encrypt with")
+		}
+		if d.Sign {
+			if err := client.HasSecretKey(self); err != nil {
+				return err
+			}
+		}
+		if d.Encrypt {
+			addrs := []string{self}
+			for _, list := range [][]string{d.To, d.Cc, d.Bcc} {
+				for _, entry := range list {
+					if a, ok := email.SingleAddress(entry); ok {
+						addrs = append(addrs, a)
+					}
+				}
+			}
+			return client.CanEncryptTo(addrs)
+		}
+		return nil
+	}
 }

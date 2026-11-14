@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/gausejakub/vimail/internal/email"
+	"github.com/gausejakub/vimail/internal/pgp/pgptest"
 	"github.com/gausejakub/vimail/internal/worker"
 )
 
@@ -97,5 +98,37 @@ func TestInvitationIsShownAndAnswered(t *testing.T) {
 	}
 	if n := len(env.smtp.messages()); n != 1 {
 		t.Fatalf("%d messages sent, want 1", n)
+	}
+}
+
+// An account set to encrypt answers invitations encrypted, and refuses to
+// answer in the clear when the organizer has no key.
+func TestInvitationAnswerFollowsPGPDefaults(t *testing.T) {
+	env := newE2E(t)
+	env.cfg.Accounts[0].PGPEncrypt = true
+	env.coord.DisconnectAll()
+	env.coord = worker.NewCoordinator(env.cfg, env.store)
+	env.coord.SetTestCredentials(me, testCreds(me))
+	t.Cleanup(env.coord.DisconnectAll)
+	env.imap.appendRaw(t, me, "INBOX", []byte(inviteMessage))
+	env.sync(t, me)
+	uid := env.store.MessagesFor(me, "Inbox")[0].UID
+
+	// No key for the organizer: refused, nothing sent.
+	env.coord.SetPGP(pgptest.Keyring(t, alias, me))
+	if res := env.coord.RespondToInvitationNow(me, "Inbox", uid, email.PartAccepted); res.Err == nil || !strings.Contains(res.Err.Error(), "trefil@partner.test") {
+		t.Fatalf("answer without the organizer's key: %+v", res)
+	}
+	if n := len(env.smtp.messages()); n != 0 {
+		t.Fatalf("%d messages sent", n)
+	}
+	// With the key: encrypted.
+	env.coord.SetPGP(pgptest.Keyring(t, alias, me, "trefil@partner.test"))
+	if res := env.coord.RespondToInvitationNow(me, "Inbox", uid, email.PartAccepted); res.Err != nil {
+		t.Fatalf("answer: %v", res.Err)
+	}
+	sent := env.smtp.messages()
+	if len(sent) != 1 || !strings.HasPrefix(headerLine(sent[0].data, "Content-Type"), "multipart/encrypted") || strings.Contains(string(sent[0].data), "BEGIN:VCALENDAR") {
+		t.Fatalf("answer not encrypted: %s", headerLine(sent[0].data, "Content-Type"))
 	}
 }

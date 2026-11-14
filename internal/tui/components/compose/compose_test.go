@@ -1,6 +1,7 @@
 package compose
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -163,5 +164,52 @@ func TestMarkdownToggle(t *testing.T) {
 	m = New(config.AIConfig{}).SetSize(120, 40).ShowDraft(email.Draft{ID: "d1", Body: "x", Markdown: false}).WithMarkdownDefault(true)
 	if d, _ := m.CurrentDraftForTest(); d.Markdown {
 		t.Fatal("saved plain draft became Markdown")
+	}
+}
+
+func TestSignAndEncryptToggles(t *testing.T) {
+	// OpenPGP off: the commands say so and change nothing.
+	m := New(config.AIConfig{}).SetSize(120, 40).Show()
+	m, _ = m.Update(pgpMsg{encrypt: true})
+	if d, _ := m.CurrentDraftForTest(); d.Encrypt || d.Sign {
+		t.Fatal("encrypt switched on without OpenPGP")
+	}
+
+	// On, with account defaults: signed, not encrypted.
+	var checked []email.Draft
+	missingKey := false
+	check := func(d email.Draft) error {
+		checked = append(checked, d)
+		if missingKey {
+			return errors.New("no usable public key for bob@x.test")
+		}
+		return nil
+	}
+	m = New(config.AIConfig{}).SetSize(120, 40).Show().WithPGP(true, false, check)
+	if d, _ := m.CurrentDraftForTest(); !d.Sign || d.Encrypt || !strings.Contains(m.View(), "· signed") {
+		t.Fatalf("defaults not applied: %+v", d)
+	}
+	m, _ = m.Update(pgpMsg{encrypt: true})
+	m, _ = m.Update(pgpMsg{})
+	if d, _ := m.CurrentDraftForTest(); d.Sign || !d.Encrypt || !strings.Contains(m.View(), "· encrypted") {
+		t.Fatalf("toggles: %+v", d)
+	}
+
+	// Sending with a missing key keeps the composer open and reports it.
+	m = typeInto(m, "bob@x.test")
+	missingKey = true
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	if info, ok := cmd().(util.InfoMsg); !ok || !info.IsError || !strings.Contains(info.Text, "bob@x.test") || !m.Visible() {
+		t.Fatalf("missing key: %#v visible=%v", cmd(), m.Visible())
+	}
+	missingKey = false
+	_, cmd = m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	if submit, ok := cmd().(util.ComposeSubmitMsg); !ok || !submit.Draft.Encrypt || len(checked) < 2 {
+		t.Fatalf("send with keys present: %#v", cmd())
+	}
+	// A saved draft keeps its own choice.
+	m = New(config.AIConfig{}).SetSize(120, 40).ShowDraft(email.Draft{ID: "d", Body: "x"}).WithPGP(true, true, check)
+	if d, _ := m.CurrentDraftForTest(); d.Sign || d.Encrypt {
+		t.Fatal("account defaults overrode a saved draft")
 	}
 }

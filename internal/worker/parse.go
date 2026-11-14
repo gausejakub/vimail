@@ -140,6 +140,12 @@ func formatAddress(addr imap.Address) string {
 // plus any attachment metadata discovered during parsing.
 type BodyResult struct {
 	Text string
+	// Security is the outcome of OpenPGP processing ("" for ordinary mail):
+	// whether the message was encrypted, and what its signature check said.
+	// It is kept apart from Text so a message cannot fake it.
+	Security string
+	// Decrypted marks Text as the plaintext of an encrypted message.
+	Decrypted bool
 	// Plain is the text/plain part as written ("" when there is none); Text
 	// prefers a conversion of the HTML part.
 	Plain       string

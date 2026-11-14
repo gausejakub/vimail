@@ -45,9 +45,14 @@ type Message struct {
 	// DraftConflict is, for a draft, the id of another draft that looks like
 	// a second version of it (see Draft.ConflictWith).
 	DraftConflict string
-	Attachments   []Attachment
-	Folder        string // populated by search results for context
-	Account       string // populated by search results for context
+	// Security is the outcome of OpenPGP processing when the body was
+	// fetched: whether the message was encrypted and what the signature
+	// check said. Empty for ordinary mail. It is produced by vimail, never
+	// taken from the message.
+	Security    string
+	Attachments []Attachment
+	Folder      string // populated by search results for context
+	Account     string // populated by search results for context
 }
 
 // Attachment represents a file attached to a message.

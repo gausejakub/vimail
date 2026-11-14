@@ -103,7 +103,14 @@ func (c *Coordinator) RespondToInvitationNow(acctEmail, folder string, uid uint3
 		out.Err = err
 		return out
 	}
-	cal := ExtractCalendar(raw)
+	// The invitation that is shown: inside the encryption and the
+	// signature, never a cleartext .ics added around them.
+	content, err := effectiveContent(raw, c.pgp)
+	if err != nil {
+		out.Err = err
+		return out
+	}
+	cal := ExtractCalendar(content)
 	ev, ok := email.ParseCalendar(cal)
 	if cal == nil || !ok {
 		out.Err = fmt.Errorf("this message has no invitation")
@@ -142,6 +149,11 @@ func (c *Coordinator) RespondToInvitationNow(acctEmail, folder string, uid uint3
 		Subject:  verb + ": " + summary,
 		Body:     fmt.Sprintf("%s: %s\nWhen: %s\n", verb, summary, ev.When(time.Local)),
 		Calendar: &CalendarPart{Method: "REPLY", Data: ics},
+	}
+	// The account's OpenPGP defaults apply to answers too; a missing key for
+	// the organizer fails the answer rather than sending it in the clear.
+	if c.pgp != nil {
+		req.Sign, req.Encrypt = acct.PGPSign, acct.PGPEncrypt
 	}
 	res := c.SendNow(acctEmail, req)
 	if res.Err != nil {

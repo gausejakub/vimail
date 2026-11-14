@@ -206,6 +206,42 @@ A message with an invitation shows the event at the top of its text: title, time
 
 vimail sends the organizer a standard calendar reply from the address that was invited, and the status line says where the answer went. The organizer is whoever the invitation names; when that is not the sender of the message, the event block says so. Messages cached before this version show the event after their body is fetched again.
 
+### OpenPGP (signing and encryption)
+
+vimail uses your own GnuPG: it holds no keys and never asks for a passphrase itself; `gpg` and its agent do. Turn it on with:
+
+```toml
+[pgp]
+enabled = true
+# gpg = "/usr/bin/gpg"      # default: gpg from PATH
+
+[[accounts]]
+email = "me@example.com"
+# pgp_sign = true           # sign new messages of this account by default
+# pgp_encrypt = true        # encrypt them by default
+```
+
+**Reading.** Signed and encrypted mail (PGP/MIME) is checked and decrypted when its body is fetched. The result is shown on a `PGP:` line with the message headers, never inside the message text, so a sender cannot fake it:
+
+- `signed by Name <address>`: a good signature from a key you trust, by its user id for the sender's address. Only user ids GnuPG considers valid count; one a key's owner simply added to their own key does not.
+- `UNVERIFIED KEY`: the signature is valid, but GnuPG does not trust the key.
+- `NOT THE SENDER'S KEY`: a valid signature, but by a key for other addresses than the sender's.
+- `SENDER UNKNOWN`: a valid signature, but the message's From address could not be read, so it cannot be matched to the key.
+- `BAD SIGNATURE`: the content changed after signing, or the signature is forged.
+- `SEVERAL SIGNATURES`: not checked; vimail reports one signature per message.
+
+What is shown is always the part the signature covers, nothing outside it, and saving attachments, forwarding and answering invitations use that same part. An encrypted message with anything next to its encrypted part is not opened.
+
+**Writing.** `:sign` and `:encrypt` in the composer switch the current message; the title shows `· signed` / `· encrypted`. Before sending, vimail checks that there is a secret key for your From address and a usable public key for every recipient, and says which one is missing while the message is still open. Bcc recipients can decrypt but are not named in the encrypted message.
+
+What to know:
+
+- The Subject and the other headers are not encrypted, only the content and attachments.
+- A draft marked for encryption is uploaded to the server Drafts folder encrypted to you alone. Without OpenPGP available it is not uploaded.
+- Decrypted text is kept in the cache only when the cache is encrypted (the default with an OS keyring); otherwise it is decrypted each time you open the message.
+- Reading encrypted mail over MCP can make GnuPG ask for your passphrase.
+- Not supported: inline PGP (armored text inside a plain message), key discovery (Autocrypt, WKD), S/MIME.
+
 ### Drafts
 
 Drafts are saved locally and uploaded to the account's server Drafts folder, so they also show up in other mail clients (Gmail, your phone). Every save replaces the server copy. Drafts written in another client appear in vimail after the next sync. A draft deleted or sent elsewhere disappears from vimail too, unless it has edits that have not been uploaded yet. Offline, uploads wait in the operation queue (`:ops`).

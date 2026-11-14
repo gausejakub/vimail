@@ -14,6 +14,9 @@ import (
 type GeneralConfig struct {
 	PreviewPane bool `toml:"preview_pane"`
 	Motion      bool `toml:"motion"`
+	// Threads groups the messages of a conversation together in the list
+	// (toggle at runtime with :threads).
+	Threads bool `toml:"threads"`
 }
 
 type AccountConfig struct {

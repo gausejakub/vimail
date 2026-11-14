@@ -114,7 +114,7 @@ func New(cfg config.Config, store email.Store) Model {
 		focusedPane:   layout.PaneMsgList,
 		layout:        layout.SplitPaneLayout{ShowPreview: cfg.General.PreviewPane},
 		mailbox:       mailbox.New(store),
-		msglist:       msglist.New(store).SetMotion(cfg.General.Motion).Focus(),
+		msglist:       msglist.New(store).SetMotion(cfg.General.Motion).SetThreaded(cfg.General.Threads).Focus(),
 		preview:       preview.New(),
 		status:        status.New().SetMotion(cfg.General.Motion),
 		compose:       compose.New(cfg.AI),
@@ -985,6 +985,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.showOps = true
 		return m, nil
 
+	case util.ToggleThreadsMsg:
+		m.msglist = m.msglist.SetThreaded(!m.msglist.Threaded())
+		text := "Conversations: off"
+		if m.msglist.Threaded() {
+			text = "Conversations: on (folders with up to 500 messages)"
+		}
+		cmds = append(cmds, m.msglist.SelectCurrentCmd(), func() tea.Msg { return util.InfoMsg{Text: text} })
+		return m, tea.Batch(cmds...)
+
 	case util.SearchResultsMsg:
 		logging.Info("search", "results received", logging.KV("count", len(msg.Results)))
 		m.msglist = m.msglist.SetSearchResults(msg.Query, msg.Results)
@@ -1621,6 +1630,9 @@ func (m Model) executeCommand(input string) tea.Cmd {
 		}
 		query := strings.Join(parts[1:], " ")
 		return m.executeSearch(query)
+
+	case "threads":
+		return func() tea.Msg { return util.ToggleThreadsMsg{} }
 
 	case "processes", "ps":
 		return func() tea.Msg { return showProcessesMsg{} }

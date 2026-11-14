@@ -221,3 +221,7 @@ type SearchResultsMsg struct {
 	Account string // empty = all accounts
 	Results []email.Message
 }
+
+// ToggleThreadsMsg switches the message list between flat and grouped by
+// conversation.
+type ToggleThreadsMsg struct{}

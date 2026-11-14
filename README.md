@@ -358,6 +358,7 @@ Press `Enter` on a message, or focus the preview pane (`l` / `Tab`) and press `E
 | `:ops` / `:queue` | Show operation queue log |
 | `:ps` / `:processes` | Show running background processes |
 | `:search <query>` / `:s <query>` | Search messages across all accounts |
+| `:threads` | Group the message list by conversation, or back to flat (`threads = true` under `[general]` makes it the default) |
 
 ### Available themes
 

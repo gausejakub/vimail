@@ -98,20 +98,32 @@ Subcommands:
 | Command | Purpose |
 |---------|---------|
 | `vimail` | Launch the TUI |
-| `vimail setup` | Store account credentials in the OS keyring (or test `password_cmd` / `key_cmd`) |
+| `vimail setup` | Add your first account from its email address; with accounts configured, store or re-enter their credentials (or test `password_cmd` / `key_cmd`) |
+| `vimail setup add` | Add another account from its email address |
 | `vimail mcp` | Run the MCP server on stdio for AI clients (see [MCP server](#mcp-server-ai-clients)) |
 | `vimail help` | Show usage |
 
 ### Account Setup
 
-1. Add accounts to `~/.config/vimail/config.toml` (see examples below)
-2. Run `vimail setup` to store credentials in your OS keyring
-
 ```sh
-vimail setup
+vimail setup        # first run: add your first account
+vimail setup add    # add another account
 ```
 
-This walks through each configured account and securely stores your password in the OS keyring. If credentials already exist, it will ask before overwriting.
+Enter your email address and vimail finds the mail servers, shows them to you, asks for the password, tests the login and writes the account to `~/.config/vimail/config.toml`. The password goes to your OS keyring, never into the config file.
+
+How the servers are found, in this order:
+
+1. built-in settings for Gmail, Outlook, iCloud, Fastmail, Yahoo and Seznam;
+2. the domain's MX records, so a custom domain hosted at one of those providers works too;
+3. the autoconfig file the domain publishes (the one Thunderbird reads);
+4. Mozilla's public ISP database, only if you agree, since it tells Mozilla which domain you are setting up;
+5. DNS SRV records, then the usual names (`imap.<domain>`, `mail.<domain>`);
+6. typing them in.
+
+Nothing is sent to a server until you have confirmed it, connections require TLS with a valid certificate, and nothing is saved until the login test passes. Gmail offers an app password or OAuth with your own Google client; Outlook uses OAuth.
+
+You can still write the account block yourself (examples below). With accounts already configured, `vimail setup` walks through them and stores or re-enters their credentials; if credentials already exist, it asks before overwriting.
 
 ### Where passwords are stored
 
@@ -141,6 +153,37 @@ identities = ["Jakub <jakub@alias.example>", "jakub@other-domain.example"]
 
 The mail provider must allow sending as these addresses (Gmail: *Settings → Accounts → Send mail as*), or it may rewrite the From header. The SMTP envelope sender stays the account's own address.
 
+### Special folders (Sent, Drafts, Trash, Spam)
+
+vimail finds an account's special folders from the roles the mail server advertises, so they work whatever they are called (`Gesendet`, `Envoyés`, `[Gmail]/Papierkorb`). They always appear as Sent, Drafts, Trash, Spam, Archive, All Mail and Starred. If the server advertises no roles, vimail falls back to the folder name; when it does not recognise that either, name the folder yourself:
+
+```toml
+[[accounts]]
+email = "me@example.sk"
+# ...
+folders = { sent = "Odoslané", drafts = "Koncepty", trash = "Kôš", spam = "Nevyžiadaná" }
+```
+
+Accepted keys: `sent`, `drafts`, `trash`, `spam`, `archive`, `all`, `starred`, `important`. The value is the folder's name on the server.
+
+### Signatures
+
+Set a signature on an account, and optionally one per identity. It is added to new messages, replies and forwards under the usual `-- ` line, above the quoted original. Changing the From field in the composer switches to that identity's signature, unless you have edited it.
+
+```toml
+[[accounts]]
+email = "jakub@example.com"
+identities = ["Jakub <jakub@alias.example>"]
+signature = """
+Jakub
+"""
+
+[accounts.signatures]
+"jakub@alias.example" = "file:~/.config/vimail/work-signature.txt"
+```
+
+A value starting with `file:` is read from that file each time. Drafts prepared over MCP get the signature of their From identity too; `signature: false` on `save_draft` leaves it out.
+
 ### Drafts
 
 Drafts are saved locally and uploaded to the account's server Drafts folder, so they also show up in other mail clients (Gmail, your phone). Every save replaces the server copy. Drafts written in another client appear in vimail after the next sync. A draft deleted or sent elsewhere disappears from vimail too, unless it has edits that have not been uploaded yet. Offline, uploads wait in the operation queue (`:ops`).
@@ -148,6 +191,21 @@ Drafts are saved locally and uploaded to the account's server Drafts folder, so 
 A draft keeps everything that goes into the message: From identity, To, Cc, Bcc, subject, body, attachments, and for replies the `In-Reply-To`/`References` headers. When a reply or forward is sent, the original is marked answered (`\Answered`) or forwarded (`$Forwarded`). Bcc is kept in the draft and in your Sent copy, never in the transmitted message.
 
 Two limits: edits made to the same draft in vimail and in another client before either syncs produce two drafts (nothing is lost, nothing is merged), and the server copy of a draft includes its Bcc and attachments.
+
+### New-mail notifications
+
+Off by default. Turn them on to get a desktop notification when unread mail arrives in a watched folder, also while the vimail window is hidden:
+
+```toml
+[notifications]
+enabled = true
+# hide_subject = true                      # show only the sender (shared screens)
+# folders = ["Inbox"]                      # default: Inbox
+# accounts = ["me@example.com"]            # default: all accounts
+# command = ["notify-send", "-u", "low"]   # your own notifier; title and body are appended
+```
+
+Without `command`, vimail uses `notify-send` on Linux and `osascript` on macOS. Several messages arriving together make one notification per account. Mail that was already there when vimail started does not notify.
 
 ### Passwords from a password manager or another store
 
@@ -324,6 +382,8 @@ Press `Enter` on a message, or focus the preview pane (`l` / `Tab`) and press `E
 | `f` | Toggle flag/star |
 | `U` | Mark unread |
 | `dd` | Delete message |
+| `A` | Archive the message, or the visual selection (Archive folder; on Gmail, All Mail) |
+| `m` | Move the message, or the visual selection, to a folder: opens `:move ` |
 | `S` | Save attachments to ~/Downloads |
 | `E` | Export message(s) to ZIP |
 | `o` | Open in browser |
@@ -331,8 +391,9 @@ Press `Enter` on a message, or focus the preview pane (`l` / `Tab`) and press `E
 | `Enter` | Open draft (in Drafts folder), otherwise open the Vim reader |
 | `Ctrl+S` | Send message (in compose) |
 | `:attach <path>` / `:detach [n]` | Add or remove an attachment (compose editor) |
+| `Enter` / `↑` `↓` in To, Cc, Bcc | Take / choose a suggested recipient: the address comes first; people you have written to always rank above addresses that have only written to you, which are marked "has only written to you" |
 | `Esc` | Close overlay / save draft / clear search |
-| `/` | Search all accounts and folders |
+| `/` | Search the cache across all accounts and folders (`:ss <query>` also asks the server) |
 
 ### Modes
 
@@ -352,12 +413,14 @@ Press `Enter` on a message, or focus the preview pane (`l` / `Tab`) and press `E
 | `:sync` | Sync mail |
 | `:verify [folder]` | Reconcile the current (or named) folder with IMAP and check the cache |
 | `:verify full` | Verify every folder and run SQLite `integrity_check` |
-| `:move <folder>` | Move the selected message to another folder |
+| `:move <folder>` | Move the selected message to another folder; the name ignores case and a unique prefix is enough (`:move arch`) |
 | `:ai` | AI-assisted compose (default agent) |
 | `:ai <name>` | AI-assisted compose with a specific agent |
 | `:ops` / `:queue` | Show operation queue log |
 | `:ps` / `:processes` | Show running background processes |
-| `:search <query>` / `:s <query>` | Search messages across all accounts |
+| `:search <query>` / `:s <query>` | Search the cache across all accounts: subject, sender, To, Cc, Reply-To and downloaded bodies |
+| `:search-server <query>` / `:ss <query>` | The same, plus a search on the selected account's mail server, which also covers bodies that were never downloaded |
+| `:threads` | Group the message list by conversation, or back to flat (`threads = true` under `[general]` makes it the default) |
 
 ### Available themes
 
@@ -495,7 +558,7 @@ Any tool that accepts a prompt as an argument and prints the response to stdout 
 }
 ```
 
-Reads (`list_accounts`, `list_folders`, `list_messages`, `read_message`, `search_messages`, `read_draft`) are served from the local cache; search results expose usable folder/UID handles and a `truncated` flag. Write tools include `mark_read`, `mark_unread`, `flag_message`, `unflag_message`, `move_message`, Trash-safe delete/restore, draft operations, and `verify`. For natural review tasks, `list_recent_messages` can sync and list a time window across every account in one call, excluding non-received folders and collapsing Gmail label copies; `read_messages` then opens the selected bodies as one batch and can fetch missing bodies without marking messages read.
+Reads (`list_accounts`, `list_folders`, `list_messages`, `read_message`, `search_messages`, `read_draft`, `search_contacts`) are served from the local cache; `search_contacts` resolves part of a name to an address the way the composer does; search results expose usable folder/UID handles and a `truncated` flag. Write tools include `mark_read`, `mark_unread`, `flag_message`, `unflag_message`, `move_message`, Trash-safe delete/restore, draft operations, and `verify`. For natural review tasks, `list_recent_messages` can sync and list a time window across every account in one call, excluding non-received folders and collapsing Gmail label copies; `read_messages` then opens the selected bodies as one batch and can fetch missing bodies without marking messages read.
 
 Drafts are full-fidelity, so a draft prepared by an AI client is a message you can review and send as is. `save_draft` takes `to`, `cc` and `bcc` as address lists (`to` also accepts one comma-separated string), a `from` identity, local file `attachments`, and either `reply_to_message` (`account`/`folder`/`uid`, with `reply_all` and `quote_original`) or `forward_message`. A reply gets `In-Reply-To` and `References` from the original, a `Re:` subject, recipients from Reply-To/From (plus To/Cc for reply-all, without your own addresses), and the identity the original was addressed to as From. Explicit fields override the computed ones; on update (`id`), omitted fields keep their value. The result, and `read_draft`, return every field, plus whether the server Drafts folder already holds this version (`server_sync`). `delete_draft` removes the server copy too. MCP never sends a draft: you open it in vimail and send it yourself.
 

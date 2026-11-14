@@ -807,6 +807,9 @@ func (c *Coordinator) executeStateOp(opType cache.OpType, acctEmail, folder stri
 }
 
 func (c *Coordinator) executeMove(w *IMAPWorker, account, source string, payload cache.MovePayload) error {
+	if payload.SkipCache {
+		return w.MoveToFolderBatch(source, payload.UIDs, payload.Destination)
+	}
 	moves, moveErr := w.MoveToFolderBatchWithUIDs(source, payload.UIDs, payload.Destination)
 	cacheBySource := make(map[uint32]uint32, len(payload.UIDs))
 	for i, uid := range payload.UIDs {

@@ -1165,7 +1165,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		})
 
 	case key.Matches(msg, keys.Normal.Compose):
-		m.compose = m.compose.Show().WithIdentities(m.identities(m.mailbox.SelectedEmail())).SetSize(m.width, m.height)
+		m.compose = m.compose.Show().WithMarkdownDefault(m.markdownDefault(m.mailbox.SelectedEmail())).WithIdentities(m.identities(m.mailbox.SelectedEmail())).SetSize(m.width, m.height)
 		m.mode = keys.ModeInsert
 		cmds = append(cmds, func() tea.Msg {
 			return keys.ModeChangedMsg{Mode: keys.ModeInsert}
@@ -1185,7 +1185,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			} else {
 				d = m.replyDraft(acct, orig, key.Matches(msg, keys.Normal.ReplyAll))
 			}
-			m.compose = m.compose.ShowReply(d).WithIdentities(m.identities(acct)).SetSize(m.width, m.height)
+			m.compose = m.compose.ShowReply(d).WithMarkdownDefault(m.markdownDefault(acct)).WithIdentities(m.identities(acct)).SetSize(m.width, m.height)
 			m.mode = keys.ModeNormal
 			cmds = append(cmds, func() tea.Msg {
 				return keys.ModeChangedMsg{Mode: keys.ModeNormal}
@@ -2197,4 +2197,10 @@ func (m Model) forwardDraft(acct string, orig email.Message) email.Draft {
 		}
 	}
 	return d
+}
+
+// markdownDefault reports whether new messages of an account are Markdown.
+func (m Model) markdownDefault(acct string) bool {
+	a, ok := m.cfg.Account(acct)
+	return ok && a.Markdown
 }

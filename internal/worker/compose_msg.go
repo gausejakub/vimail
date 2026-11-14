@@ -34,6 +34,10 @@ type ComposeOptions struct {
 // flags the original when sent.
 const draftSourceHeader = "X-Vimail-Source"
 
+// draftMarkdownHeader marks a draft whose body is Markdown, so it is still
+// sent with an HTML alternative after a round trip through the server.
+const draftMarkdownHeader = "X-Vimail-Markdown"
+
 // ComposeMessage serializes req as an RFC 5322 message: text/plain alone, or
 // multipart/mixed with attachments. Recipients must already be validated
 // (email.NormalizeAddresses); header values are sanitized again here because
@@ -83,8 +87,54 @@ func ComposeMessage(req SendRequest, opt ComposeOptions) (string, []byte, error)
 	}
 
 	body := strings.ReplaceAll(req.Body, "\r\n", "\n")
+	// A Markdown body is sent as multipart/alternative: the text exactly as
+	// written, and its rendering as HTML.
+	htmlBody := ""
+	if req.Markdown {
+		var err error
+		if htmlBody, err = email.MarkdownToHTML(body); err != nil {
+			return "", nil, fmt.Errorf("render Markdown: %w", err)
+		}
+	}
+	textHeader := func() mail.InlineHeader {
+		var th mail.InlineHeader
+		th.SetContentType("text/plain", map[string]string{"charset": "utf-8"})
+		return th
+	}
+	// writeAlternatives writes the text and HTML parts into an alternative.
+	writeAlternatives := func(iw *mail.InlineWriter) error {
+		var hh mail.InlineHeader
+		hh.SetContentType("text/html", map[string]string{"charset": "utf-8"})
+		for _, part := range []struct {
+			header mail.InlineHeader
+			data   string
+		}{{textHeader(), body}, {hh, htmlBody}} {
+			w, err := iw.CreatePart(part.header)
+			if err != nil {
+				return err
+			}
+			if _, err := w.Write([]byte(part.data)); err != nil {
+				return err
+			}
+			if err := w.Close(); err != nil {
+				return err
+			}
+		}
+		return iw.Close()
+	}
+
 	var buf bytes.Buffer
 	if len(req.Attachments) == 0 {
+		if req.Markdown {
+			iw, err := mail.CreateInlineWriter(&buf, h)
+			if err != nil {
+				return "", nil, err
+			}
+			if err := writeAlternatives(iw); err != nil {
+				return "", nil, err
+			}
+			return msgID, buf.Bytes(), nil
+		}
 		h.SetContentType("text/plain", map[string]string{"charset": "utf-8"})
 		w, err := mail.CreateSingleInlineWriter(&buf, h)
 		if err != nil {
@@ -103,17 +153,25 @@ func ComposeMessage(req SendRequest, opt ComposeOptions) (string, []byte, error)
 	if err != nil {
 		return "", nil, err
 	}
-	var th mail.InlineHeader
-	th.SetContentType("text/plain", map[string]string{"charset": "utf-8"})
-	tw, err := mw.CreateSingleInline(th)
-	if err != nil {
-		return "", nil, err
-	}
-	if _, err := tw.Write([]byte(body)); err != nil {
-		return "", nil, err
-	}
-	if err := tw.Close(); err != nil {
-		return "", nil, err
+	if req.Markdown {
+		iw, err := mw.CreateInline()
+		if err != nil {
+			return "", nil, err
+		}
+		if err := writeAlternatives(iw); err != nil {
+			return "", nil, err
+		}
+	} else {
+		tw, err := mw.CreateSingleInline(textHeader())
+		if err != nil {
+			return "", nil, err
+		}
+		if _, err := tw.Write([]byte(body)); err != nil {
+			return "", nil, err
+		}
+		if err := tw.Close(); err != nil {
+			return "", nil, err
+		}
 	}
 	for _, a := range req.Attachments {
 		var ah mail.AttachmentHeader

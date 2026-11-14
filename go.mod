@@ -17,6 +17,7 @@ require (
 	github.com/jaytaylor/html2text v0.0.0-20260303211410-1a4bdc82ecec
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/muesli/reflow v0.3.0
+	github.com/yuin/goldmark v1.7.8
 	github.com/zalando/go-keyring v0.2.6
 	golang.org/x/oauth2 v0.35.0
 	golang.org/x/term v0.47.0

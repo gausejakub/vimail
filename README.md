@@ -141,6 +141,16 @@ identities = ["Jakub <jakub@alias.example>", "jakub@other-domain.example"]
 
 The mail provider must allow sending as these addresses (Gmail: *Settings → Accounts → Send mail as*), or it may rewrite the From header. The SMTP envelope sender stays the account's own address.
 
+### Markdown and HTML mail
+
+By default a message goes out as plain text, exactly as written. A message marked as Markdown is sent with two versions: the text as you wrote it, and a formatted HTML rendering of it (bold, lists, links, tables, quoted text). Plain-text mail clients show the first, the rest show the second.
+
+- `:markdown` in the composer switches the current message; the title shows `· Markdown`.
+- `markdown = true` on an account makes it the default for that account's new messages.
+- Over MCP, `save_draft` takes `markdown: true`.
+
+Raw HTML typed or quoted in the body is not passed through to the HTML version.
+
 ### Drafts
 
 Drafts are saved locally and uploaded to the account's server Drafts folder, so they also show up in other mail clients (Gmail, your phone). Every save replaces the server copy. Drafts written in another client appear in vimail after the next sync. A draft deleted or sent elsewhere disappears from vimail too, unless it has edits that have not been uploaded yet. Offline, uploads wait in the operation queue (`:ops`).

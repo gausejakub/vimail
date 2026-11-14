@@ -202,3 +202,67 @@ func TestMediaTypeNormalizesUntrustedValues(t *testing.T) {
 		}
 	}
 }
+
+func TestMarkdownIsSentWithAnHTMLAlternative(t *testing.T) {
+	body := "Hi **Petr**,\n\n- one\n- two\n\n> quoted <script>x</script>\n"
+	req := SendRequest{From: "me@example.test", ToList: []string{"you@example.test"}, Subject: "md", Body: body, Markdown: true}
+
+	// Without attachments: multipart/alternative at the top.
+	_, raw, err := ComposeMessage(req, ComposeOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ct := headerValueOf(raw, "Content-Type"); !strings.HasPrefix(ct, "multipart/alternative") {
+		t.Fatalf("content type = %q", ct)
+	}
+	parsed, err := ParseBody(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimRight(parsed.Plain, "\n") != strings.TrimRight(body, "\n") {
+		t.Fatalf("text part changed: %q", parsed.Plain)
+	}
+	if !strings.Contains(parsed.HTML, "<strong>Petr</strong>") || !strings.Contains(parsed.HTML, "<li>one</li>") ||
+		!strings.Contains(parsed.HTML, "<blockquote>") || strings.Contains(parsed.HTML, "<script") {
+		t.Fatalf("html part = %q", parsed.HTML)
+	}
+	// The text part comes first, so plain-text clients show it.
+	if i, j := strings.Index(string(raw), "text/plain"), strings.Index(string(raw), "text/html"); i < 0 || j < i {
+		t.Fatalf("part order: text/plain at %d, text/html at %d", i, j)
+	}
+
+	// With an attachment: mixed(alternative(text, html), attachment).
+	req.Attachments = []email.DraftAttachment{{Filename: "a.txt", ContentType: "text/plain", Data: []byte("file")}}
+	_, raw, err = ComposeMessage(req, ComposeOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ct := headerValueOf(raw, "Content-Type"); !strings.HasPrefix(ct, "multipart/mixed") || !strings.Contains(string(raw), "multipart/alternative") {
+		t.Fatalf("with attachment: %q", ct)
+	}
+	parsed, _ = ParseBody(raw)
+	parts, _ := ExtractAttachmentData(raw)
+	if !strings.Contains(parsed.HTML, "<strong>Petr</strong>") || len(parts) != 1 || string(parts[0].Data) != "file" {
+		t.Fatalf("mixed message: html=%q attachments=%d", parsed.HTML, len(parts))
+	}
+
+	// A plain message is unchanged: one text/plain part, no HTML.
+	req.Markdown, req.Attachments = false, nil
+	_, raw, _ = ComposeMessage(req, ComposeOptions{})
+	if ct := headerValueOf(raw, "Content-Type"); !strings.HasPrefix(ct, "text/plain") || strings.Contains(string(raw), "text/html") {
+		t.Fatalf("plain message: %q", ct)
+	}
+
+	// A Markdown draft survives the server Drafts folder: the source text
+	// and the setting come back, not a rendering of the HTML.
+	req.Markdown = true
+	_, raw, _ = ComposeMessage(req, ComposeOptions{IncludeBcc: true, Extra: map[string]string{draftMarkdownHeader: "1"}})
+	d, err := ParseDraftMessage(raw)
+	if err != nil || !d.Markdown || d.Body != strings.TrimRight(body, "\n") {
+		t.Fatalf("draft round trip: markdown=%v body=%q err=%v", d.Markdown, d.Body, err)
+	}
+	_, raw, _ = ComposeMessage(SendRequest{From: "me@example.test", ToList: []string{"a@x.test"}, Body: "plain"}, ComposeOptions{})
+	if d, _ := ParseDraftMessage(raw); d.Markdown || d.Body != "plain" {
+		t.Fatalf("plain draft: %+v", d)
+	}
+}

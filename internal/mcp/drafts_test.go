@@ -394,3 +394,42 @@ func TestDraftOutputSanitizesAttachmentContentType(t *testing.T) {
 		t.Fatalf("content_type = %q", d.Attachments[0].ContentType)
 	}
 }
+
+func TestSaveDraftMarkdown(t *testing.T) {
+	store := seededStore(t)
+	cfg := draftCfg()
+	cfg.Accounts[0].Markdown = true
+	session := connectCfg(t, store, cfg)
+
+	var out saveDraftResult
+	call(t, session, "save_draft", map[string]any{"to": "a@x.test", "body": "**hi**"}, &out)
+	if !out.Draft.Markdown {
+		t.Fatal("account default not applied to a new draft")
+	}
+	id := out.ID
+	out = saveDraftResult{}
+	call(t, session, "save_draft", map[string]any{"id": id, "markdown": false}, &out)
+	if out.Draft.Markdown {
+		t.Fatal("markdown=false ignored")
+	}
+	out = saveDraftResult{}
+	call(t, session, "save_draft", map[string]any{"id": id, "subject": "s"}, &out)
+	if out.Draft.Markdown {
+		t.Fatal("update without markdown changed the setting")
+	}
+	if d, _ := store.Draft(testAcct, id); d.Markdown {
+		t.Fatal("stored draft is Markdown")
+	}
+	// Without the account setting, plain unless asked.
+	session = connectCfg(t, store, draftCfg())
+	out = saveDraftResult{}
+	call(t, session, "save_draft", map[string]any{"to": "a@x.test", "body": "x"}, &out)
+	if out.Draft.Markdown {
+		t.Fatal("plain account produced a Markdown draft")
+	}
+	out = saveDraftResult{}
+	call(t, session, "save_draft", map[string]any{"to": "a@x.test", "body": "x", "markdown": true}, &out)
+	if d, _ := store.Draft(testAcct, out.ID); !out.Draft.Markdown || !d.Markdown {
+		t.Fatal("markdown=true not stored")
+	}
+}

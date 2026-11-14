@@ -27,12 +27,14 @@ type SendRequest struct {
 	From string // header From: the account address or one of its identities
 	// To is a comma-separated recipient string (legacy callers); ToList
 	// holds one address per entry. Both are sent to.
-	To          string
-	ToList      []string
-	Cc          []string
-	Bcc         []string // envelope only; never in the transmitted headers
-	Subject     string
-	Body        string
+	To      string
+	ToList  []string
+	Cc      []string
+	Bcc     []string // envelope only; never in the transmitted headers
+	Subject string
+	Body    string
+	// Markdown sends the body with a rendered text/html alternative.
+	Markdown    bool
 	InReplyTo   string
 	References  []string
 	Attachments []email.DraftAttachment
@@ -77,7 +79,7 @@ func (r SendRequest) envelopeRecipients() []string {
 func (r SendRequest) sendPayload() cache.SendPayload {
 	return cache.SendPayload{
 		From: r.From, To: r.To, ToList: r.ToList, Cc: r.Cc, Bcc: r.Bcc,
-		Subject: r.Subject, Body: r.Body, InReplyTo: r.InReplyTo, References: r.References,
+		Subject: r.Subject, Body: r.Body, Markdown: r.Markdown, InReplyTo: r.InReplyTo, References: r.References,
 		Attachments: r.Attachments, Source: r.Source, MessageID: r.MessageID, Date: r.Date,
 	}
 }
@@ -86,7 +88,7 @@ func (r SendRequest) sendPayload() cache.SendPayload {
 func sendRequestFromPayload(p cache.SendPayload) SendRequest {
 	return SendRequest{
 		From: p.From, To: p.To, ToList: p.ToList, Cc: p.Cc, Bcc: p.Bcc,
-		Subject: p.Subject, Body: p.Body, InReplyTo: p.InReplyTo, References: p.References,
+		Subject: p.Subject, Body: p.Body, Markdown: p.Markdown, InReplyTo: p.InReplyTo, References: p.References,
 		Attachments: p.Attachments, Source: p.Source, MessageID: p.MessageID, Date: p.Date,
 	}
 }
@@ -106,10 +108,12 @@ type FetchBodyRequest struct {
 
 // FetchBodyResult is the result of fetching a message body.
 type FetchBodyResult struct {
-	Account     string
-	Folder      string
-	UID         uint32
-	Body        string
+	Account string
+	Folder  string
+	UID     uint32
+	Body    string
+	// Markdown sends the body with a rendered text/html alternative.
+	Markdown    bool
 	HTMLBody    string
 	Attachments []email.Attachment
 	Err         error

@@ -58,6 +58,8 @@ type Model struct {
 
 	syncPending   int             // number of accounts still syncing
 	syncCompleted map[string]bool // completion deduplication for the active cycle
+
+	contactsAt time.Time // when the recipient-completion contacts were last loaded
 }
 
 // syncTickMsg triggers periodic sync refresh.
@@ -209,6 +211,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.resizePanes()
 		m.status = m.status.SetWidth(msg.Width)
 
+	case contactsLoadedMsg:
+		m.compose = m.compose.SetContacts(msg.contacts)
+		return m, nil
+
 	case cacheVersionMsg:
 		cmds = append(cmds, pollCacheVersion(m.store))
 		if msg.err != nil || msg.version == m.cacheVersion {
@@ -341,6 +347,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(cmds...)
 		}
 		m.compose = m.compose.ShowDraft(draft).WithIdentities(m.identities(acct)).SetSize(m.width, m.height)
+		cmds = append(cmds, m.loadContactsCmd())
 		m.mode = keys.ModeNormal
 		cmds = append(cmds, func() tea.Msg {
 			return keys.ModeChangedMsg{Mode: keys.ModeNormal}
@@ -1166,6 +1173,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, keys.Normal.Compose):
 		m.compose = m.compose.Show().WithIdentities(m.identities(m.mailbox.SelectedEmail())).SetSize(m.width, m.height)
+		cmds = append(cmds, m.loadContactsCmd())
 		m.mode = keys.ModeInsert
 		cmds = append(cmds, func() tea.Msg {
 			return keys.ModeChangedMsg{Mode: keys.ModeInsert}
@@ -1186,6 +1194,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				d = m.replyDraft(acct, orig, key.Matches(msg, keys.Normal.ReplyAll))
 			}
 			m.compose = m.compose.ShowReply(d).WithIdentities(m.identities(acct)).SetSize(m.width, m.height)
+			cmds = append(cmds, m.loadContactsCmd())
 			m.mode = keys.ModeNormal
 			cmds = append(cmds, func() tea.Msg {
 				return keys.ModeChangedMsg{Mode: keys.ModeNormal}
@@ -2197,4 +2206,22 @@ func (m Model) forwardDraft(acct string, orig email.Message) email.Draft {
 		}
 	}
 	return d
+}
+
+// contactsLoadedMsg carries the correspondents for recipient completion.
+type contactsLoadedMsg struct{ contacts []email.Contact }
+
+// contactsMaxAge is how long a loaded contact list is reused.
+const contactsMaxAge = 5 * time.Minute
+
+// loadContactsCmd reads the contacts from the cache in the background when
+// the composer opens, at most once per contactsMaxAge. The composer keeps
+// the previous list until the new one arrives.
+func (m *Model) loadContactsCmd() tea.Cmd {
+	if !m.contactsAt.IsZero() && time.Since(m.contactsAt) < contactsMaxAge {
+		return nil
+	}
+	m.contactsAt = time.Now()
+	store, own := m.store, m.cfg.OwnAddresses()
+	return func() tea.Msg { return contactsLoadedMsg{contacts: store.Contacts(own)} }
 }

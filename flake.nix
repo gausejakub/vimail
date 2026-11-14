@@ -20,7 +20,7 @@
           # the published pkg/vimtea module from go.mod, not the local go.work checkout.
           env.GOWORK = "off";
           env.CGO_ENABLED = "0";
-          vendorHash = "sha256-1dsrXtBEK40KqsFkgKdf3kA8tkmaI7geVpeOHX9M8JA=";
+          vendorHash = "sha256-BIqfoarF5PbORRx4FLx8RuKlR9zZ8YHx6Vwtf+vlQ5U=";
 
           subPackages = [ "." ];
           ldflags = [ "-s" "-w" ];

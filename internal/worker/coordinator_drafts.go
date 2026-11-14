@@ -63,7 +63,7 @@ func DraftSendRequest(d email.Draft, defaultFrom string) SendRequest {
 	}
 	return SendRequest{
 		From: from, ToList: d.To, Cc: d.Cc, Bcc: d.Bcc,
-		Subject: d.Subject, Body: d.Body,
+		Subject: d.Subject, Body: d.Body, Markdown: d.Markdown,
 		InReplyTo: d.InReplyTo, References: d.References,
 		Attachments: d.Attachments, Source: d.Source,
 	}
@@ -81,8 +81,12 @@ func (c *Coordinator) uploadDraft(w *IMAPWorker, account, id string) error {
 		return nil // deleted before the upload ran
 	}
 	opts := ComposeOptions{IncludeBcc: true, MessageID: newID, Date: d.Date}
+	opts.Extra = map[string]string{}
 	if src := draftSourceValue(d.Source); src != "" {
-		opts.Extra = map[string]string{draftSourceHeader: src}
+		opts.Extra[draftSourceHeader] = src
+	}
+	if d.Markdown {
+		opts.Extra[draftMarkdownHeader] = "1"
 	}
 	_, raw, err := ComposeMessage(DraftSendRequest(d, from), opts)
 	if err != nil {

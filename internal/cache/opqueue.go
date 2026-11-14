@@ -70,6 +70,7 @@ type SendPayload struct {
 	Bcc         []string                `json:"bcc,omitempty"`
 	Subject     string                  `json:"subject"`
 	Body        string                  `json:"body"`
+	Markdown    bool                    `json:"markdown,omitempty"`
 	InReplyTo   string                  `json:"in_reply_to,omitempty"`
 	References  []string                `json:"references,omitempty"`
 	Attachments []email.DraftAttachment `json:"attachments,omitempty"`

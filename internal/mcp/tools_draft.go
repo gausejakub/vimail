@@ -64,6 +64,8 @@ type saveDraftArgs struct {
 	Forward            *originalRef `json:"forward_message,omitempty" jsonschema:"make this a forward of account/folder/uid: the original's headers and body are appended. New drafts only"`
 	ForwardAttachments *bool        `json:"forward_attachments,omitempty" jsonschema:"with forward_message: include the original's attachments (default true)"`
 
+	Markdown *bool `json:"markdown,omitempty" jsonschema:"treat body as Markdown: the message is sent with a formatted HTML alternative next to the text as written. Default for new drafts: the account setting; on update: unchanged"`
+
 	Attachments *[]string `json:"attachments,omitempty" jsonschema:"local file paths to attach (must be inside an [mcp] attachment_dirs directory). Replaces the draft's attachments; [] removes them; omit to keep them"`
 }
 
@@ -99,6 +101,7 @@ type draftInfo struct {
 	Bcc         []string              `json:"bcc,omitempty"`
 	Subject     string                `json:"subject"`
 	Body        string                `json:"body"`
+	Markdown    bool                  `json:"markdown,omitempty"`
 	InReplyTo   string                `json:"in_reply_to,omitempty"`
 	References  []string              `json:"references,omitempty"`
 	Source      *draftSourceInfo      `json:"source,omitempty"`
@@ -136,6 +139,7 @@ func toDraftInfo(d email.Draft) draftInfo {
 		Date: d.Date.Format(time.RFC3339), ServerSynced: d.Synced, ServerMessageID: email.SanitizeLine(d.ServerMessageID),
 	}
 	info.ConflictsWith = d.ConflictWith
+	info.Markdown = d.Markdown
 	if info.To == nil {
 		info.To = []string{}
 	}
@@ -344,6 +348,12 @@ func (s *Server) buildDraft(acct string, args saveDraftArgs) (email.Draft, error
 	}
 	if total > maxDraftAttachmentBytes {
 		return d, fmt.Errorf("attachments total %d bytes; the limit is %d", total, maxDraftAttachmentBytes)
+	}
+	switch {
+	case args.Markdown != nil:
+		d.Markdown = *args.Markdown
+	case args.ID == "":
+		d.Markdown = acctCfg.Markdown
 	}
 	d.Date = time.Now()
 	return d, nil

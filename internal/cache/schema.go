@@ -256,6 +256,8 @@ func migrateFullHeaders(db *sql.DB) {
 		// Another draft that looks like a second version of this one (the
 		// same draft changed in two clients before either synced).
 		`conflict_with TEXT NOT NULL DEFAULT ''`,
+		// The body is Markdown: sent with an HTML alternative.
+		`markdown BOOLEAN NOT NULL DEFAULT 0`,
 	} {
 		db.Exec(`ALTER TABLE drafts ADD COLUMN ` + col)
 	}

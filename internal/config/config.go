@@ -36,6 +36,10 @@ type AccountConfig struct {
 	// was addressed to. The provider must allow sending as the address
 	// (e.g. Gmail "Send mail as"), or it may rewrite From.
 	Identities []string `toml:"identities"`
+	// Markdown makes new messages of this account Markdown by default: they
+	// are sent with an HTML alternative rendered from the text. Switch per
+	// message with :markdown in the composer.
+	Markdown bool `toml:"markdown"`
 }
 
 // SenderAddresses returns every address the account may send from: the

@@ -149,3 +149,19 @@ func TestSignaturesFollowTheFromIdentity(t *testing.T) {
 		t.Fatalf("draft body changed: %q", got)
 	}
 }
+
+func TestMarkdownToggle(t *testing.T) {
+	m := New(config.AIConfig{}).SetSize(120, 40).Show().WithMarkdownDefault(true)
+	if d, _ := m.CurrentDraftForTest(); !d.Markdown || !strings.Contains(m.View(), "Markdown") {
+		t.Fatalf("account default not applied: %+v", d)
+	}
+	m, _ = m.Update(markdownMsg{}) // what :markdown sends
+	if d, _ := m.CurrentDraftForTest(); d.Markdown || strings.Contains(m.View(), "· Markdown") {
+		t.Fatal(":markdown did not switch to plain text")
+	}
+	// A saved draft keeps its own setting whatever the account default is.
+	m = New(config.AIConfig{}).SetSize(120, 40).ShowDraft(email.Draft{ID: "d1", Body: "x", Markdown: false}).WithMarkdownDefault(true)
+	if d, _ := m.CurrentDraftForTest(); d.Markdown {
+		t.Fatal("saved plain draft became Markdown")
+	}
+}

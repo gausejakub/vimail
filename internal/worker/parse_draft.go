@@ -59,9 +59,16 @@ func ParseDraftMessage(raw []byte) (email.Draft, error) {
 	mr.Close()
 
 	body, err := ParseBody(raw)
-	if err == nil && body.Text != "(no text content)" {
+	switch {
+	case err != nil:
+	case strings.TrimSpace(body.Plain) != "":
+		// What the author typed, not a rendering of the HTML alternative
+		// (for a Markdown draft that is the Markdown source).
+		d.Body = strings.TrimRight(body.Plain, "\n")
+	case body.Text != "(no text content)":
 		d.Body = strings.TrimRight(body.Text, "\n")
 	}
+	d.Markdown = h.Get(draftMarkdownHeader) == "1"
 	parts, err := ExtractAttachmentData(raw)
 	if err == nil {
 		for _, p := range parts {

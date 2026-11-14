@@ -65,6 +65,7 @@ type saveDraftArgs struct {
 	ForwardAttachments *bool        `json:"forward_attachments,omitempty" jsonschema:"with forward_message: include the original's attachments (default true)"`
 
 	Signature *bool `json:"signature,omitempty" jsonschema:"new drafts only: append the signature configured for the From identity (default true); do not write a signature into body yourself"`
+	Markdown  *bool `json:"markdown,omitempty" jsonschema:"treat body as Markdown: the message is sent with a formatted HTML alternative next to the text as written. Default for new drafts: the account setting; on update: unchanged"`
 
 	Attachments *[]string `json:"attachments,omitempty" jsonschema:"local file paths to attach (must be inside an [mcp] attachment_dirs directory). Replaces the draft's attachments; [] removes them; omit to keep them"`
 }
@@ -101,6 +102,7 @@ type draftInfo struct {
 	Bcc         []string              `json:"bcc,omitempty"`
 	Subject     string                `json:"subject"`
 	Body        string                `json:"body"`
+	Markdown    bool                  `json:"markdown,omitempty"`
 	InReplyTo   string                `json:"in_reply_to,omitempty"`
 	References  []string              `json:"references,omitempty"`
 	Source      *draftSourceInfo      `json:"source,omitempty"`
@@ -138,6 +140,7 @@ func toDraftInfo(d email.Draft) draftInfo {
 		Date: d.Date.Format(time.RFC3339), ServerSynced: d.Synced, ServerMessageID: email.SanitizeLine(d.ServerMessageID),
 	}
 	info.ConflictsWith = d.ConflictWith
+	info.Markdown = d.Markdown
 	if info.To == nil {
 		info.To = []string{}
 	}
@@ -355,6 +358,12 @@ func (s *Server) buildDraft(acct string, args saveDraftArgs) (email.Draft, error
 			from = acct
 		}
 		d.Body = email.InsertSignature(d.Body, email.SignatureBlock(acctCfg.SignatureFor(from)))
+	}
+	switch {
+	case args.Markdown != nil:
+		d.Markdown = *args.Markdown
+	case args.ID == "":
+		d.Markdown = acctCfg.Markdown
 	}
 	d.Date = time.Now()
 	return d, nil

@@ -139,7 +139,10 @@ func formatAddress(addr imap.Address) string {
 // BodyResult holds both the plain-text and raw HTML versions of an email body,
 // plus any attachment metadata discovered during parsing.
 type BodyResult struct {
-	Text        string
+	Text string
+	// Plain is the text/plain part as written ("" when there is none); Text
+	// prefers a conversion of the HTML part.
+	Plain       string
 	HTML        string
 	Attachments []email.Attachment
 }
@@ -179,7 +182,7 @@ func ParseBody(data []byte) (BodyResult, error) {
 
 	// Sanitize once at ingest so the cache, preview, reply quoting, export
 	// and MCP all receive text that is safe to print to a terminal.
-	return BodyResult{Text: email.SanitizeText(display), HTML: htmlBody, Attachments: attachments}, nil
+	return BodyResult{Text: email.SanitizeText(display), HTML: htmlBody, Plain: email.SanitizeText(textBody), Attachments: attachments}, nil
 }
 
 const (

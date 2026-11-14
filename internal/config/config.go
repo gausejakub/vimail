@@ -50,6 +50,10 @@ type AccountConfig struct {
 	// address. A value starting with "file:" is read from that path.
 	Signature  string            `toml:"signature"`
 	Signatures map[string]string `toml:"signatures"`
+	// Markdown makes new messages of this account Markdown by default: they
+	// are sent with an HTML alternative rendered from the text. Switch per
+	// message with :markdown in the composer.
+	Markdown bool `toml:"markdown"`
 }
 
 // SenderAddresses returns every address the account may send from: the

@@ -1215,7 +1215,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case key.Matches(msg, keys.Normal.Compose):
-		m.compose = m.compose.Show().WithIdentities(m.identities(m.mailbox.SelectedEmail())).WithSignatures(m.signatureFor(m.mailbox.SelectedEmail())).SetSize(m.width, m.height)
+		m.compose = m.compose.Show().WithMarkdownDefault(m.markdownDefault(m.mailbox.SelectedEmail())).WithIdentities(m.identities(m.mailbox.SelectedEmail())).WithSignatures(m.signatureFor(m.mailbox.SelectedEmail())).SetSize(m.width, m.height)
 		cmds = append(cmds, m.loadContactsCmd())
 		m.mode = keys.ModeInsert
 		cmds = append(cmds, func() tea.Msg {
@@ -1236,7 +1236,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			} else {
 				d = m.replyDraft(acct, orig, key.Matches(msg, keys.Normal.ReplyAll))
 			}
-			m.compose = m.compose.ShowReply(d).WithIdentities(m.identities(acct)).WithSignatures(m.signatureFor(acct)).SetSize(m.width, m.height)
+			m.compose = m.compose.ShowReply(d).WithMarkdownDefault(m.markdownDefault(acct)).WithIdentities(m.identities(acct)).WithSignatures(m.signatureFor(acct)).SetSize(m.width, m.height)
 			cmds = append(cmds, m.loadContactsCmd())
 			m.mode = keys.ModeNormal
 			cmds = append(cmds, func() tea.Msg {
@@ -2492,4 +2492,10 @@ func (m Model) signatureFor(acct string) func(from string) string {
 		}
 		return a.SignatureFor(from)
 	}
+}
+
+// markdownDefault reports whether new messages of an account are Markdown.
+func (m Model) markdownDefault(acct string) bool {
+	a, ok := m.cfg.Account(acct)
+	return ok && a.Markdown
 }

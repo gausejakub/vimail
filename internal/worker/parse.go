@@ -180,6 +180,11 @@ func ParseBody(data []byte) (BodyResult, error) {
 		display = "(no text content)"
 	}
 
+	// An invitation is shown as a block above the text: what, when, who.
+	if block := eventBlock(data); block != "" {
+		display = block + "\n" + display
+	}
+
 	// Sanitize once at ingest so the cache, preview, reply quoting, export
 	// and MCP all receive text that is safe to print to a terminal.
 	return BodyResult{Text: email.SanitizeText(display), HTML: htmlBody, Plain: email.SanitizeText(textBody), Attachments: attachments}, nil

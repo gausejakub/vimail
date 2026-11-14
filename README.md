@@ -194,6 +194,18 @@ By default a message goes out as plain text, exactly as written. A message marke
 
 Raw HTML typed or quoted in the body is not passed through to the HTML version. Images are not rendered (they appear as `[image] address`), and a link whose text differs from its address shows the address next to it, so the formatted version never shows something you did not see in the text.
 
+### Calendar invitations
+
+A message with an invitation shows the event at the top of its text: title, time in your time zone, place, organizer and attendees. Answer from the command line with the message selected:
+
+| Command | Answer |
+|---------|--------|
+| `:accept` | Accepted |
+| `:tentative` | Maybe |
+| `:decline` | Declined |
+
+vimail sends the organizer a standard calendar reply from the address that was invited, and the status line says where the answer went. The organizer is whoever the invitation names; when that is not the sender of the message, the event block says so. Messages cached before this version show the event after their body is fetched again.
+
 ### Drafts
 
 Drafts are saved locally and uploaded to the account's server Drafts folder, so they also show up in other mail clients (Gmail, your phone). Every save replaces the server copy. Drafts written in another client appear in vimail after the next sync. A draft deleted or sent elsewhere disappears from vimail too, unless it has edits that have not been uploaded yet. Offline, uploads wait in the operation queue (`:ops`).

@@ -225,3 +225,7 @@ type SearchResultsMsg struct {
 	Server      string
 	ServerError error
 }
+
+// ToggleThreadsMsg switches the message list between flat and grouped by
+// conversation.
+type ToggleThreadsMsg struct{}

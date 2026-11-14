@@ -420,6 +420,7 @@ Press `Enter` on a message, or focus the preview pane (`l` / `Tab`) and press `E
 | `:ps` / `:processes` | Show running background processes |
 | `:search <query>` / `:s <query>` | Search the cache across all accounts: subject, sender, To, Cc, Reply-To and downloaded bodies |
 | `:search-server <query>` / `:ss <query>` | The same, plus a search on the selected account's mail server, which also covers bodies that were never downloaded |
+| `:threads` | Group the message list by conversation, or back to flat (`threads = true` under `[general]` makes it the default) |
 
 ### Available themes
 

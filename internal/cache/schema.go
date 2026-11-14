@@ -232,6 +232,8 @@ func migrateFullHeaders(db *sql.DB) {
 		`refs TEXT NOT NULL DEFAULT ''`,
 		`thread_id TEXT NOT NULL DEFAULT ''`,
 		`headers_v INTEGER NOT NULL DEFAULT 0`,
+		// Outcome of OpenPGP processing when the body was fetched.
+		`security TEXT NOT NULL DEFAULT ''`,
 	} {
 		db.Exec(`ALTER TABLE messages ADD COLUMN ` + col)
 	}
@@ -258,6 +260,9 @@ func migrateFullHeaders(db *sql.DB) {
 		`conflict_with TEXT NOT NULL DEFAULT ''`,
 		// The body is Markdown: sent with an HTML alternative.
 		`markdown BOOLEAN NOT NULL DEFAULT 0`,
+		// OpenPGP: sign and/or encrypt when the draft is sent.
+		`pgp_sign BOOLEAN NOT NULL DEFAULT 0`,
+		`pgp_encrypt BOOLEAN NOT NULL DEFAULT 0`,
 	} {
 		db.Exec(`ALTER TABLE drafts ADD COLUMN ` + col)
 	}

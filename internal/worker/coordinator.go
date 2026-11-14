@@ -19,6 +19,7 @@ import (
 	"github.com/gausejakub/vimail/internal/config"
 	"github.com/gausejakub/vimail/internal/email"
 	"github.com/gausejakub/vimail/internal/logging"
+	"github.com/gausejakub/vimail/internal/pgp"
 	"github.com/gausejakub/vimail/internal/tui/util"
 )
 
@@ -26,6 +27,8 @@ import (
 type Coordinator struct {
 	cfg   config.Config
 	store *cache.SQLiteStore
+	// pgp is the OpenPGP client, nil unless [pgp] enabled = true.
+	pgp *pgp.Client
 
 	mu    sync.Mutex
 	imap  map[string]*IMAPWorker // keyed by email
@@ -76,6 +79,7 @@ func NewCoordinator(cfg config.Config, store *cache.SQLiteStore) *Coordinator {
 		authFail:     make(map[string]*authFailure),
 		connectMu:    make(map[string]*sync.Mutex),
 		syncInFlight: make(map[string]bool),
+		pgp:          pgpClient(cfg),
 	}
 }
 
@@ -516,6 +520,7 @@ func (c *Coordinator) FetchBody(acctEmail, folder string, uid uint32) tea.Cmd {
 			Folder:      folder,
 			UID:         uid,
 			Body:        res.Text,
+			Security:    res.Security,
 			HTMLBody:    res.HTML,
 			Attachments: res.Attachments,
 			Err:         err,
@@ -865,7 +870,13 @@ func (c *Coordinator) SaveAttachments(acctEmail, folder string, uid uint32, atta
 			return util.SaveAttachmentsResultMsg{Err: fmt.Errorf("fetch message: %w", err)}
 		}
 
-		parts, err := ExtractAttachmentData(raw)
+		// The attachments of the content that is shown (decrypted, inside the
+		// signature), never of the raw message around it.
+		content, err := effectiveContent(raw, c.pgp)
+		if err != nil {
+			return util.SaveAttachmentsResultMsg{Err: fmt.Errorf("open message: %w", err)}
+		}
+		parts, err := ExtractAttachmentData(content)
 		if err != nil {
 			logging.Error("save", "parse attachments failed", logging.Acct(acctEmail), logging.Err(err))
 			return util.SaveAttachmentsResultMsg{Err: fmt.Errorf("parse attachments: %w", err)}
@@ -1705,6 +1716,7 @@ func (c *Coordinator) ensureIMAPWorkerMode(acct config.AccountConfig, healthChec
 	logging.Info("connect", "connecting IMAP", logging.Acct(acct.Email), logging.KV("host", acct.IMAPHost))
 	connectStart := time.Now()
 	w := NewIMAPWorker(acct, creds, c.store)
+	w.pgp = c.pgp
 	if err := w.Connect(); err != nil {
 		logging.Error("connect", "IMAP connect failed", logging.Acct(acct.Email), logging.Dur(time.Since(connectStart)), logging.Err(err))
 		c.noteConnectResult(acct.Email, err)
@@ -1746,6 +1758,7 @@ func (c *Coordinator) ensureSMTPWorker(acctEmail string) (*SMTPWorker, error) {
 		return nil, fmt.Errorf("no credentials resolved")
 	}
 	w := NewSMTPWorker(acct, creds)
+	w.pgp = c.pgp
 	c.mu.Lock()
 	c.smtp[acctEmail] = w
 	c.mu.Unlock()
@@ -2133,6 +2146,7 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig, full bool) (int, er
 		creds := c.creds[acct.Email]
 		c.mu.Unlock()
 		smtpW := NewSMTPWorker(acct, creds)
+		smtpW.pgp = c.pgp
 		c.mu.Lock()
 		c.smtp[acct.Email] = smtpW
 		c.mu.Unlock()

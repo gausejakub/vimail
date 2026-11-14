@@ -47,12 +47,19 @@ func (s *Server) registerSendTool() {
 		// SendNow goes through the queued SendAndArchive path: the op is
 		// claimed before executing (never a duplicate send across the TUI
 		// and this process) and a failure leaves it retryable.
-		res := s.coord.SendNow(acct, worker.SendRequest{
+		sendReq := worker.SendRequest{
 			From:    acct,
 			To:      args.To,
 			Subject: args.Subject,
 			Body:    args.Body,
-		})
+		}
+		// The account's OpenPGP defaults hold here too: an account set to
+		// encrypt must not send in the clear because the mail came through
+		// MCP. A missing key fails the send.
+		if ac, ok := s.cfg.Account(acct); ok && s.cfg.PGP.Enabled {
+			sendReq.Sign, sendReq.Encrypt = ac.PGPSign, ac.PGPEncrypt
+		}
+		res := s.coord.SendNow(acct, sendReq)
 		if res.Err != nil {
 			logging.Warn("mcp", "send_email failed", logging.Acct(acct), logging.Err(res.Err))
 			return nil, sendEmailResult{}, fmt.Errorf("send failed (the queued op remains retryable): %w", res.Err)

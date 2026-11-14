@@ -26,14 +26,14 @@ import (
 //     or deleted elsewhere) is dropped. See worker.reconcileDrafts.
 
 const draftCols = `id, account, from_addr, to_addr, to_list, cc_addr, bcc_addr, subject, body, date,
-	in_reply_to, refs, source, version, synced_version, server_msgid, server_uid, conflict_with, markdown`
+	in_reply_to, refs, source, version, synced_version, server_msgid, server_uid, conflict_with, markdown, pgp_sign, pgp_encrypt`
 
 func (s *SQLiteStore) scanDraft(scan func(...any) error) (email.Draft, error) {
 	var d email.Draft
 	var toDisp, toList, cc, bcc, refs, source, dateStr string
 	var version, synced int
 	err := scan(&d.ID, &d.Account, &d.From, &toDisp, &toList, &cc, &bcc, &d.Subject, &d.Body, &dateStr,
-		&d.InReplyTo, &refs, &source, &version, &synced, &d.ServerMessageID, &d.ServerUID, &d.ConflictWith, &d.Markdown)
+		&d.InReplyTo, &refs, &source, &version, &synced, &d.ServerMessageID, &d.ServerUID, &d.ConflictWith, &d.Markdown, &d.Sign, &d.Encrypt)
 	if err != nil {
 		return d, err
 	}
@@ -163,17 +163,18 @@ func (s *SQLiteStore) SaveDraft(acctEmail string, d email.Draft) error {
 	}
 	if _, err := tx.Exec(`
 		INSERT INTO drafts (id, account, from_addr, to_addr, to_list, cc_addr, bcc_addr, subject, body, date,
-			in_reply_to, refs, source, markdown, version, synced_version)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0)
+			in_reply_to, refs, source, markdown, pgp_sign, pgp_encrypt, version, synced_version)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0)
 		ON CONFLICT(id) DO UPDATE SET
 			from_addr = excluded.from_addr, to_addr = excluded.to_addr, to_list = excluded.to_list,
 			cc_addr = excluded.cc_addr, bcc_addr = excluded.bcc_addr,
 			subject = excluded.subject, body = excluded.body, date = excluded.date,
 			in_reply_to = excluded.in_reply_to, refs = excluded.refs, source = excluded.source, markdown = excluded.markdown,
+			pgp_sign = excluded.pgp_sign, pgp_encrypt = excluded.pgp_encrypt,
 			version = drafts.version + 1`,
 		d.ID, acctEmail, s.enc(d.From), s.enc(email.JoinAddresses(d.To)), s.encList(d.To), s.encList(d.Cc), s.encList(d.Bcc),
 		s.enc(d.Subject), encrypt(s.encKey, d.Body), d.Date.Format(time.RFC3339),
-		d.InReplyTo, plainListValue(d.References), source, d.Markdown); err != nil {
+		d.InReplyTo, plainListValue(d.References), source, d.Markdown, d.Sign, d.Encrypt); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`DELETE FROM draft_attachments WHERE draft_id = ?`, d.ID); err != nil {

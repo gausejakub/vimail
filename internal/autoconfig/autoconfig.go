@@ -293,7 +293,7 @@ func parseAutoconfig(body []byte) (Settings, bool) {
 			// vimail uses one TLS mode per account: implicit TLS for IMAP.
 			if s.IMAPHost == "" && usable(in, "imap") && strings.EqualFold(strings.TrimSpace(in.SocketType), "SSL") {
 				s.IMAPHost, s.IMAPPort = strings.ToLower(strings.TrimSpace(in.Hostname)), in.Port
-				if u := strings.TrimSpace(in.Username); u != "" && u != "%EMAILADDRESS%" {
+				if u := strings.TrimSpace(in.Username); u != "" && u != "%EMAILADDRESS%" && validUsername(u) {
 					s.Username = u // may hold %EMAILLOCALPART%; see ExpandUsername
 				}
 			}
@@ -380,4 +380,24 @@ func guess(ctx context.Context, r Resolver, domain string) (Settings, bool) {
 // JoinHostPort formats host:port for display.
 func JoinHostPort(host string, port int) string {
 	return net.JoinHostPort(host, fmt.Sprintf("%d", port))
+}
+
+// validUsername accepts a login name from an autoconfig document only when
+// it is made of characters that occur in real login names, including the
+// %EMAIL…% placeholders. Anything else (control or format characters, which
+// could rewrite the confirmation screen) is ignored and the full address
+// is used.
+func validUsername(u string) bool {
+	if len(u) > 128 {
+		return false
+	}
+	for _, r := range u {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case strings.ContainsRune("@._+-%=", r):
+		default:
+			return false
+		}
+	}
+	return true
 }

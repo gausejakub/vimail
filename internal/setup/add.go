@@ -276,11 +276,11 @@ func (f *Flow) confirm(question string, def bool) (bool, error) {
 func (f *Flow) show(s autoconfig.Settings, address string) {
 	f.say("")
 	if s.Source != "" {
-		f.say("Found: %s", s.Source)
+		f.say("Found: %s", email.SanitizeLine(s.Source))
 	}
-	f.say("  IMAP   %s", autoconfig.JoinHostPort(s.IMAPHost, s.IMAPPort))
-	f.say("  SMTP   %s", autoconfig.JoinHostPort(s.SMTPHost, s.SMTPPort))
-	f.say("  Login  %s", autoconfig.ExpandUsername(s.Username, address))
+	f.say("  IMAP   %s", email.SanitizeLine(autoconfig.JoinHostPort(s.IMAPHost, s.IMAPPort)))
+	f.say("  SMTP   %s", email.SanitizeLine(autoconfig.JoinHostPort(s.SMTPHost, s.SMTPPort)))
+	f.say("  Login  %s", email.SanitizeLine(autoconfig.ExpandUsername(s.Username, address)))
 	if s.Note != "" {
 		f.say("\n%s\n", s.Note)
 	}

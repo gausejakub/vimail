@@ -158,3 +158,27 @@ func TestUntrustedAnswersAreRefused(t *testing.T) {
 		}
 	}
 }
+
+// A hostile autoconfig cannot put control or format characters into the
+// login name shown on the confirmation screen.
+func TestAutoconfigUsernameIsRestricted(t *testing.T) {
+	for name, user := range map[string]string{
+		"csi":   "\u009b2A\u009b2Kimap.gmail.com",
+		"bidi":  "user‮gro.elpmaxe",
+		"nbsp":  "a b",
+		"long":  strings.Repeat("a", 200),
+		"quote": `a"b`,
+	} {
+		doc := strings.Replace(sampleXML, "%EMAILLOCALPART%", user, 1)
+		s, ok := parseAutoconfig([]byte(doc))
+		if !ok || s.Username != "" {
+			t.Errorf("%s: username %q kept (ok=%v)", name, s.Username, ok)
+		}
+	}
+	for _, good := range []string{"%EMAILLOCALPART%", "user.name+tag@example.org", "u_1-2"} {
+		doc := strings.Replace(sampleXML, "%EMAILLOCALPART%", good, 1)
+		if s, _ := parseAutoconfig([]byte(doc)); s.Username != good {
+			t.Errorf("username %q dropped", good)
+		}
+	}
+}

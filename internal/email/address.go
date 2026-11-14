@@ -230,8 +230,10 @@ func (s AddressSet) Has(entry string) bool { return s[AddrSpec(entry)] }
 // ReplyRecipients computes the recipients of a reply to orig. To is the
 // original's Reply-To, or its From. When the original was written by the
 // user (a message in Sent), the reply goes to its original recipients
-// instead. With all=true, the original's To and Cc are added to Cc. The
-// user's own addresses are never included, and nobody appears twice.
+// instead. With all=true, the original's To and Cc are added to Cc. own is
+// the replying account's addresses (its address and identities): they are
+// never included, and nobody appears twice. The user's other accounts are
+// not in own, so a message from one of them is answered like any other.
 func ReplyRecipients(orig Message, all bool, own AddressSet) (to, cc []string) {
 	seen := map[string]bool{}
 	add := func(dst *[]string, entries []string) {

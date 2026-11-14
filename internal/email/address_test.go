@@ -76,6 +76,20 @@ func TestReplyRecipients(t *testing.T) {
 	if !reflect.DeepEqual(to, []string{"x@partner.test"}) || !reflect.DeepEqual(cc, []string{"y@partner.test"}) {
 		t.Fatalf("own message: to=%q cc=%q", to, cc)
 	}
+
+	// A message from another of the user's accounts, answered in this one,
+	// goes back to that account (it is not "own" here), and reply-all leaves
+	// out only this account.
+	thisAccount := NewAddressSet("gause.jakub@gmail.test")
+	fromOther := Message{From: "jakub@gause.test", ToList: []string{"gause.jakub@gmail.test", "x@partner.test"}}
+	to, cc = ReplyRecipients(fromOther, false, thisAccount)
+	if !reflect.DeepEqual(to, []string{"jakub@gause.test"}) || cc != nil {
+		t.Fatalf("from another own account: to=%q cc=%q", to, cc)
+	}
+	to, cc = ReplyRecipients(fromOther, true, thisAccount)
+	if !reflect.DeepEqual(to, []string{"jakub@gause.test"}) || !reflect.DeepEqual(cc, []string{"x@partner.test"}) {
+		t.Fatalf("reply-all from another own account: to=%q cc=%q", to, cc)
+	}
 }
 
 func TestPickIdentity(t *testing.T) {

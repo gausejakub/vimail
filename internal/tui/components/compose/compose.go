@@ -1,6 +1,12 @@
 package compose
 
 import (
+	"fmt"
+	"mime"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -17,11 +23,18 @@ import (
 )
 
 const (
-	fieldTo = iota
+	fieldFrom = iota
+	fieldTo
+	fieldCc
+	fieldBcc
 	fieldSubject
 	fieldCount
 	fieldEditor = fieldCount // sentinel: body editor is focused
 )
+
+// maxAttachmentBytes caps the total size of a draft's attachments (~25 MB
+// once base64-encoded, the limit of most SMTP servers).
+const maxAttachmentBytes = 18 * 1024 * 1024
 
 type Model struct {
 	width   int
@@ -34,27 +47,38 @@ type Model struct {
 	// Track editor mode to detect changes.
 	editorMode vimtea.EditorMode
 
-	// Draft tracking
-	draftID string // non-empty when editing an existing draft
+	// draft holds what the header fields and editor do not show: id,
+	// threading headers, reply/forward source and attachments. It is
+	// carried unchanged from open to save/send, so a draft prepared over MCP
+	// keeps In-Reply-To, References and its source through editing.
+	draft email.Draft
+	// identities are the From addresses the current account may use; the
+	// first is the default.
+	identities []string
 
 	// AI state
 	aiCfg     config.AIConfig
 	aiPending bool
 }
 
+// attachMsg and detachMsg come from the editor's :attach / :detach commands.
+type attachMsg struct{ path string }
+type detachMsg struct{ index string }
+
 func New(aiCfg config.AIConfig) Model {
 	inputs := make([]textinput.Model, fieldCount)
-
-	to := textinput.New()
-	to.Placeholder = "recipient@example.com"
-	to.Prompt = "To:      "
-	to.Focus()
-	inputs[fieldTo] = to
-
-	subj := textinput.New()
-	subj.Placeholder = "Subject"
-	subj.Prompt = "Subject: "
-	inputs[fieldSubject] = subj
+	field := func(prompt, placeholder string) textinput.Model {
+		in := textinput.New()
+		in.Prompt = prompt
+		in.Placeholder = placeholder
+		return in
+	}
+	inputs[fieldFrom] = field("From:    ", "account address")
+	inputs[fieldTo] = field("To:      ", "recipient@example.com, Name <other@example.com>")
+	inputs[fieldCc] = field("Cc:      ", "")
+	inputs[fieldBcc] = field("Bcc:     ", "")
+	inputs[fieldSubject] = field("Subject: ", "Subject")
+	inputs[fieldTo].Focus()
 
 	m := Model{
 		inputs:  inputs,
@@ -62,7 +86,7 @@ func New(aiCfg config.AIConfig) Model {
 		focused: fieldTo,
 		aiCfg:   aiCfg,
 	}
-	m.registerAICommand()
+	m.registerCommands()
 	return m
 }
 
@@ -122,22 +146,26 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			newBody = newBody + "\n" + quoted
 		}
 		m.editor = newEditor(newBody)
-		m.registerAICommand()
+		m.registerCommands()
 		return m, tea.Batch(
 			func() tea.Msg { return util.ProcessEndMsg{ID: "ai"} },
 			func() tea.Msg { return util.InfoMsg{Text: "AI draft ready"} },
 		)
 
+	case attachMsg:
+		return m.attach(msg.path)
+
+	case detachMsg:
+		return m.detach(msg.index)
+
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+s":
-			return m, func() tea.Msg {
-				return util.ComposeSubmitMsg{
-					To:      m.inputs[fieldTo].Value(),
-					Subject: m.inputs[fieldSubject].Value(),
-					Body:    m.editor.GetBuffer().Text(),
-				}
+			d, err := m.currentDraft(true)
+			if err != nil {
+				return m, func() tea.Msg { return util.InfoMsg{Text: err.Error(), IsError: true} }
 			}
+			return m, func() tea.Msg { return util.ComposeSubmitMsg{Draft: d} }
 
 		case "tab":
 			return m.cycleField(1)
@@ -257,13 +285,16 @@ func (m Model) View() string {
 	title := lipgloss.NewStyle().
 		Foreground(t.Primary()).
 		Bold(true).
-		Render("  Compose New Message")
+		Render("  " + m.title())
 
 	var lines []string
 	lines = append(lines, title)
 	lines = append(lines, "")
 	for _, input := range m.inputs {
 		lines = append(lines, "  "+input.View())
+	}
+	if line := m.attachmentLine(); line != "" {
+		lines = append(lines, lipgloss.NewStyle().Foreground(t.Accent()).Render(truncate("  Attach:  "+line, innerWidth+2)))
 	}
 	lines = append(lines, lipgloss.NewStyle().
 		Foreground(t.BorderNormal()).
@@ -298,7 +329,7 @@ func (m Model) View() string {
 	case m.focused == fieldEditor && m.editor.GetMode() == vimtea.ModeCommand:
 		hint = "  " + m.editor.GetStatusText()
 	default:
-		hint = "  Tab: next field | :ai: assist | Ctrl+S: send | Esc: cancel"
+		hint = "  Tab: next field | :attach <path> :detach <n> | :ai: assist | Ctrl+S: send | Esc: save draft"
 	}
 	lines = append(lines, lipgloss.NewStyle().
 		Foreground(t.TextMuted()).
@@ -315,54 +346,57 @@ func (m Model) View() string {
 		Render(content)
 }
 
+// Show opens an empty composer.
 func (m Model) Show() Model {
+	return m.open(email.Draft{}, fieldTo)
+}
+
+// WithIdentities sets the From addresses the current account may use; the
+// first is the default for a message that names none.
+func (m Model) WithIdentities(ids []string) Model {
+	m.identities = ids
+	if m.inputs[fieldFrom].Value() == "" && len(ids) > 0 {
+		m.inputs[fieldFrom].SetValue(email.SanitizeLine(ids[0]))
+	}
+	return m
+}
+
+// ShowDraft opens a saved draft with every field, including the hidden
+// threading headers, source and attachments.
+func (m Model) ShowDraft(d email.Draft) Model {
+	return m.open(d, fieldEditor)
+}
+
+// ShowReply opens a new reply or forward prepared with email.ReplyRecipients
+// and friends (d has no ID yet).
+func (m Model) ShowReply(d email.Draft) Model {
+	d.ID = ""
+	return m.open(d, fieldEditor)
+}
+
+func (m Model) open(d email.Draft, focus int) Model {
 	m.visible = true
-	m.focused = fieldTo
-	m.draftID = ""
+	m.focused = focus
+	m.draft = d
+	m.identities = nil
 	for i := range m.inputs {
 		m.inputs[i].SetValue("")
 		m.inputs[i].Blur()
 	}
-	m.inputs[fieldTo].Focus()
-	m.editor = newEditor("")
-	m.editorMode = vimtea.ModeNormal
-	m.aiPending = false
-	m.registerAICommand()
-	m = m.updateFieldStyles()
-	return m
-}
-
-func (m Model) ShowDraft(id, to, subject, body string) Model {
-	m.visible = true
-	m.focused = fieldEditor
-	m.draftID = id
-	for i := range m.inputs {
-		m.inputs[i].Blur()
-	}
 	// A draft is not necessarily the user's own typing: an AI client can save
 	// one through the MCP server, and the editor draws its buffer as is.
-	m.inputs[fieldTo].SetValue(email.SanitizeLine(to))
-	m.inputs[fieldSubject].SetValue(email.SanitizeLine(subject))
-	m.editor = newEditor(email.SanitizeText(body))
-	m.editorMode = vimtea.ModeNormal
-	m.aiPending = false
-	m.registerAICommand()
-	m = m.updateFieldStyles()
-	return m
-}
-
-func (m Model) ShowReply(to, subject, quotedBody string) Model {
-	m.visible = true
-	m.focused = fieldEditor
-	for i := range m.inputs {
-		m.inputs[i].Blur()
+	m.inputs[fieldFrom].SetValue(email.SanitizeLine(d.From))
+	m.inputs[fieldTo].SetValue(email.SanitizeLine(email.JoinAddresses(d.To)))
+	m.inputs[fieldCc].SetValue(email.SanitizeLine(email.JoinAddresses(d.Cc)))
+	m.inputs[fieldBcc].SetValue(email.SanitizeLine(email.JoinAddresses(d.Bcc)))
+	m.inputs[fieldSubject].SetValue(email.SanitizeLine(d.Subject))
+	if focus < fieldCount {
+		m.inputs[focus].Focus()
 	}
-	m.inputs[fieldTo].SetValue(to)
-	m.inputs[fieldSubject].SetValue(subject)
-	m.editor = newEditor(quotedBody)
+	m.editor = newEditor(email.SanitizeText(d.Body))
 	m.editorMode = vimtea.ModeNormal
 	m.aiPending = false
-	m.registerAICommand()
+	m.registerCommands()
 	m = m.updateFieldStyles()
 	return m
 }
@@ -421,30 +455,71 @@ func (m Model) updateFieldStyles() Model {
 }
 
 func (m Model) saveDraftCmd() tea.Cmd {
-	to := m.inputs[fieldTo].Value()
-	subject := m.inputs[fieldSubject].Value()
-	body := m.editor.GetBuffer().Text()
-
+	d, _ := m.currentDraft(false)
 	// If everything is empty, just close without saving
-	if to == "" && subject == "" && body == "" {
+	if len(d.To) == 0 && len(d.Cc) == 0 && len(d.Bcc) == 0 && d.Subject == "" && d.Body == "" && len(d.Attachments) == 0 {
 		return func() tea.Msg { return util.ComposeCloseMsg{} }
 	}
+	return func() tea.Msg { return util.ComposeSaveDraftMsg{Draft: d} }
+}
 
-	return func() tea.Msg {
-		return util.ComposeSaveDraftMsg{
-			DraftID: m.draftID,
-			To:      to,
-			Subject: subject,
-			Body:    body,
+// DraftID returns the id of the draft being edited ("" for a new message).
+func (m Model) DraftID() string {
+	return m.draft.ID
+}
+
+// currentDraft assembles the draft from the header fields, the editor and
+// the hidden state. With strict, recipients must parse and From must be one
+// of the account's identities (the send path); without, unparseable input
+// is kept as typed so saving a half-written draft never loses it.
+func (m Model) currentDraft(strict bool) (email.Draft, error) {
+	d := m.draft
+	d.Subject = m.inputs[fieldSubject].Value()
+	d.Body = m.editor.GetBuffer().Text()
+	var err error
+	field := func(i int, name string) []string {
+		v := m.inputs[i].Value()
+		list, perr := email.SplitAddressField(v)
+		if perr != nil {
+			if err == nil {
+				err = fmt.Errorf("%s: %v", name, perr)
+			}
+			return []string{strings.TrimSpace(v)}
+		}
+		return list
+	}
+	d.To = field(fieldTo, "To")
+	d.Cc = field(fieldCc, "Cc")
+	d.Bcc = field(fieldBcc, "Bcc")
+	d.From = strings.TrimSpace(m.inputs[fieldFrom].Value())
+	if strict {
+		if err != nil {
+			return d, err
+		}
+		if len(d.To)+len(d.Cc)+len(d.Bcc) == 0 {
+			return d, fmt.Errorf("add at least one recipient")
+		}
+		if d.From != "" && len(m.identities) > 0 {
+			// Strict: From must be exactly one mailbox (see
+			// email.SingleAddress), not a string one mailbox of which matches.
+			ok := false
+			if from, single := email.SingleAddress(d.From); single {
+				for _, id := range m.identities {
+					if have, valid := email.SingleAddress(id); valid && have == from {
+						ok = true
+						break
+					}
+				}
+			}
+			if !ok {
+				return d, fmt.Errorf("From %s is not an identity of this account (add it under identities in the config)", email.AddrSpec(d.From))
+			}
 		}
 	}
+	return d, nil
 }
 
-func (m Model) DraftID() string {
-	return m.draftID
-}
-
-func (m *Model) registerAICommand() {
+func (m *Model) registerCommands() {
 	m.editor.AddCommand("ai", func(buf vimtea.Buffer, args []string) tea.Cmd {
 		body := buf.Text()
 		var agent string
@@ -455,11 +530,119 @@ func (m *Model) registerAICommand() {
 			return util.AIRequestMsg{Agent: agent, Body: body}
 		}
 	})
+	m.editor.AddCommand("attach", func(buf vimtea.Buffer, args []string) tea.Cmd {
+		path := strings.Join(args, " ")
+		return func() tea.Msg { return attachMsg{path: path} }
+	})
+	m.editor.AddCommand("detach", func(buf vimtea.Buffer, args []string) tea.Cmd {
+		index := strings.Join(args, " ")
+		return func() tea.Msg { return detachMsg{index: index} }
+	})
 }
 
-// extractQuotedTail returns the trailing block of quoted lines (starting with >)
-// from the editor body. This preserves the original email context when the AI
-// replaces only the user's new reply text.
+func info(text string, isErr bool) tea.Cmd {
+	return func() tea.Msg { return util.InfoMsg{Text: text, IsError: isErr} }
+}
+
+// attach adds a local file typed by the user (":attach ~/report.pdf").
+func (m Model) attach(path string) (Model, tea.Cmd) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return m, info("usage: :attach <path>", true)
+	}
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			path = filepath.Join(home, strings.TrimPrefix(path, "~"))
+		}
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		return m, info(err.Error(), true)
+	}
+	if !st.Mode().IsRegular() {
+		return m, info(path+" is not a regular file", true)
+	}
+	total := st.Size()
+	for _, a := range m.draft.Attachments {
+		total += int64(a.AttachmentSize())
+	}
+	if total > maxAttachmentBytes {
+		return m, info(fmt.Sprintf("attachments would total %s; the limit is %s", humanSize(int(total)), humanSize(maxAttachmentBytes)), true)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return m, info(err.Error(), true)
+	}
+	name := filepath.Base(path)
+	ct := mime.TypeByExtension(strings.ToLower(filepath.Ext(name)))
+	if ct == "" {
+		ct = http.DetectContentType(data)
+	}
+	if mt, _, err := mime.ParseMediaType(ct); err == nil {
+		ct = mt
+	}
+	m.draft.Attachments = append(append([]email.DraftAttachment(nil), m.draft.Attachments...),
+		email.DraftAttachment{Filename: name, ContentType: ct, Data: data, Size: len(data)})
+	return m, info("attached "+name, false)
+}
+
+// detach removes attachment n (1-based, as listed), or the last one.
+func (m Model) detach(index string) (Model, tea.Cmd) {
+	n := len(m.draft.Attachments)
+	if n == 0 {
+		return m, info("no attachments", true)
+	}
+	i := n
+	if index = strings.TrimSpace(index); index != "" {
+		v, err := strconv.Atoi(index)
+		if err != nil || v < 1 || v > n {
+			return m, info(fmt.Sprintf("usage: :detach <1-%d>", n), true)
+		}
+		i = v
+	}
+	name := m.draft.Attachments[i-1].Filename
+	atts := append([]email.DraftAttachment(nil), m.draft.Attachments[:i-1]...)
+	m.draft.Attachments = append(atts, m.draft.Attachments[i:]...)
+	return m, info("removed "+email.SanitizeLine(name), false)
+}
+
+func (m Model) attachmentLine() string {
+	var parts []string
+	for i, a := range m.draft.Attachments {
+		parts = append(parts, fmt.Sprintf("%d. %s (%s)", i+1, email.SanitizeLine(a.Filename), humanSize(a.AttachmentSize())))
+	}
+	return strings.Join(parts, "  ")
+}
+
+func (m Model) title() string {
+	switch {
+	case m.draft.Source != nil && m.draft.Source.Kind == email.SourceReply:
+		return "Reply"
+	case m.draft.Source != nil && m.draft.Source.Kind == email.SourceForward:
+		return "Forward"
+	case m.draft.ID != "":
+		return "Edit Draft"
+	}
+	return "Compose New Message"
+}
+
+func humanSize(n int) string {
+	switch {
+	case n >= 1024*1024:
+		return fmt.Sprintf("%.1f MB", float64(n)/(1024*1024))
+	case n >= 1024:
+		return fmt.Sprintf("%d KB", n/1024)
+	}
+	return fmt.Sprintf("%d B", n)
+}
+
+func truncate(s string, width int) string {
+	if r := []rune(s); width > 1 && len(r) > width {
+		return string(r[:width-1]) + "…"
+	}
+	return s
+}
+
 func extractQuotedTail(body string) string {
 	lines := strings.Split(body, "\n")
 
@@ -492,4 +675,9 @@ func vimteaModeToKeys(m vimtea.EditorMode) keys.Mode {
 	default:
 		return keys.ModeNormal
 	}
+}
+
+// CurrentDraftForTest exposes the assembled draft (lenient) to tests.
+func (m Model) CurrentDraftForTest() (email.Draft, error) {
+	return m.currentDraft(false)
 }

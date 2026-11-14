@@ -331,6 +331,13 @@ func (s *SQLiteStore) PendingUIDsSince(acctEmail, folder string, since time.Time
 			var p RestorePayload
 			_ = json.Unmarshal(op.Payload, &p)
 			uids = p.UIDs
+		case OpSetFlag:
+			if op.Folder != folder {
+				continue
+			}
+			var p SetFlagPayload
+			_ = json.Unmarshal(op.Payload, &p)
+			uids = p.UIDs
 		}
 		for _, uid := range uids {
 			out[uid] = true
@@ -413,6 +420,9 @@ func (s *SQLiteStore) FoldersFor(acctEmail string) []email.Folder {
 
 // MessageCount returns the total number of messages in a folder.
 func (s *SQLiteStore) MessageCount(acctEmail, folder string) int {
+	if folder == "Drafts" {
+		return s.DraftCount(acctEmail)
+	}
 	var folderID int
 	if err := s.db.QueryRow(`SELECT id FROM folders WHERE account = ? AND name = ?`, acctEmail, folder).Scan(&folderID); err != nil {
 		return 0
@@ -435,7 +445,7 @@ func (s *SQLiteStore) MessagesForPage(acctEmail, folder string, offset, limit in
 	}
 
 	rows, err := s.db.Query(`
-		SELECT uid, from_addr, to_addr, subject, body, html_body, date, unread, flagged
+		SELECT uid, message_id, from_addr, to_addr, subject, body, html_body, date, unread, flagged, `+extraHeaderCols+`
 		FROM messages WHERE folder_id = ?
 		ORDER BY julianday(date) DESC, uid DESC
 		LIMIT ? OFFSET ?
@@ -450,10 +460,13 @@ func (s *SQLiteStore) MessagesForPage(acctEmail, folder string, offset, limit in
 		var m email.Message
 		var dateStr string
 		var unread, flagged int
-		if err := rows.Scan(&m.UID, &m.From, &m.To, &m.Subject, &m.Body, &m.HTMLBody, &dateStr, &unread, &flagged); err != nil {
+		var x extraHeaders
+		if err := rows.Scan(append([]any{&m.UID, &m.MessageID, &m.From, &m.To, &m.Subject, &m.Body, &m.HTMLBody, &dateStr, &unread, &flagged}, x.dest()...)...); err != nil {
 			continue
 		}
 		s.decHeaders(&m)
+		s.apply(&x, &m)
+		m.Folder, m.Account = folder, acctEmail
 		m.Body = decrypt(s.encKey, m.Body)
 		m.HTMLBody = decrypt(s.encKey, m.HTMLBody)
 		m.ID = fmt.Sprintf("%d", m.UID)
@@ -480,14 +493,16 @@ func (s *SQLiteStore) MessageByUID(acctEmail, folder string, uid uint32) (msg em
 	var m email.Message
 	var dateStr string
 	var unread, flagged, fetched int
+	var x extraHeaders
 	err := s.db.QueryRow(`
-		SELECT uid, message_id, from_addr, to_addr, subject, body, html_body, date, unread, flagged, body_fetched
+		SELECT uid, message_id, from_addr, to_addr, subject, body, html_body, date, unread, flagged, body_fetched, `+extraHeaderCols+`
 		FROM messages WHERE folder_id = ? AND uid = ?
-	`, folderID, uid).Scan(&m.UID, &m.MessageID, &m.From, &m.To, &m.Subject, &m.Body, &m.HTMLBody, &dateStr, &unread, &flagged, &fetched)
+	`, folderID, uid).Scan(append([]any{&m.UID, &m.MessageID, &m.From, &m.To, &m.Subject, &m.Body, &m.HTMLBody, &dateStr, &unread, &flagged, &fetched}, x.dest()...)...)
 	if err != nil {
 		return email.Message{}, false, false
 	}
 	s.decHeaders(&m)
+	s.apply(&x, &m)
 	m.Body = decrypt(s.encKey, m.Body)
 	m.HTMLBody = decrypt(s.encKey, m.HTMLBody)
 	m.ID = fmt.Sprintf("%d", m.UID)
@@ -513,7 +528,7 @@ func (s *SQLiteStore) RecentMessages(accounts []string, since, until time.Time, 
 
 	query := `
 		SELECT m.uid, f.name, f.account, m.message_id, m.from_addr, m.to_addr,
-		       m.subject, m.date, m.unread, m.flagged
+		       m.subject, m.date, m.unread, m.flagged, ` + extraHeaderCols + `
 		FROM messages m
 		JOIN folders f ON m.folder_id = f.id
 		WHERE julianday(m.date) >= julianday(?)
@@ -550,10 +565,12 @@ func (s *SQLiteStore) RecentMessages(accounts []string, since, until time.Time, 
 		var m email.Message
 		var dateStr string
 		var unread, flagged int
-		if err := rows.Scan(&m.UID, &m.Folder, &m.Account, &m.MessageID, &m.From, &m.To, &m.Subject, &dateStr, &unread, &flagged); err != nil {
+		var x extraHeaders
+		if err := rows.Scan(append([]any{&m.UID, &m.Folder, &m.Account, &m.MessageID, &m.From, &m.To, &m.Subject, &dateStr, &unread, &flagged}, x.dest()...)...); err != nil {
 			continue
 		}
 		s.decHeaders(&m)
+		s.apply(&x, &m)
 		key := dedupKey{Account: m.Account, MessageID: m.MessageID}
 		if m.MessageID == "" {
 			// Without a stable identity, preserving every row is safer than
@@ -592,7 +609,7 @@ func (s *SQLiteStore) MessagesFor(acctEmail, folder string) []email.Message {
 	}
 
 	rows, err := s.db.Query(`
-		SELECT uid, from_addr, to_addr, subject, body, html_body, date, unread, flagged
+		SELECT uid, message_id, from_addr, to_addr, subject, body, html_body, date, unread, flagged, `+extraHeaderCols+`
 		FROM messages WHERE folder_id = ?
 		ORDER BY julianday(date) DESC, uid DESC
 		LIMIT 500
@@ -607,10 +624,13 @@ func (s *SQLiteStore) MessagesFor(acctEmail, folder string) []email.Message {
 		var m email.Message
 		var dateStr string
 		var unread, flagged int
-		if err := rows.Scan(&m.UID, &m.From, &m.To, &m.Subject, &m.Body, &m.HTMLBody, &dateStr, &unread, &flagged); err != nil {
+		var x extraHeaders
+		if err := rows.Scan(append([]any{&m.UID, &m.MessageID, &m.From, &m.To, &m.Subject, &m.Body, &m.HTMLBody, &dateStr, &unread, &flagged}, x.dest()...)...); err != nil {
 			continue
 		}
 		s.decHeaders(&m)
+		s.apply(&x, &m)
+		m.Folder, m.Account = folder, acctEmail
 		m.Body = decrypt(s.encKey, m.Body)
 		m.HTMLBody = decrypt(s.encKey, m.HTMLBody)
 		m.ID = fmt.Sprintf("%d", m.UID)
@@ -623,52 +643,6 @@ func (s *SQLiteStore) MessagesFor(acctEmail, folder string) []email.Message {
 
 	s.loadAttachments(folderID, msgs)
 	return msgs
-}
-
-func (s *SQLiteStore) draftsFor(acctEmail string) []email.Message {
-	rows, err := s.db.Query(`
-		SELECT id, from_addr, to_addr, subject, body, date
-		FROM drafts WHERE account = ?
-		ORDER BY julianday(date) DESC, id DESC
-	`, acctEmail)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-
-	var msgs []email.Message
-	for rows.Next() {
-		var m email.Message
-		var dateStr string
-		if err := rows.Scan(&m.ID, &m.From, &m.To, &m.Subject, &m.Body, &dateStr); err != nil {
-			continue
-		}
-		s.decHeaders(&m)
-		m.Body = decrypt(s.encKey, m.Body)
-		m.Date, _ = time.Parse(time.RFC3339, dateStr)
-		msgs = append(msgs, m)
-	}
-	return msgs
-}
-
-func (s *SQLiteStore) SaveDraft(acctEmail string, msg email.Message) {
-	_, _ = s.db.Exec(`
-		INSERT INTO drafts (id, account, from_addr, to_addr, subject, body, date)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET
-			to_addr = excluded.to_addr,
-			subject = excluded.subject,
-			body = excluded.body,
-			date = excluded.date
-	`, msg.ID, acctEmail, s.enc(msg.From), s.enc(msg.To), s.enc(msg.Subject), encrypt(s.encKey, msg.Body), msg.Date.Format(time.RFC3339))
-}
-
-func (s *SQLiteStore) DeleteDraft(acctEmail, id string) {
-	_, _ = s.db.Exec(`DELETE FROM drafts WHERE id = ? AND account = ?`, id, acctEmail)
-}
-
-func (s *SQLiteStore) NextDraftID() string {
-	return fmt.Sprintf("draft-%d", s.draftSeq.Add(1))
 }
 
 func (s *SQLiteStore) MarkRead(acctEmail, folder, id string) {
@@ -882,7 +856,7 @@ func (s *SQLiteStore) SearchMessages(acctEmail, query string, limit int) []email
 	bodySearchInSQL := len(s.encKey) == 0
 
 	querySQL := `
-		SELECT m.uid, f.name, f.account, m.message_id, m.from_addr, m.to_addr, m.subject, m.body, m.date, m.unread, m.flagged
+		SELECT m.uid, f.name, f.account, m.message_id, m.from_addr, m.to_addr, m.subject, m.body, m.date, m.unread, m.flagged, ` + extraHeaderCols + `
 		FROM messages m
 		JOIN folders f ON m.folder_id = f.id`
 	var args []interface{}
@@ -925,10 +899,12 @@ func (s *SQLiteStore) SearchMessages(acctEmail, query string, limit int) []email
 		var m email.Message
 		var folder, account, dateStr string
 		var unread, flagged int
-		if err := rows.Scan(&m.UID, &folder, &account, &m.MessageID, &m.From, &m.To, &m.Subject, &m.Body, &dateStr, &unread, &flagged); err != nil {
+		var x extraHeaders
+		if err := rows.Scan(append([]any{&m.UID, &folder, &account, &m.MessageID, &m.From, &m.To, &m.Subject, &m.Body, &dateStr, &unread, &flagged}, x.dest()...)...); err != nil {
 			continue
 		}
 		s.decHeaders(&m)
+		s.apply(&x, &m)
 		m.Body = decrypt(s.encKey, m.Body)
 
 		// When body wasn't searched in SQL, check it here.
@@ -1287,9 +1263,12 @@ func (s *SQLiteStore) UpsertMessage(acctEmail, folder string, msg email.Message)
 	if msg.Answered {
 		answered = 1
 	}
+	args := []any{msg.UID, folderID, msg.MessageID, s.enc(msg.From), s.enc(toDisplay(msg)), s.enc(msg.Subject), encrypt(s.encKey, msg.Body),
+		msg.Date.Format(time.RFC3339), unread, flagged, answered}
+	args = append(args, s.headerArgs(msg)...)
 	_, err = s.db.Exec(`
-			INSERT INTO messages (uid, folder_id, message_id, from_addr, to_addr, subject, body, date, unread, flagged, answered)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			INSERT INTO messages (uid, folder_id, message_id, from_addr, to_addr, subject, body, date, unread, flagged, answered, `+headerSetCols+`)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(folder_id, uid) DO UPDATE SET
 			message_id = CASE WHEN excluded.message_id != '' THEN excluded.message_id ELSE messages.message_id END,
 			from_addr = excluded.from_addr,
@@ -1298,9 +1277,8 @@ func (s *SQLiteStore) UpsertMessage(acctEmail, folder string, msg email.Message)
 			date = excluded.date,
 			unread = excluded.unread,
 				flagged = excluded.flagged,
-				answered = excluded.answered
-	`, msg.UID, folderID, msg.MessageID, s.enc(msg.From), s.enc(msg.To), s.enc(msg.Subject), encrypt(s.encKey, msg.Body),
-		msg.Date.Format(time.RFC3339), unread, flagged, answered)
+				answered = excluded.answered,
+			`+headerUpdateSet, args...)
 	return err
 }
 
@@ -1402,8 +1380,8 @@ func (s *SQLiteStore) ReplaceFolderHeaders(acctEmail, folder string, messages []
 	}
 	defer uidStmt.Close()
 	upsertStmt, err := tx.Prepare(`
-			INSERT INTO messages (uid, folder_id, message_id, from_addr, to_addr, subject, body, date, unread, flagged, answered)
-			SELECT ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?
+			INSERT INTO messages (uid, folder_id, message_id, from_addr, to_addr, subject, body, date, unread, flagged, answered, ` + headerSetCols + `)
+			SELECT ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 		WHERE NOT EXISTS (
 			SELECT 1 FROM pending_deletes WHERE folder_id = ? AND uid = ?
 		)
@@ -1415,8 +1393,8 @@ func (s *SQLiteStore) ReplaceFolderHeaders(acctEmail, folder string, messages []
 			date = excluded.date,
 			unread = excluded.unread,
 				flagged = excluded.flagged,
-				answered = excluded.answered
-	`)
+				answered = excluded.answered,
+			` + headerUpdateSet)
 	if err != nil {
 		return err
 	}
@@ -1435,10 +1413,11 @@ func (s *SQLiteStore) ReplaceFolderHeaders(acctEmail, folder string, messages []
 		if msg.Answered {
 			answered = 1
 		}
-		if _, err := upsertStmt.Exec(
-			msg.UID, folderID, msg.MessageID, s.enc(msg.From), s.enc(msg.To), s.enc(msg.Subject),
-			msg.Date.Format(time.RFC3339), unread, flagged, answered, folderID, msg.UID,
-		); err != nil {
+		args := []any{msg.UID, folderID, msg.MessageID, s.enc(msg.From), s.enc(toDisplay(msg)), s.enc(msg.Subject),
+			msg.Date.Format(time.RFC3339), unread, flagged, answered}
+		args = append(args, s.headerArgs(msg)...)
+		args = append(args, folderID, msg.UID)
+		if _, err := upsertStmt.Exec(args...); err != nil {
 			return err
 		}
 	}

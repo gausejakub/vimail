@@ -1,6 +1,7 @@
 package worker
 
 import (
+	netmail "net/mail"
 	"strings"
 	"testing"
 	"time"
@@ -53,22 +54,46 @@ func FuzzSafeFilename(f *testing.F) {
 func FuzzComposeRFC5322(f *testing.F) {
 	f.Add("me@example.com", "you@example.com", "hi", "body")
 	f.Add("me@example.com\r\nBcc: x@y", "a@b\nCc: c@d", "s\r\n\r\ninjected body", "b")
-	f.Add("a@b\u2028Bcc: x", "x\x0bx", "s\u0085t", "")
+	f.Add("a@b Bcc: x", "x\x0bx", "s\u0085t", "")
+	allowed := map[string]bool{
+		"from": true, "to": true, "subject": true, "date": true, "message-id": true,
+		"mime-version": true, "content-type": true, "content-transfer-encoding": true,
+	}
 	f.Fuzz(func(t *testing.T, from, to, subject, body string) {
 		_, raw := ComposeRFC5322(from, to, subject, body)
+		if raw == nil {
+			// Refused only when From is not exactly one mailbox.
+			if _, err := netmail.ParseAddress(headerValue(from)); err == nil {
+				t.Fatalf("no message for a usable From %q", from)
+			}
+			return
+		}
 		head, _, ok := strings.Cut(string(raw), "\r\n\r\n")
 		if !ok {
 			t.Fatalf("no header/body separator")
 		}
-		lines := strings.Split(head, "\r\n")
-		want := []string{"From:", "To:", "Subject:", "Date:", "Message-ID:", "MIME-Version:", "Content-Type:", "Content-Transfer-Encoding:"}
-		if len(lines) != len(want) {
-			t.Fatalf("%d header lines, want %d:\n%q", len(lines), len(want), head)
-		}
-		for i, prefix := range want {
-			if !strings.HasPrefix(lines[i], prefix) || strings.ContainsAny(lines[i], "\r\n") {
-				t.Fatalf("header line %d = %q, want %s…", i, lines[i], prefix)
+		// Unfold continuation lines, then every header must be one of the
+		// fields the composer writes: no input may inject another (Bcc, Cc,
+		// Reply-To) or a second From.
+		froms := 0
+		for _, line := range strings.Split(strings.ReplaceAll(head, "\r\n ", " "), "\r\n") {
+			name, _, ok := strings.Cut(line, ":")
+			if !ok || strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
+				t.Fatalf("malformed header line %q in:\n%s", line, head)
 			}
+			if !allowed[strings.ToLower(name)] {
+				t.Fatalf("injected header %q in:\n%s", line, head)
+			}
+			if strings.EqualFold(name, "from") {
+				_, value, _ := strings.Cut(line, ":")
+				if list, err := netmail.ParseAddressList(value); err != nil || len(list) != 1 {
+					t.Fatalf("From header is not one mailbox: %q", line)
+				}
+				froms++
+			}
+		}
+		if froms != 1 {
+			t.Fatalf("%d From headers:\n%s", froms, head)
 		}
 	})
 }

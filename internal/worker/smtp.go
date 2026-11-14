@@ -13,6 +13,7 @@ import (
 	"github.com/emersion/go-sasl"
 	"github.com/gausejakub/vimail/internal/auth"
 	"github.com/gausejakub/vimail/internal/config"
+	"github.com/gausejakub/vimail/internal/email"
 )
 
 // SMTPWorker handles sending email via SMTP.
@@ -29,8 +30,8 @@ func NewSMTPWorker(acct config.AccountConfig, creds *auth.Credentials) *SMTPWork
 	}
 }
 
-// Send sends an email and returns the message ID and the raw message bytes
-// (for IMAP APPEND to Sent folder).
+// Send sends an email and returns the Message-ID and the raw message to keep
+// in Sent (with Bcc). The transmitted bytes never contain Bcc.
 func (w *SMTPWorker) Send(req SendRequest) (string, []byte, error) {
 	host := w.acct.SMTPHost
 	port := w.acct.SMTPPort
@@ -39,8 +40,38 @@ func (w *SMTPWorker) Send(req SendRequest) (string, []byte, error) {
 	}
 	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
 
-	// Build RFC 5322 message.
-	msgID, rawMsg := ComposeRFC5322(req.From, req.To, req.Subject, req.Body)
+	if req.From == "" {
+		req.From = w.acct.Email
+	}
+	if req.MessageID == "" {
+		req.MessageID = NewMessageID(req.From)
+	}
+	if req.Date.IsZero() {
+		req.Date = time.Now()
+	}
+	// The transmitted message has no Bcc header; the copy kept in Sent does,
+	// so the user can still see who was blind-copied. Both share one
+	// Message-ID and Date.
+	opts := ComposeOptions{MessageID: req.MessageID, Date: req.Date}
+	msgID, rawMsg, err := ComposeMessage(req, opts)
+	if err != nil {
+		return "", nil, fmt.Errorf("compose: %w", err)
+	}
+	opts.IncludeBcc = true
+	_, keepCopy, err := ComposeMessage(req, opts)
+	if err != nil {
+		return "", nil, fmt.Errorf("compose: %w", err)
+	}
+	rcpts := req.envelopeRecipients()
+	if len(rcpts) == 0 {
+		return "", nil, fmt.Errorf("no recipients")
+	}
+	// Envelope sender is the account's own address (the one the SMTP login
+	// is authorized for); the From header may be an identity.
+	envelopeFrom := w.acct.Email
+	if envelopeFrom == "" {
+		envelopeFrom = email.AddrSpec(req.From)
+	}
 
 	tlsMode := w.acct.TLS
 	if tlsMode == "" || (tlsMode == "tls" && port == 587) {
@@ -48,12 +79,11 @@ func (w *SMTPWorker) Send(req SendRequest) (string, []byte, error) {
 	}
 
 	var conn net.Conn
-	var err error
 
 	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
 	switch tlsMode {
 	case "tls":
-		conn, err = tls.DialWithDialer(dialer, "tcp", addr, &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12})
+		conn, err = tls.DialWithDialer(dialer, "tcp", addr, clientTLSConfig(host))
 	case "starttls":
 		conn, err = dialer.Dial("tcp", addr) // Plaintext initially; upgraded to TLS below.
 	default:
@@ -72,7 +102,7 @@ func (w *SMTPWorker) Send(req SendRequest) (string, []byte, error) {
 
 	// STARTTLS if needed.
 	if tlsMode == "starttls" {
-		if err := client.StartTLS(&tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}); err != nil {
+		if err := client.StartTLS(clientTLSConfig(host)); err != nil {
 			return "", nil, fmt.Errorf("SMTP STARTTLS: %w", err)
 		}
 	}
@@ -83,10 +113,10 @@ func (w *SMTPWorker) Send(req SendRequest) (string, []byte, error) {
 	}
 
 	// Send.
-	if err := client.Mail(req.From); err != nil {
+	if err := client.Mail(envelopeFrom); err != nil {
 		return "", nil, fmt.Errorf("SMTP MAIL FROM: %w", err)
 	}
-	for _, rcpt := range recipientAddresses(req.To) {
+	for _, rcpt := range rcpts {
 		if err := client.Rcpt(rcpt); err != nil {
 			return "", nil, fmt.Errorf("SMTP RCPT TO: %w", err)
 		}
@@ -107,7 +137,7 @@ func (w *SMTPWorker) Send(req SendRequest) (string, []byte, error) {
 		// Non-fatal — message was already sent.
 	}
 
-	return msgID, rawMsg, nil
+	return msgID, keepCopy, nil
 }
 
 func (w *SMTPWorker) authenticateSMTP(client *smtp.Client) error {

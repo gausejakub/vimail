@@ -127,6 +127,28 @@ OAuth2 tokens (Gmail, Outlook) and the key that encrypts the local mail cache li
 
 If you would rather keep passwords somewhere else — a password manager, an encrypted file, a hardware-backed store — use `password_cmd`, described next. Both ways can be mixed: one account from the keyring, another from a command.
 
+### Identities (aliases and other addresses)
+
+If one mailbox receives mail for several addresses (aliases, or other domains delivered to the same account), list them as `identities`. A reply is sent from the address the original was sent to (To, then Cc, then `Delivered-To`/`X-Original-To`), and reply-all never copies any of your own addresses back in. You can change the From field in the composer, but only to the account address or one of its identities.
+
+```toml
+[[accounts]]
+name = "Work"
+email = "jakub@example.com"
+# ...
+identities = ["Jakub <jakub@alias.example>", "jakub@other-domain.example"]
+```
+
+The mail provider must allow sending as these addresses (Gmail: *Settings → Accounts → Send mail as*), or it may rewrite the From header. The SMTP envelope sender stays the account's own address.
+
+### Drafts
+
+Drafts are saved locally and uploaded to the account's server Drafts folder, so they also show up in other mail clients (Gmail, your phone). Every save replaces the server copy. Drafts written in another client appear in vimail after the next sync. A draft deleted or sent elsewhere disappears from vimail too, unless it has edits that have not been uploaded yet. Offline, uploads wait in the operation queue (`:ops`).
+
+A draft keeps everything that goes into the message: From identity, To, Cc, Bcc, subject, body, attachments, and for replies the `In-Reply-To`/`References` headers. When a reply or forward is sent, the original is marked answered (`\Answered`) or forwarded (`$Forwarded`). Bcc is kept in the draft and in your Sent copy, never in the transmitted message.
+
+Two limits: edits made to the same draft in vimail and in another client before either syncs produce two drafts (nothing is lost, nothing is merged), and the server copy of a draft includes its Bcc and attachments.
+
 ### Passwords from a password manager or another store
 
 Instead of the OS keyring, vimail can ask another program for the password each time it starts. Set `password_cmd` on a `plain` / `app-password` account; vimail runs it with `sh -c` and uses the first line of its output as the password (so multi-line `pass` entries with notes work):
@@ -297,6 +319,8 @@ Press `Enter` on a message, or focus the preview pane (`l` / `Tab`) and press `E
 |-----|--------|
 | `c` | Compose new message |
 | `r` | Reply to selected message |
+| `a` | Reply all (your own addresses are left out) |
+| `F` | Forward (with attachments) |
 | `f` | Toggle flag/star |
 | `U` | Mark unread |
 | `dd` | Delete message |
@@ -306,6 +330,7 @@ Press `Enter` on a message, or focus the preview pane (`l` / `Tab`) and press `E
 | `R` | Refresh |
 | `Enter` | Open draft (in Drafts folder), otherwise open the Vim reader |
 | `Ctrl+S` | Send message (in compose) |
+| `:attach <path>` / `:detach [n]` | Add or remove an attachment (compose editor) |
 | `Esc` | Close overlay / save draft / clear search |
 | `/` | Search all accounts and folders |
 
@@ -470,9 +495,22 @@ Any tool that accepts a prompt as an argument and prints the response to stdout 
 }
 ```
 
-Reads (`list_accounts`, `list_folders`, `list_messages`, `read_message`, `search_messages`) are served from the local cache; search results expose usable folder/UID handles and a `truncated` flag. Write tools include `mark_read`, `mark_unread`, `flag_message`, `unflag_message`, `move_message`, Trash-safe delete/restore, draft operations, and `verify`. For natural review tasks, `list_recent_messages` can sync and list a time window across every account in one call, excluding non-received folders and collapsing Gmail label copies; `read_messages` then opens the selected bodies as one batch and can fetch missing bodies without marking messages read.
+Reads (`list_accounts`, `list_folders`, `list_messages`, `read_message`, `search_messages`, `read_draft`) are served from the local cache; search results expose usable folder/UID handles and a `truncated` flag. Write tools include `mark_read`, `mark_unread`, `flag_message`, `unflag_message`, `move_message`, Trash-safe delete/restore, draft operations, and `verify`. For natural review tasks, `list_recent_messages` can sync and list a time window across every account in one call, excluding non-received folders and collapsing Gmail label copies; `read_messages` then opens the selected bodies as one batch and can fetch missing bodies without marking messages read.
 
-Draft tools are local-only. Server writes (`mark_read`, `mark_unread`, `flag_message`, `unflag_message`, `move_message`, `mark_all_read`, delete, and restore) use the durable operation queue. UID-based tools accept either one `uid` or a batch in `uids`, producing one queue row per batch; `mark_all_read` creates an authoritative whole-folder operation, including uncached messages. Flag/read changes and general moves update the cache optimistically, then retry server delivery offline. Deletion only ever moves to Trash, so permanent deletion stays in the TUI. Restore is server-first and reconciles server-assigned destination UIDs. `list_operations` reports delivery, retry, verification, and failure state. `sync` refreshes mail; `verify` reconciles UIDs/flags and checks SQLite; `full: true` selects their authoritative/full-check modes.
+Drafts are full-fidelity, so a draft prepared by an AI client is a message you can review and send as is. `save_draft` takes `to`, `cc` and `bcc` as address lists (`to` also accepts one comma-separated string), a `from` identity, local file `attachments`, and either `reply_to_message` (`account`/`folder`/`uid`, with `reply_all` and `quote_original`) or `forward_message`. A reply gets `In-Reply-To` and `References` from the original, a `Re:` subject, recipients from Reply-To/From (plus To/Cc for reply-all, without your own addresses), and the identity the original was addressed to as From. Explicit fields override the computed ones; on update (`id`), omitted fields keep their value. The result, and `read_draft`, return every field, plus whether the server Drafts folder already holds this version (`server_sync`). `delete_draft` removes the server copy too. MCP never sends a draft: you open it in vimail and send it yourself.
+
+Read tools return `to`, `cc`, `reply_to` (and `bcc` for Sent and Drafts), `message_id`, `in_reply_to`, `references`, a `thread_id` (the root Message-ID of the conversation, for grouping), and `answered`. `list_accounts` lists each account's identities. Messages cached by an older vimail get these headers on the next sync (headers only, bodies are kept); until then `cc` and the threading fields may be empty for them.
+
+Attaching local files is off unless you name the directories files may come from, because a manipulated AI client could otherwise attach private files to a draft that is uploaded to your mail server:
+
+```toml
+[mcp]
+attachment_dirs = ["~/Documents/outgoing"]
+```
+
+Paths are resolved through symlinks and must stay inside one of these directories; drafts are limited to 18 MB of attachments (about 25 MB encoded).
+
+Server writes (`mark_read`, `mark_unread`, `flag_message`, `unflag_message`, `move_message`, `mark_all_read`, delete, and restore) use the durable operation queue. UID-based tools accept either one `uid` or a batch in `uids`, producing one queue row per batch; `mark_all_read` creates an authoritative whole-folder operation, including uncached messages. Flag/read changes and general moves update the cache optimistically, then retry server delivery offline. Deletion only ever moves to Trash, so permanent deletion stays in the TUI. Restore is server-first and reconciles server-assigned destination UIDs. `list_operations` reports delivery, retry, verification, and failure state. `sync` refreshes mail; `verify` reconciles UIDs/flags and checks SQLite; `full: true` selects their authoritative/full-check modes.
 
 The MCP server is safe to run alongside the TUI: queued operations are claimed exactly once, account syncs are serialized across processes, and the TUI refreshes its folder counts and message list when the MCP process changes the cache. A standalone MCP process connects to IMAP lazily on the first write and retries queued operations every minute; outcomes are visible through MCP's `list_operations` and the TUI's `:ops` view.
 

@@ -300,18 +300,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.compose = m.compose.Hide()
 		m.mode = keys.ModeNormal
 		currentEmail := m.mailbox.SelectedEmail()
-		draftID := msg.DraftID
-		if draftID == "" {
-			draftID = m.store.NextDraftID()
+		d := msg.Draft
+		if d.ID == "" {
+			d.ID = m.store.NextDraftID()
 		}
-		m.store.SaveDraft(currentEmail, email.Message{
-			ID:      draftID,
-			From:    currentEmail,
-			To:      msg.To,
-			Subject: msg.Subject,
-			Body:    msg.Body,
-			Date:    time.Now(),
-		})
+		d.Account = currentEmail
+		d.Date = time.Now()
+		if err := m.store.SaveDraft(currentEmail, d); err != nil {
+			cmds = append(cmds, func() tea.Msg {
+				return util.InfoMsg{Text: "Draft not saved: " + err.Error(), IsError: true}
+			})
+			return m, tea.Batch(cmds...)
+		}
+		// Upload to the server Drafts folder now when online; otherwise the
+		// queued upload runs on the next sync.
+		if m.coordinator != nil {
+			cmds = append(cmds, m.coordinator.FlushDraftOps(currentEmail))
+		}
 		// Refresh msglist if currently viewing Drafts
 		if m.msglist.CurrentFolder() == "Drafts" {
 			cmds = append(cmds, func() tea.Msg {
@@ -327,8 +332,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case util.OpenDraftMsg:
-		draft := msg.Message
-		m.compose = m.compose.ShowDraft(draft.ID, draft.To, draft.Subject, draft.Body).SetSize(m.width, m.height)
+		acct := m.mailbox.SelectedEmail()
+		draft, ok := m.store.Draft(acct, msg.Message.ID)
+		if !ok {
+			cmds = append(cmds, func() tea.Msg {
+				return util.InfoMsg{Text: "Draft no longer exists", IsError: true}
+			})
+			return m, tea.Batch(cmds...)
+		}
+		m.compose = m.compose.ShowDraft(draft).WithIdentities(m.identities(acct)).SetSize(m.width, m.height)
 		m.mode = keys.ModeNormal
 		cmds = append(cmds, func() tea.Msg {
 			return keys.ModeChangedMsg{Mode: keys.ModeNormal}
@@ -341,20 +353,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.compose = m.compose.Hide()
 		m.mode = keys.ModeNormal
 		currentEmail := m.mailbox.SelectedEmail()
-		// Remove draft if we were editing one.
+		// Remove draft if we were editing one (its server copy too).
 		if draftID != "" {
 			m.store.DeleteDraft(currentEmail, draftID)
 		}
+		recipients := email.JoinAddresses(append(append(append([]string(nil), msg.Draft.To...), msg.Draft.Cc...), msg.Draft.Bcc...))
 		if m.coordinator != nil {
-			// Real send via SMTP.
-			cmds = append(cmds, m.coordinator.SendAndArchive(currentEmail, worker.SendRequest{
-				From:    currentEmail,
-				To:      msg.To,
-				Subject: msg.Subject,
-				Body:    msg.Body,
-			}))
+			// Real send via SMTP: every field the composer holds.
+			req := worker.DraftSendRequest(msg.Draft, "")
+			cmds = append(cmds, m.coordinator.SendAndArchive(currentEmail, req))
+			if draftID != "" {
+				cmds = append(cmds, m.coordinator.FlushDraftOps(currentEmail))
+			}
 			var cmd tea.Cmd
-			m.status, cmd = m.status.Update(util.ProcessStartMsg{ID: "send", Label: fmt.Sprintf("↑ %s: sending to %s", currentEmail, msg.To)})
+			m.status, cmd = m.status.Update(util.ProcessStartMsg{ID: "send", Label: fmt.Sprintf("↑ %s: sending to %s", currentEmail, email.SanitizeLine(recipients))})
 			cmds = append(cmds, cmd)
 		} else {
 			// Mock send.
@@ -1153,27 +1165,27 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		})
 
 	case key.Matches(msg, keys.Normal.Compose):
-		m.compose = m.compose.Show().SetSize(m.width, m.height)
+		m.compose = m.compose.Show().WithIdentities(m.identities(m.mailbox.SelectedEmail())).SetSize(m.width, m.height)
 		m.mode = keys.ModeInsert
 		cmds = append(cmds, func() tea.Msg {
 			return keys.ModeChangedMsg{Mode: keys.ModeInsert}
 		})
 		cmds = append(cmds, textinput.Blink)
 
-	case key.Matches(msg, keys.Normal.Reply):
-		if selected := m.msglist.SelectedMessage(); selected != nil {
-			// Extract email from "Name <email>" format
-			replyTo := replyAddress(selected.From)
-			// Build reply subject
-			replySubj := email.SanitizeLine(selected.Subject)
-			if !strings.HasPrefix(strings.ToLower(replySubj), "re:") {
-				replySubj = "Re: " + replySubj
+	case key.Matches(msg, keys.Normal.Reply), key.Matches(msg, keys.Normal.ReplyAll), key.Matches(msg, keys.Normal.Forward):
+		if selected := m.msglist.SelectedMessage(); selected != nil && m.msglist.CurrentFolder() != "Drafts" {
+			acct := m.mailbox.SelectedEmail()
+			orig := *selected
+			if orig.Folder == "" {
+				orig.Folder = m.msglist.CurrentFolder()
 			}
-			// Quoted body as editor content
-			// The body goes into the editor verbatim, so strip escape
-			// sequences an attacker may have put in the original mail.
-			quoted := "\n> " + strings.ReplaceAll(email.SanitizeText(selected.Body), "\n", "\n> ")
-			m.compose = m.compose.ShowReply(replyTo, replySubj, quoted).SetSize(m.width, m.height)
+			var d email.Draft
+			if key.Matches(msg, keys.Normal.Forward) {
+				d = m.forwardDraft(acct, orig)
+			} else {
+				d = m.replyDraft(acct, orig, key.Matches(msg, keys.Normal.ReplyAll))
+			}
+			m.compose = m.compose.ShowReply(d).WithIdentities(m.identities(acct)).SetSize(m.width, m.height)
 			m.mode = keys.ModeNormal
 			cmds = append(cmds, func() tea.Msg {
 				return keys.ModeChangedMsg{Mode: keys.ModeNormal}
@@ -2122,4 +2134,67 @@ func replyAddress(from string) string {
 		}
 	}
 	return strings.TrimSpace(from)
+}
+
+// identities returns the From addresses an account may send as (primary
+// first).
+func (m Model) identities(acct string) []string {
+	if a, ok := m.cfg.Account(acct); ok {
+		return a.SenderAddresses()
+	}
+	return []string{acct}
+}
+
+// ownAddresses is every address of the user, for reply-all exclusion.
+func (m Model) ownAddresses() email.AddressSet {
+	own := email.NewAddressSet(m.cfg.OwnAddresses()...)
+	for _, a := range m.store.Accounts() {
+		own[strings.ToLower(a.Email)] = true
+	}
+	return own
+}
+
+// replyDraft prepares a reply (or reply-all) to orig with the same rules the
+// MCP save_draft tool uses: recipients from Reply-To/From (plus To/Cc for
+// reply-all, without the user's own addresses), In-Reply-To/References for
+// threading, and the identity the original was addressed to as From.
+func (m Model) replyDraft(acct string, orig email.Message, all bool) email.Draft {
+	to, cc := email.ReplyRecipients(orig, all, m.ownAddresses())
+	d := email.Draft{
+		Account:    acct,
+		From:       email.PickIdentity(orig, m.identities(acct)),
+		To:         to,
+		Cc:         cc,
+		Subject:    email.ReplySubject(orig.Subject),
+		InReplyTo:  orig.MessageID,
+		References: email.ReplyReferences(orig),
+		Source:     &email.DraftSource{Kind: email.SourceReply, Folder: orig.Folder, UID: orig.UID, MessageID: orig.MessageID},
+	}
+	// The body goes into the editor verbatim; QuoteReply sanitizes it.
+	if orig.Body != "" {
+		d.Body = "\n\n" + email.QuoteReply(orig)
+	}
+	return d
+}
+
+// forwardDraft prepares a forward of orig. Its attachments are fetched now
+// (without marking it read), so the composer shows exactly what will be
+// sent. The fetch blocks the UI briefly; without a connection the forward
+// opens without them and the log says so.
+func (m Model) forwardDraft(acct string, orig email.Message) email.Draft {
+	d := email.Draft{
+		Account: acct,
+		From:    email.PickIdentity(orig, m.identities(acct)),
+		Subject: email.ForwardSubject(orig.Subject),
+		Body:    "\n\n" + email.ForwardBody(orig),
+		Source:  &email.DraftSource{Kind: email.SourceForward, Folder: orig.Folder, UID: orig.UID, MessageID: orig.MessageID},
+	}
+	if len(orig.Attachments) > 0 && m.coordinator != nil {
+		if atts, err := m.coordinator.SourceAttachments(acct, orig.Folder, orig.UID); err == nil {
+			d.Attachments = atts
+		} else {
+			logging.Warn("compose", "forward without attachments", logging.Acct(acct), logging.Err(err))
+		}
+	}
+	return d
 }

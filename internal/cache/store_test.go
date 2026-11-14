@@ -153,10 +153,10 @@ func TestDrafts(t *testing.T) {
 	seedWithFolders(t, s, "Test", "a@b.com")
 
 	// Save a draft
-	draft := email.Message{
+	draft := email.Draft{
 		ID:      s.NextDraftID(),
 		From:    "a@b.com",
-		To:      "someone@b.com",
+		To:      []string{"someone@b.com"},
 		Subject: "Draft subject",
 		Body:    "Draft body",
 		Date:    time.Now(),

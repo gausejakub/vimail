@@ -100,7 +100,7 @@ func TestReaderYankDoesNotTouchRealClipboardInTests(t *testing.T) {
 // only single-byte keys, so "č" was silently dropped).
 func TestComposeAcceptsAccentedCharacters(t *testing.T) {
 	m := testApp()
-	sendKeys(&m, "c", "tab", "tab", "i")
+	sendKeys(&m, "c", "tab", "tab", "tab", "tab", "i") // To → Cc → Bcc → Subject → body
 	for _, r := range "Čau, příliš žluťoučký kůň!" {
 		send(&m, string(r))
 	}

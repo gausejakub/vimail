@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/gausejakub/vimail/internal/email"
 )
 
 type GeneralConfig struct {
@@ -28,6 +30,41 @@ type AccountConfig struct {
 	OAuthClientSecret string   `toml:"oauth_client_secret"`
 	SkipFolders       []string `toml:"skip_folders"` // folders to skip syncing (auto-detected for Gmail)
 	PasswordCmd       string   `toml:"password_cmd"` // plain/app-password: command printing the password, used instead of the OS keyring
+	// Identities are additional From addresses this account may send as:
+	// aliases, or other domains delivered to the same mailbox. Entries are
+	// "addr" or "Name <addr>". A reply defaults to the identity the original
+	// was addressed to. The provider must allow sending as the address
+	// (e.g. Gmail "Send mail as"), or it may rewrite From.
+	Identities []string `toml:"identities"`
+}
+
+// SenderAddresses returns every address the account may send from: the
+// primary address first, then the configured identities.
+func (a AccountConfig) SenderAddresses() []string {
+	// FormatAddress quotes a name such as "Gause, Jakub" so the primary
+	// address always reads as one mailbox.
+	return append([]string{email.FormatAddress(a.Name, a.Email)}, a.Identities...)
+}
+
+// OwnAddresses returns every address of every account, for excluding the
+// user from reply-all recipients.
+func (c Config) OwnAddresses() []string {
+	var out []string
+	for _, a := range c.Accounts {
+		out = append(out, a.Email)
+		out = append(out, a.Identities...)
+	}
+	return out
+}
+
+// Account returns the configuration of the account with the given email.
+func (c Config) Account(email string) (AccountConfig, bool) {
+	for _, a := range c.Accounts {
+		if strings.EqualFold(a.Email, email) {
+			return a, true
+		}
+	}
+	return AccountConfig{}, false
 }
 
 // CacheConfig controls the local mail cache.
@@ -99,6 +136,12 @@ type MCPConfig struct {
 	// to the AI client, so a prompt-injected client should not be able to
 	// alter or hide mail unless the user opted in.
 	AllowWrite bool `toml:"allow_write"`
+	// AttachmentDirs lists the directories save_draft may attach files from.
+	// Empty (the default) means MCP clients cannot attach local files: a
+	// prompt-injected client could otherwise attach private files to a draft,
+	// which is then uploaded to the server's Drafts folder. "~" expands to
+	// the home directory.
+	AttachmentDirs []string `toml:"attachment_dirs"`
 }
 
 type Config struct {

@@ -26,15 +26,21 @@ func TestUniqueNameKeepsZipEntriesApart(t *testing.T) {
 }
 
 func TestMessageIDCannotCarryHeaderInjection(t *testing.T) {
-	_, raw := ComposeRFC5322("me@example.com\r\nBcc: evil@example.com", "you@example.com", "hi", "body")
+	// A From carrying an injected header is not one mailbox: nothing is built.
+	if _, raw := ComposeRFC5322("me@example.com\r\nBcc: evil@example.com", "you@example.com", "hi", "body"); raw != nil {
+		t.Fatalf("message built from an injected From:\n%s", raw)
+	}
+	// The Message-ID takes its domain from From; odd but valid input must
+	// still give exactly the expected header lines.
+	id, raw := ComposeRFC5322(`"x y"@example.com`, "you@example.com", "hi", "body")
 	head, _, _ := strings.Cut(string(raw), "\r\n\r\n")
 	for _, line := range strings.Split(head, "\r\n") {
 		if strings.HasPrefix(strings.ToLower(line), "bcc:") {
 			t.Fatalf("injected header line %q in:\n%s", line, head)
 		}
 	}
-	if n := strings.Count(head, "\r\n"); n != 7 {
-		t.Fatalf("header has %d line breaks, want 7:\n%s", n, head)
+	if n := strings.Count(head, "\r\n"); n != 7 || !strings.HasSuffix(id, "@example.com") {
+		t.Fatalf("header has %d line breaks, want 7 (id %q):\n%s", n, id, head)
 	}
 }
 

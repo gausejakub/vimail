@@ -1104,3 +1104,39 @@ func TestReplyAddressIgnoresSpoofedDisplayName(t *testing.T) {
 		}
 	}
 }
+
+// r, a and F open the composer as reply, reply-all and forward with the
+// original's threading headers; f still toggles the flag.
+func TestReplyAllForwardAndFlagKeys(t *testing.T) {
+	m := testApp()
+	sel := m.msglist.SelectedMessage()
+	if sel == nil {
+		t.Fatal("need a selected message")
+	}
+	flagged := sel.Flagged
+	send(&m, "f")
+	if m.compose.Visible() {
+		t.Fatal("f opened the composer instead of toggling the flag")
+	}
+	if now := m.msglist.SelectedMessage(); sel.UID > 0 && (now == nil || now.Flagged == flagged) { // mock data has no server UIDs
+		t.Fatal("f did not toggle the flag")
+	}
+	for _, k := range []string{"r", "a", "F"} {
+		send(&m, k)
+		if !m.compose.Visible() {
+			t.Fatalf("%s did not open the composer", k)
+		}
+		d, err := m.compose.CurrentDraftForTest()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d.Source == nil || d.Source.UID != sel.UID {
+			t.Fatalf("%s: source = %+v", k, d.Source)
+		}
+		wantKind := map[string]string{"r": "reply", "a": "reply", "F": "forward"}[k]
+		if d.Source.Kind != wantKind {
+			t.Fatalf("%s: kind = %q", k, d.Source.Kind)
+		}
+		m.compose = m.compose.Hide()
+	}
+}

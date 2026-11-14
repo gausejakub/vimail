@@ -1,38 +1,214 @@
 package worker
 
 import (
+	"bytes"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
-	"mime"
+	netmail "net/mail"
 	"strings"
 	"time"
+
+	"github.com/emersion/go-message/mail"
 
 	"github.com/gausejakub/vimail/internal/email"
 )
 
-// ComposeRFC5322 builds a properly formatted RFC 5322 email message.
-// Returns the message ID and the raw message bytes.
+// ComposeOptions controls how a message is serialized.
+type ComposeOptions struct {
+	// IncludeBcc writes the Bcc header. Only for copies the user keeps
+	// (Sent, Drafts): the transmitted message must never carry it, or every
+	// recipient learns who was blind-copied.
+	IncludeBcc bool
+	// MessageID and Date, when set, are used instead of fresh values so a
+	// retried send and its Sent copy carry the same identity.
+	MessageID string
+	Date      time.Time
+	// Extra headers (name → value), e.g. X-Vimail-Source on drafts.
+	Extra map[string]string
+}
+
+// draftSourceHeader carries a draft's reply/forward source through the
+// server Drafts folder, so a draft opened on another vimail install still
+// flags the original when sent.
+const draftSourceHeader = "X-Vimail-Source"
+
+// ComposeMessage serializes req as an RFC 5322 message: text/plain alone, or
+// multipart/mixed with attachments. Recipients must already be validated
+// (email.NormalizeAddresses); header values are sanitized again here because
+// they may come from queued payloads or MCP arguments, and a CR/LF would let
+// the caller inject headers.
+func ComposeMessage(req SendRequest, opt ComposeOptions) (string, []byte, error) {
+	from := headerValue(req.From)
+	if from == "" {
+		return "", nil, fmt.Errorf("no From address")
+	}
+	// Last line of defense for the identity checks in the MCP server and
+	// the composer: a From that reads as several mailboxes is never written.
+	if _, err := netmail.ParseAddress(from); err != nil {
+		return "", nil, fmt.Errorf("From must be exactly one address: %v", err)
+	}
+	msgID := strings.Trim(headerValue(opt.MessageID), "<>")
+	if msgID == "" {
+		msgID = NewMessageID(from)
+	}
+	date := opt.Date
+	if date.IsZero() {
+		date = time.Now()
+	}
+
+	var h mail.Header
+	h.SetDate(date)
+	setAddressHeader(&h, "From", []string{from})
+	setAddressHeader(&h, "To", req.allTo())
+	if len(req.Cc) > 0 {
+		setAddressHeader(&h, "Cc", req.Cc)
+	}
+	if opt.IncludeBcc && len(req.Bcc) > 0 {
+		setAddressHeader(&h, "Bcc", req.Bcc)
+	}
+	h.SetSubject(headerValue(req.Subject))
+	h.SetMessageID(msgID)
+	if id := cleanMsgID(req.InReplyTo); id != "" {
+		h.SetMsgIDList("In-Reply-To", []string{id})
+	}
+	if refs := cleanMsgIDs(req.References); len(refs) > 0 {
+		h.SetMsgIDList("References", refs)
+	}
+	for k, v := range opt.Extra {
+		if v = headerValue(v); v != "" {
+			h.Set(headerValue(k), v)
+		}
+	}
+
+	body := strings.ReplaceAll(req.Body, "\r\n", "\n")
+	var buf bytes.Buffer
+	if len(req.Attachments) == 0 {
+		h.SetContentType("text/plain", map[string]string{"charset": "utf-8"})
+		w, err := mail.CreateSingleInlineWriter(&buf, h)
+		if err != nil {
+			return "", nil, err
+		}
+		if _, err := w.Write([]byte(body)); err != nil {
+			return "", nil, err
+		}
+		if err := w.Close(); err != nil {
+			return "", nil, err
+		}
+		return msgID, buf.Bytes(), nil
+	}
+
+	mw, err := mail.CreateWriter(&buf, h)
+	if err != nil {
+		return "", nil, err
+	}
+	var th mail.InlineHeader
+	th.SetContentType("text/plain", map[string]string{"charset": "utf-8"})
+	tw, err := mw.CreateSingleInline(th)
+	if err != nil {
+		return "", nil, err
+	}
+	if _, err := tw.Write([]byte(body)); err != nil {
+		return "", nil, err
+	}
+	if err := tw.Close(); err != nil {
+		return "", nil, err
+	}
+	for _, a := range req.Attachments {
+		var ah mail.AttachmentHeader
+		ct := headerValue(a.ContentType)
+		if ct == "" {
+			ct = "application/octet-stream"
+		}
+		ah.SetContentType(ct, nil)
+		ah.SetFilename(headerValue(a.Filename))
+		aw, err := mw.CreateAttachment(ah)
+		if err != nil {
+			return "", nil, err
+		}
+		if _, err := aw.Write(a.Data); err != nil {
+			return "", nil, err
+		}
+		if err := aw.Close(); err != nil {
+			return "", nil, err
+		}
+	}
+	if err := mw.Close(); err != nil {
+		return "", nil, err
+	}
+	return msgID, buf.Bytes(), nil
+}
+
+// ComposeRFC5322 builds a plain-text message. Returns the Message-ID (without
+// angle brackets) and the raw message bytes.
 func ComposeRFC5322(from, to, subject, body string) (string, []byte) {
-	// Header values can come from MCP tool arguments or replayed queue
-	// payloads. A CR/LF in any of them would let the caller inject arbitrary
-	// headers (Bcc, Reply-To, a forged From) or MIME structure. The
-	// Message-ID is derived from From, so it is built after sanitizing.
-	from, to, subject = headerValue(from), headerValue(to), headerValue(subject)
-	msgID := fmt.Sprintf("<%d.%s@vimail>", time.Now().UnixNano(), sanitizeForMsgID(from))
+	id, raw, err := ComposeMessage(SendRequest{From: from, To: to, Subject: subject, Body: body}, ComposeOptions{})
+	if err != nil {
+		return "", nil
+	}
+	return id, raw
+}
 
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("From: %s\r\n", from))
-	sb.WriteString(fmt.Sprintf("To: %s\r\n", to))
-	sb.WriteString(fmt.Sprintf("Subject: %s\r\n", mime.QEncoding.Encode("utf-8", subject)))
-	sb.WriteString(fmt.Sprintf("Date: %s\r\n", time.Now().Format(time.RFC1123Z)))
-	sb.WriteString(fmt.Sprintf("Message-ID: %s\r\n", msgID))
-	sb.WriteString("MIME-Version: 1.0\r\n")
-	sb.WriteString("Content-Type: text/plain; charset=UTF-8\r\n")
-	sb.WriteString("Content-Transfer-Encoding: 8bit\r\n")
-	sb.WriteString("\r\n")
-	sb.WriteString(body)
+// setAddressHeader writes an address list header. Each entry is parsed so
+// display names are RFC 2047 encoded; an entry that does not parse is written
+// as sanitized text (legacy queued sends), never dropped silently.
+func setAddressHeader(h *mail.Header, key string, entries []string) {
+	var addrs []*mail.Address
+	var raw []string
+	for _, e := range entries {
+		e = headerValue(e)
+		if e == "" {
+			continue
+		}
+		list, err := netmail.ParseAddressList(e)
+		if err != nil {
+			raw = append(raw, e)
+			continue
+		}
+		for _, a := range list {
+			addrs = append(addrs, (*mail.Address)(a))
+		}
+	}
+	if len(raw) > 0 {
+		var parts []string
+		for _, a := range addrs {
+			parts = append(parts, a.String())
+		}
+		h.Set(key, strings.Join(append(parts, raw...), ", "))
+		return
+	}
+	if len(addrs) > 0 {
+		h.SetAddressList(key, addrs)
+	}
+}
 
-	return msgID, []byte(sb.String())
+// cleanMsgID strips brackets and rejects values that are not a single msg-id
+// token (Message-IDs of originals are third-party text).
+func cleanMsgID(id string) string {
+	id = strings.Trim(strings.TrimSpace(headerValue(id)), "<>")
+	if id == "" || strings.ContainsAny(id, " \t<>\"") {
+		return ""
+	}
+	return id
+}
+
+func cleanMsgIDs(ids []string) []string {
+	var out []string
+	for _, id := range ids {
+		if c := cleanMsgID(id); c != "" {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// NewMessageID returns a fresh Message-ID (without brackets) whose domain
+// part is taken from the sender address.
+func NewMessageID(from string) string {
+	var b [8]byte
+	rand.Read(b[:])
+	return fmt.Sprintf("%d.%s@%s", time.Now().UnixNano(), hex.EncodeToString(b[:]), sanitizeForMsgID(from))
 }
 
 // headerValue makes a string safe to place in a single header line: line
@@ -43,13 +219,14 @@ func headerValue(s string) string {
 
 func sanitizeForMsgID(s string) string {
 	// Extract just the email part for a clean Message-ID.
-	if idx := strings.Index(s, "@"); idx >= 0 {
-		// Find the domain.
+	if idx := strings.LastIndex(s, "@"); idx >= 0 {
 		domain := s[idx+1:]
 		if end := strings.IndexAny(domain, "> "); end >= 0 {
 			domain = domain[:end]
 		}
-		return domain
+		if domain != "" {
+			return domain
+		}
 	}
 	return "localhost"
 }

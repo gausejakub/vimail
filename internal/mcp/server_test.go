@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -91,7 +92,13 @@ func call(t *testing.T, session *sdk.ClientSession, tool string, args map[string
 		t.Fatalf("%s: %v", tool, err)
 	}
 	if res.IsError {
-		t.Fatalf("%s returned tool error: %v", tool, res.Content)
+		var texts []string
+		for _, c := range res.Content {
+			if tc, ok := c.(*sdk.TextContent); ok {
+				texts = append(texts, tc.Text)
+			}
+		}
+		t.Fatalf("%s returned tool error: %s", tool, strings.Join(texts, "; "))
 	}
 	raw, err := json.Marshal(res.StructuredContent)
 	if err != nil {
@@ -118,7 +125,7 @@ func TestListTools(t *testing.T) {
 		"delete_draft", "delete_message",
 		"flag_message",
 		"list_accounts", "list_folders", "list_messages", "list_operations", "list_recent_messages",
-		"mark_all_read", "mark_read", "mark_unread", "move_message", "read_message", "read_messages", "restore_messages", "save_draft", "search_messages", "sync", "unflag_message", "verify",
+		"mark_all_read", "mark_read", "mark_unread", "move_message", "read_draft", "read_message", "read_messages", "restore_messages", "save_draft", "search_messages", "sync", "unflag_message", "verify",
 	}
 	if fmt.Sprint(names) != fmt.Sprint(want) {
 		t.Errorf("tool list = %v, want %v", names, want)
@@ -372,4 +379,14 @@ func TestToolErrors(t *testing.T) {
 			t.Errorf("%s(%v): expected tool error, got success", tc.tool, tc.args)
 		}
 	}
+}
+
+// callErr invokes a tool and reports whether it returned a tool error.
+func callErr(t *testing.T, session *sdk.ClientSession, tool string, args map[string]any) bool {
+	t.Helper()
+	res, err := session.CallTool(context.Background(), &sdk.CallToolParams{Name: tool, Arguments: args})
+	if err != nil {
+		return true // argument validation failures surface as protocol errors
+	}
+	return res.IsError
 }

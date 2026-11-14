@@ -1,13 +1,18 @@
 package worker
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"io"
+	"mime"
 	"strings"
 
 	"github.com/emersion/go-imap/v2"
+	"github.com/emersion/go-imap/v2/imapclient"
+	"github.com/emersion/go-message"
 	"github.com/emersion/go-message/mail"
+	"github.com/emersion/go-message/textproto"
 	"github.com/gausejakub/vimail/internal/email"
 	"github.com/jaytaylor/html2text"
 )
@@ -27,8 +32,18 @@ func ParseEnvelope(uid uint32, env *imap.Envelope, flags []imap.Flag) email.Mess
 		if len(env.From) > 0 {
 			msg.From = formatAddress(env.From[0])
 		}
-		if len(env.To) > 0 {
-			msg.To = formatAddress(env.To[0])
+		msg.ToList = formatAddresses(env.To)
+		msg.To = email.JoinAddresses(msg.ToList)
+		msg.Cc = formatAddresses(env.Cc)
+		msg.Bcc = formatAddresses(env.Bcc)
+		msg.ReplyTo = formatAddresses(env.ReplyTo)
+		// Servers fill Reply-To with From when the header is absent
+		// (RFC 3501); keep it only when it says something different.
+		if len(msg.ReplyTo) == 1 && msg.From != "" && email.AddrSpec(msg.ReplyTo[0]) == email.AddrSpec(msg.From) {
+			msg.ReplyTo = nil
+		}
+		if len(env.InReplyTo) > 0 {
+			msg.InReplyTo = env.InReplyTo[0]
 		}
 	}
 
@@ -48,19 +63,77 @@ func ParseEnvelope(uid uint32, env *imap.Envelope, flags []imap.Flag) email.Mess
 	return msg
 }
 
-func formatAddress(addr imap.Address) string {
-	name := addr.Name
-	emailAddr := addr.Addr()
+// extraHeaderSection fetches the headers the envelope lacks: References for
+// threading, and Delivered-To / X-Original-To for choosing the identity a
+// reply is sent from.
+var extraHeaderSection = &imap.FetchItemBodySection{
+	Specifier:    imap.PartSpecifierHeader,
+	HeaderFields: []string{"References", "Delivered-To", "X-Original-To"},
+	Peek:         true,
+}
 
+// headerFetchOptions are the FETCH items that fill an email.Message header.
+func headerFetchOptions() *imap.FetchOptions {
+	return &imap.FetchOptions{
+		Envelope:    true,
+		Flags:       true,
+		UID:         true,
+		BodySection: []*imap.FetchItemBodySection{extraHeaderSection},
+	}
+}
+
+// parseFetchedHeaders builds a message from a header FETCH response.
+func parseFetchedHeaders(buf *imapclient.FetchMessageBuffer) email.Message {
+	msg := ParseEnvelope(uint32(buf.UID), buf.Envelope, buf.Flags)
+	applyExtraHeaders(&msg, buf.FindBodySection(extraHeaderSection))
+	return msg
+}
+
+// applyExtraHeaders parses References, Delivered-To and X-Original-To.
+func applyExtraHeaders(msg *email.Message, raw []byte) {
+	if len(raw) == 0 {
+		return
+	}
+	h, err := textproto.ReadHeader(bufio.NewReader(bytes.NewReader(append(bytes.TrimRight(raw, "\r\n"), "\r\n\r\n"...))))
+	if err != nil {
+		return
+	}
+	mh := mail.Header{Header: message.Header{Header: h}}
+	if refs, err := mh.MsgIDList("References"); err == nil {
+		msg.References = refs
+	}
+	seen := map[string]bool{}
+	for _, key := range []string{"Delivered-To", "X-Original-To"} {
+		for _, v := range h.Values(key) {
+			if addrs, err := mail.ParseAddressList(v); err == nil {
+				for _, a := range addrs {
+					addr := email.SanitizeLine(strings.ToLower(a.Address))
+					if addr != "" && !seen[addr] {
+						seen[addr] = true
+						msg.DeliveredTo = append(msg.DeliveredTo, addr)
+					}
+				}
+			}
+		}
+	}
+}
+
+func formatAddresses(list []imap.Address) []string {
+	var out []string
+	for _, a := range list {
+		if a.IsGroupStart() || a.IsGroupEnd() {
+			continue
+		}
+		if s := formatAddress(a); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func formatAddress(addr imap.Address) string {
 	// Display names and addresses are attacker-controlled header text.
-	name, emailAddr = email.SanitizeLine(name), email.SanitizeLine(emailAddr)
-	if name != "" && emailAddr != "" {
-		return fmt.Sprintf("%s <%s>", name, emailAddr)
-	}
-	if emailAddr != "" {
-		return emailAddr
-	}
-	return name
+	return email.FormatAddress(addr.Name, addr.Addr())
 }
 
 // BodyResult holds both the plain-text and raw HTML versions of an email body,
@@ -197,16 +270,28 @@ func collectPartsDepth(mr *mail.Reader, text, html *string, attachments *[]email
 	}
 }
 
-// extractFilename pulls the filename from Content-Disposition or Content-Type headers.
+// extractFilename pulls the filename from Content-Disposition or Content-Type
+// headers. RFC 2231 parameters (filename*=UTF-8”...) are decoded by the MIME
+// parser; RFC 2047 encoded-words, which many mailers put inside the quoted
+// value ("=?UTF-8?Q?Digifest_2026...?="), are decoded afterwards.
 func extractFilename(disp, ct string) string {
+	clean := func(v string) string {
+		return strings.TrimSpace(email.SanitizeLine(email.DecodeHeaderWords(strings.Trim(v, `"' `))))
+	}
+	for _, h := range []struct{ value, param string }{{disp, "filename"}, {ct, "name"}} {
+		if _, params, err := mime.ParseMediaType(h.value); err == nil {
+			if v := clean(params[h.param]); v != "" {
+				return v
+			}
+		}
+	}
+	// Malformed headers: fall back to a lenient scan of the parameters.
 	for _, header := range []string{disp, ct} {
 		for _, param := range strings.Split(header, ";") {
 			param = strings.TrimSpace(param)
 			lower := strings.ToLower(param)
 			if strings.HasPrefix(lower, "filename=") || strings.HasPrefix(lower, "name=") {
-				val := param[strings.Index(param, "=")+1:]
-				val = strings.TrimSpace(email.SanitizeLine(strings.Trim(val, `"' `)))
-				if val != "" {
+				if val := clean(param[strings.Index(param, "=")+1:]); val != "" {
 					return val
 				}
 			}
@@ -217,8 +302,9 @@ func extractFilename(disp, ct string) string {
 
 // AttachmentData holds the raw bytes of an extracted attachment.
 type AttachmentData struct {
-	Filename string
-	Data     []byte
+	Filename    string
+	ContentType string
+	Data        []byte
 }
 
 // ExtractAttachmentData parses a raw RFC 5322 message and returns the binary data
@@ -274,8 +360,9 @@ func extractAttachmentPartsDepth(mr *mail.Reader, result *[]AttachmentData, dept
 				filename = "attachment"
 			}
 			*result = append(*result, AttachmentData{
-				Filename: filename,
-				Data:     partData,
+				Filename:    filename,
+				ContentType: mediaType(ct),
+				Data:        partData,
 			})
 		}
 	}
@@ -347,4 +434,36 @@ func FolderName(mailboxName string) string {
 	default:
 		return mailboxName
 	}
+}
+
+// mediaType returns the type/subtype of a Content-Type value. The header is
+// third-party text, so a value that is not a plain type/subtype (it may hide
+// invisible characters, or claim to be multipart) becomes
+// application/octet-stream.
+func mediaType(ct string) string {
+	mt, _, err := mime.ParseMediaType(ct)
+	if err != nil {
+		mt = ct
+		if i := strings.Index(mt, ";"); i >= 0 {
+			mt = mt[:i]
+		}
+		mt = strings.TrimSpace(strings.ToLower(mt))
+	}
+	typ, sub, ok := strings.Cut(mt, "/")
+	if !ok || !isMIMEToken(typ) || !isMIMEToken(sub) || typ == "multipart" {
+		return "application/octet-stream"
+	}
+	return mt
+}
+
+func isMIMEToken(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || strings.ContainsRune("!#$&^_.+-", r)) {
+			return false
+		}
+	}
+	return true
 }

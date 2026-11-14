@@ -29,6 +29,8 @@ const (
 type accountInfo struct {
 	Email string `json:"email"`
 	Name  string `json:"name,omitempty"`
+	// Identities are the other From addresses the account may send as.
+	Identities []string `json:"identities,omitempty"`
 }
 
 type listAccountsArgs struct{}
@@ -85,15 +87,24 @@ type listMessagesArgs struct {
 }
 
 type messageHeader struct {
-	Account string `json:"account,omitempty"`
-	UID     uint32 `json:"uid"`
-	From    string `json:"from"`
-	To      string `json:"to,omitempty"`
-	Subject string `json:"subject"`
-	Date    string `json:"date"`
-	Unread  bool   `json:"unread"`
-	Flagged bool   `json:"flagged,omitempty"`
-	Folder  string `json:"folder,omitempty"`
+	Account    string   `json:"account,omitempty"`
+	UID        uint32   `json:"uid"`
+	DraftID    string   `json:"draft_id,omitempty"`
+	From       string   `json:"from"`
+	To         []string `json:"to,omitempty"`
+	Cc         []string `json:"cc,omitempty"`
+	Bcc        []string `json:"bcc,omitempty"`
+	ReplyTo    []string `json:"reply_to,omitempty"`
+	Subject    string   `json:"subject"`
+	Date       string   `json:"date"`
+	MessageID  string   `json:"message_id,omitempty"`
+	InReplyTo  string   `json:"in_reply_to,omitempty"`
+	References []string `json:"references,omitempty"`
+	ThreadID   string   `json:"thread_id,omitempty"`
+	Unread     bool     `json:"unread"`
+	Flagged    bool     `json:"flagged,omitempty"`
+	Answered   bool     `json:"answered"`
+	Folder     string   `json:"folder,omitempty"`
 }
 
 type listMessagesResult struct {
@@ -204,19 +215,51 @@ func (s *Server) resolveAccount(requested string) (string, error) {
 
 func header(m email.Message, includeFolder bool) messageHeader {
 	h := messageHeader{
-		Account: m.Account,
-		UID:     m.UID,
-		From:    email.SanitizeLine(m.From),
-		To:      email.SanitizeLine(m.To),
-		Subject: email.SanitizeLine(m.Subject),
-		Date:    m.Date.Format(time.RFC3339),
-		Unread:  m.Unread,
-		Flagged: m.Flagged,
+		Account:    m.Account,
+		UID:        m.UID,
+		From:       email.SanitizeLine(m.From),
+		To:         sanitizeList(m.ToList),
+		Cc:         sanitizeList(m.Cc),
+		ReplyTo:    sanitizeList(m.ReplyTo),
+		Subject:    email.SanitizeLine(m.Subject),
+		Date:       m.Date.Format(time.RFC3339),
+		MessageID:  email.SanitizeLine(m.MessageID),
+		InReplyTo:  email.SanitizeLine(m.InReplyTo),
+		References: sanitizeList(m.References),
+		ThreadID:   email.SanitizeLine(m.ThreadID),
+		Unread:     m.Unread,
+		Flagged:    m.Flagged,
+		Answered:   m.Answered,
+	}
+	if len(h.To) == 0 && m.To != "" {
+		h.To = []string{email.SanitizeLine(m.To)}
+	}
+	// Bcc is only ever known for mail the user wrote.
+	if isOwnMailFolder(m.Folder) {
+		h.Bcc = sanitizeList(m.Bcc)
+	}
+	if m.Folder == "Drafts" && m.UID == 0 {
+		h.DraftID = m.ID
+		h.Unread = false
 	}
 	if includeFolder {
 		h.Folder = m.Folder
 	}
 	return h
+}
+
+func isOwnMailFolder(folder string) bool {
+	return folder == "Sent" || folder == "Drafts"
+}
+
+func sanitizeList(list []string) []string {
+	var out []string
+	for _, v := range list {
+		if v = email.SanitizeLine(v); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 func (s *Server) recentAccounts(requested []string) ([]string, error) {
@@ -291,6 +334,7 @@ func truncateBody(message *readMessageResult, maxChars int) {
 // explicit through list_recent_messages fresh=true or read_messages
 // fetch_missing=true.
 func (s *Server) registerReadTools() {
+	s.registerReadDraft()
 	addTool(s, &sdk.Tool{
 		Name:        "list_recent_messages",
 		Description: "List unique received messages in a time window across all accounts in one call. Excludes Sent, Drafts, and Trash; collapses Gmail label copies; set fresh=true to sync every included account first. Use read_messages to inspect selected bodies in one batch.",
@@ -359,11 +403,15 @@ func (s *Server) registerReadTools() {
 
 	addTool(s, &sdk.Tool{
 		Name:        "list_accounts",
-		Description: "List the configured email accounts.",
+		Description: "List the configured email accounts and the other From identities (aliases) each may send as.",
 	}, func(ctx context.Context, req *sdk.CallToolRequest, args listAccountsArgs) (*sdk.CallToolResult, listAccountsResult, error) {
 		var out listAccountsResult
 		for _, a := range s.store.Accounts() {
-			out.Accounts = append(out.Accounts, accountInfo{Email: a.Email, Name: a.Name})
+			info := accountInfo{Email: a.Email, Name: a.Name}
+			if ac, ok := s.cfg.Account(a.Email); ok {
+				info.Identities = ac.Identities
+			}
+			out.Accounts = append(out.Accounts, info)
 		}
 		logging.Debug("mcp", "list_accounts", logging.KV("count", len(out.Accounts)))
 		return nil, out, nil
@@ -456,7 +504,7 @@ func (s *Server) registerReadTools() {
 
 	addTool(s, &sdk.Tool{
 		Name:        "list_messages",
-		Description: "List message headers in a folder, newest first, paged. Data comes from the local cache and is as fresh as the last sync.",
+		Description: "List message headers in a folder, newest first, paged: from, to, cc, reply_to (bcc in Sent/Drafts), subject, date, message_id, in_reply_to, references, thread_id (shared by messages of one conversation), unread, flagged and answered (already replied to). In Drafts each entry has a draft_id for read_draft/save_draft. Data comes from the local cache and is as fresh as the last sync.",
 	}, func(ctx context.Context, req *sdk.CallToolRequest, args listMessagesArgs) (*sdk.CallToolResult, listMessagesResult, error) {
 		acct, err := s.resolveAccount(args.Account)
 		if err != nil {
@@ -492,7 +540,7 @@ func (s *Server) registerReadTools() {
 
 	addTool(s, &sdk.Tool{
 		Name:        "read_message",
-		Description: "Read a full message, including its cached body and attachment names. Bodies are fetched lazily by the sync process; body_cached reports whether one is available yet.",
+		Description: "Read a full message: every header field list_messages returns, the cached body and attachment names. Bodies are fetched lazily by the sync process; body_cached reports whether one is available yet. To answer it, pass its account/folder/uid to save_draft as reply_to_message.",
 	}, func(ctx context.Context, req *sdk.CallToolRequest, args readMessageArgs) (*sdk.CallToolResult, readMessageResult, error) {
 		acct, err := s.resolveAccount(args.Account)
 		if err != nil {

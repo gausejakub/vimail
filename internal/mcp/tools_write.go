@@ -8,23 +8,9 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/gausejakub/vimail/internal/cache"
-	"github.com/gausejakub/vimail/internal/email"
 	"github.com/gausejakub/vimail/internal/logging"
 	"github.com/gausejakub/vimail/internal/worker"
 )
-
-type saveDraftArgs struct {
-	Account string `json:"account,omitempty" jsonschema:"account email; may be omitted when exactly one account is configured"`
-	ID      string `json:"id,omitempty" jsonschema:"draft id to update; omit to create a new draft"`
-	To      string `json:"to,omitempty"`
-	Subject string `json:"subject,omitempty"`
-	Body    string `json:"body,omitempty"`
-}
-
-type saveDraftResult struct {
-	Account string `json:"account"`
-	ID      string `json:"id"`
-}
 
 type deleteDraftArgs struct {
 	Account string `json:"account,omitempty" jsonschema:"account email; may be omitted when exactly one account is configured"`
@@ -200,38 +186,11 @@ func (s *Server) resolveCreds() {
 // it stays queued and retryable, and either process (TUI or this server)
 // delivers it on its next sync — exactly once, thanks to op claiming.
 func (s *Server) registerWriteTools() {
-	addTool(s, &sdk.Tool{
-		Name:        "save_draft",
-		Description: "Create a new draft, or update an existing one when id is given. Drafts are stored locally (no server round trip).",
-	}, func(ctx context.Context, req *sdk.CallToolRequest, args saveDraftArgs) (*sdk.CallToolResult, saveDraftResult, error) {
-		acct, err := s.resolveAccount(args.Account)
-		if err != nil {
-			return nil, saveDraftResult{}, err
-		}
-		id := args.ID
-		if id == "" {
-			// Not store.NextDraftID(): that per-process counter restarts at 1
-			// and would collide with (and overwrite) the TUI's drafts. A
-			// timestamp id is unique across both processes.
-			id = fmt.Sprintf("draft-mcp-%d", time.Now().UnixNano())
-		} else if !s.draftExists(acct, id) {
-			return nil, saveDraftResult{}, fmt.Errorf("draft %q not found for %s", id, acct)
-		}
-		s.store.SaveDraft(acct, email.Message{
-			ID:      id,
-			From:    acct,
-			To:      email.SanitizeLine(args.To),
-			Subject: email.SanitizeLine(args.Subject),
-			Body:    email.SanitizeText(args.Body),
-			Date:    time.Now(),
-		})
-		logging.Info("mcp", "draft saved", logging.Acct(acct), logging.KV("draft_id", id))
-		return nil, saveDraftResult{Account: acct, ID: id}, nil
-	})
+	s.registerSaveDraft()
 
 	addTool(s, &sdk.Tool{
 		Name:        "delete_draft",
-		Description: "Delete a local draft by id.",
+		Description: "Delete a draft by id, locally and from the server Drafts folder (removal is queued if the server is unreachable).",
 	}, func(ctx context.Context, req *sdk.CallToolRequest, args deleteDraftArgs) (*sdk.CallToolResult, deleteDraftResult, error) {
 		acct, err := s.resolveAccount(args.Account)
 		if err != nil {
@@ -244,6 +203,12 @@ func (s *Server) registerWriteTools() {
 			return nil, deleteDraftResult{}, fmt.Errorf("draft %q not found for %s", args.ID, acct)
 		}
 		s.store.DeleteDraft(acct, args.ID)
+		if s.coord != nil {
+			s.resolveCreds()
+			if err := s.coord.FlushDraftOpsNow(acct); err != nil {
+				logging.Warn("mcp", "server draft removal queued", logging.Acct(acct), logging.Err(err))
+			}
+		}
 		logging.Info("mcp", "draft deleted", logging.Acct(acct), logging.KV("draft_id", args.ID))
 		return nil, deleteDraftResult{Account: acct, ID: args.ID, Deleted: true}, nil
 	})
@@ -602,12 +567,8 @@ func (s *Server) registerWriteTools() {
 
 // draftExists reports whether a draft with the given id exists for the account.
 func (s *Server) draftExists(acct, id string) bool {
-	for _, d := range s.store.MessagesForPage(acct, "Drafts", 0, 0) {
-		if d.ID == id {
-			return true
-		}
-	}
-	return false
+	_, ok := s.store.Draft(acct, id)
+	return ok
 }
 
 func normalizeUIDs(uid uint32, bulk []uint32) ([]uint32, error) {

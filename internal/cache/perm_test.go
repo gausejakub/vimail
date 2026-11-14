@@ -100,7 +100,9 @@ func TestHeadersAndAttachmentNamesAreEncryptedAtRest(t *testing.T) {
 	if err := s.UpdateMessageBody(acct, "Inbox", 2, "secret body", "", []email.Attachment{{Filename: "secret-plan.pdf", Size: 3}}); err != nil {
 		t.Fatal(err)
 	}
-	s.SaveDraft(acct, email.Message{ID: "d1", From: acct, To: "bob@example.com", Subject: "draft subject", Body: "draft body", Date: time.Now()})
+	if err := s.SaveDraft(acct, email.Draft{ID: "d1", From: acct, To: []string{"bob@example.com"}, Cc: []string{"carol@example.com"}, Subject: "draft subject", Body: "draft body", Date: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
 
 	if n, err := s.EncryptLegacyRows(); err != nil || n != 1 {
 		t.Fatalf("EncryptLegacyRows = %d, %v; want 1 legacy row", n, err)
@@ -111,7 +113,7 @@ func TestHeadersAndAttachmentNamesAreEncryptedAtRest(t *testing.T) {
 
 	// Nothing identifying may be readable in the raw database.
 	raw := dumpTables(t, s, "messages", "drafts", "attachments")
-	for _, leak := range []string{"legacy subject", "old@example.com", "secret subject", "Secret Sender", "secret body", "secret-plan.pdf", "draft subject", "bob@example.com", "draft body"} {
+	for _, leak := range []string{"legacy subject", "old@example.com", "secret subject", "Secret Sender", "secret body", "secret-plan.pdf", "draft subject", "bob@example.com", "carol@example.com", "draft body"} {
 		if strings.Contains(raw, leak) {
 			t.Errorf("plaintext %q found in the cache file", leak)
 		}

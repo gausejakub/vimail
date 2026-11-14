@@ -16,6 +16,12 @@ every merged PR lands here in the same pass that merges it.
 
 ### Security
 
+## [0.18.1] - 2026-11-14
+
+### Security
+
+- Updated the Markdown library (goldmark 1.7.17) for GO-2026-5320, a cross-site scripting issue in how it renders links and images in the HTML version of Markdown mail. (#94)
+
 ## [0.18.0] - 2026-11-14
 
 ### Added

@@ -378,7 +378,7 @@ Press `Enter` on a message, or focus the preview pane (`l` / `Tab`) and press `E
 | `:attach <path>` / `:detach [n]` | Add or remove an attachment (compose editor) |
 | `Enter` / `↑` `↓` in To, Cc, Bcc | Take / choose a suggested recipient: the address comes first; people you have written to always rank above addresses that have only written to you, which are marked "has only written to you" |
 | `Esc` | Close overlay / save draft / clear search |
-| `/` | Search all accounts and folders |
+| `/` | Search the cache across all accounts and folders (`:ss <query>` also asks the server) |
 
 ### Modes
 
@@ -403,7 +403,8 @@ Press `Enter` on a message, or focus the preview pane (`l` / `Tab`) and press `E
 | `:ai <name>` | AI-assisted compose with a specific agent |
 | `:ops` / `:queue` | Show operation queue log |
 | `:ps` / `:processes` | Show running background processes |
-| `:search <query>` / `:s <query>` | Search messages across all accounts |
+| `:search <query>` / `:s <query>` | Search the cache across all accounts: subject, sender, To, Cc, Reply-To and downloaded bodies |
+| `:search-server <query>` / `:ss <query>` | The same, plus a search on the selected account's mail server, which also covers bodies that were never downloaded |
 
 ### Available themes
 

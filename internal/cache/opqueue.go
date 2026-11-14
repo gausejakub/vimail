@@ -71,6 +71,7 @@ type SendPayload struct {
 	Subject     string                  `json:"subject"`
 	Body        string                  `json:"body"`
 	Markdown    bool                    `json:"markdown,omitempty"`
+	Calendar    *CalendarPayload        `json:"calendar,omitempty"`
 	InReplyTo   string                  `json:"in_reply_to,omitempty"`
 	References  []string                `json:"references,omitempty"`
 	Attachments []email.DraftAttachment `json:"attachments,omitempty"`
@@ -355,4 +356,11 @@ func (s *SQLiteStore) queryOps(query string, args ...interface{}) []QueuedOp {
 		ops = append(ops, op)
 	}
 	return ops
+}
+
+// CalendarPayload is a calendar object queued with a send (the answer to
+// an invitation).
+type CalendarPayload struct {
+	Method string `json:"method"`
+	Data   []byte `json:"data"`
 }

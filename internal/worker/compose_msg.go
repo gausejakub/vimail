@@ -101,14 +101,34 @@ func ComposeMessage(req SendRequest, opt ComposeOptions) (string, []byte, error)
 		th.SetContentType("text/plain", map[string]string{"charset": "utf-8"})
 		return th
 	}
-	// writeAlternatives writes the text and HTML parts into an alternative.
+	// writeAlternatives writes the body's versions into an alternative:
+	// the text, its HTML rendering (Markdown), and a calendar object
+	// (an answer to an invitation), in that order: readers pick the last
+	// one they understand.
+	alternatives := req.Markdown || req.Calendar != nil
 	writeAlternatives := func(iw *mail.InlineWriter) error {
-		var hh mail.InlineHeader
-		hh.SetContentType("text/html", map[string]string{"charset": "utf-8"})
-		for _, part := range []struct {
+		type alt struct {
 			header mail.InlineHeader
 			data   string
-		}{{textHeader(), body}, {hh, htmlBody}} {
+		}
+		parts := []alt{{textHeader(), body}}
+		if req.Markdown {
+			var hh mail.InlineHeader
+			hh.SetContentType("text/html", map[string]string{"charset": "utf-8"})
+			parts = append(parts, alt{hh, htmlBody})
+		}
+		if req.Calendar != nil {
+			method := strings.ToUpper(headerValue(req.Calendar.Method))
+			for _, r := range method {
+				if r < 'A' || r > 'Z' {
+					return fmt.Errorf("invalid calendar method %q", method)
+				}
+			}
+			var ch mail.InlineHeader
+			ch.SetContentType("text/calendar", map[string]string{"charset": "utf-8", "method": method})
+			parts = append(parts, alt{ch, string(req.Calendar.Data)})
+		}
+		for _, part := range parts {
 			w, err := iw.CreatePart(part.header)
 			if err != nil {
 				return err
@@ -125,7 +145,7 @@ func ComposeMessage(req SendRequest, opt ComposeOptions) (string, []byte, error)
 
 	var buf bytes.Buffer
 	if len(req.Attachments) == 0 {
-		if req.Markdown {
+		if alternatives {
 			iw, err := mail.CreateInlineWriter(&buf, h)
 			if err != nil {
 				return "", nil, err
@@ -153,7 +173,7 @@ func ComposeMessage(req SendRequest, opt ComposeOptions) (string, []byte, error)
 	if err != nil {
 		return "", nil, err
 	}
-	if req.Markdown {
+	if alternatives {
 		iw, err := mw.CreateInline()
 		if err != nil {
 			return "", nil, err

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/emersion/go-imap/v2"
+	"github.com/emersion/go-imap/v2/imapclient"
 
 	"github.com/gausejakub/vimail/internal/email"
 )
@@ -151,4 +152,32 @@ func pruneCachedFolders(store folderPruner, acctEmail string, listed []string) {
 			store.DeleteFolder(acctEmail, f.Name)
 		}
 	}
+}
+
+// listOptions asks for folder roles (RFC 6154) when the server offers them
+// through the extended LIST; servers with SPECIAL-USE alone put the role
+// attributes into a plain LIST response.
+func listOptions(client *imapclient.Client) *imap.ListOptions {
+	if caps := client.Caps(); caps.Has(imap.CapSpecialUse) && caps.Has(imap.CapListExtended) {
+		return &imap.ListOptions{ReturnSpecialUse: true}
+	}
+	return nil
+}
+
+// listedFrom extracts name, role and selectability from a LIST response.
+func listedFrom(mailboxes []*imap.ListData) []listedMailbox {
+	var listed []listedMailbox
+	for _, mbox := range mailboxes {
+		lm := listedMailbox{name: mbox.Mailbox}
+		for _, attr := range mbox.Attrs {
+			if notSelectable(attr) {
+				lm.noSelect = true
+			}
+			if role := roleDisplayName(attr); role != "" && lm.role == "" {
+				lm.role = role
+			}
+		}
+		listed = append(listed, lm)
+	}
+	return listed
 }

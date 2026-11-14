@@ -149,6 +149,21 @@ A draft keeps everything that goes into the message: From identity, To, Cc, Bcc,
 
 Two limits: edits made to the same draft in vimail and in another client before either syncs produce two drafts (nothing is lost, nothing is merged), and the server copy of a draft includes its Bcc and attachments.
 
+### New-mail notifications
+
+Off by default. Turn them on to get a desktop notification when unread mail arrives in a watched folder, also while the vimail window is hidden:
+
+```toml
+[notifications]
+enabled = true
+# hide_subject = true                      # show only the sender (shared screens)
+# folders = ["Inbox"]                      # default: Inbox
+# accounts = ["me@example.com"]            # default: all accounts
+# command = ["notify-send", "-u", "low"]   # your own notifier; title and body are appended
+```
+
+Without `command`, vimail uses `notify-send` on Linux and `osascript` on macOS. Several messages arriving together make one notification per account. Mail that was already there when vimail started does not notify.
+
 ### Passwords from a password manager or another store
 
 Instead of the OS keyring, vimail can ask another program for the password each time it starts. Set `password_cmd` on a `plain` / `app-password` account; vimail runs it with `sh -c` and uses the first line of its output as the password (so multi-line `pass` entries with notes work):

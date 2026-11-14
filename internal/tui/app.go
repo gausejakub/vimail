@@ -58,6 +58,10 @@ type Model struct {
 
 	syncPending   int             // number of accounts still syncing
 	syncCompleted map[string]bool // completion deduplication for the active cycle
+
+	// mailSeen is, per account and watched folder, the highest UID already
+	// considered for a new-mail notification.
+	mailSeen map[string]uint32
 }
 
 // syncTickMsg triggers periodic sync refresh.
@@ -120,6 +124,7 @@ func New(cfg config.Config, store email.Store) Model {
 		compose:       compose.New(cfg.AI),
 		cmdInput:      cmdInput,
 		syncCompleted: make(map[string]bool),
+		mailSeen:      make(map[string]uint32),
 	}
 	if store, ok := store.(cacheVersionStore); ok {
 		m.cacheVersion, _ = store.DataVersion()
@@ -215,6 +220,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(cmds...)
 		}
 		m.cacheVersion = msg.version
+		cmds = append(cmds, m.newMailCmd()) // another process (the MCP server) may have synced
 		m.mailbox = m.mailbox.Reload()
 		account := m.msglist.CurrentAccount()
 		folder := m.msglist.CurrentFolder()
@@ -439,6 +445,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.syncCompleted[msg.Account] = true
+		cmds = append(cmds, m.newMailCmd())
 		logging.Info("sync", "account sync complete (TUI)", logging.Acct(msg.Account), logging.Err(msg.Err), logging.KV("pending", m.syncPending-1))
 		m.syncPending--
 		m.mailbox = m.mailbox.SetAccountSyncing(msg.Account, false)
@@ -475,6 +482,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case worker.SyncAccountLateCompleteMsg:
+		cmds = append(cmds, m.newMailCmd())
 		m.mailbox = m.mailbox.Reload()
 		if msg.Account == m.msglist.CurrentAccount() {
 			currentAcct, currentFolder := m.msglist.CurrentAccount(), m.msglist.CurrentFolder()
@@ -539,6 +547,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case worker.SyncResult:
+		cmds = append(cmds, m.newMailCmd())
 		if msg.Err != nil {
 			cmds = append(cmds, func() tea.Msg {
 				return util.InfoMsg{Text: "Sync error: " + msg.Err.Error(), IsError: true}

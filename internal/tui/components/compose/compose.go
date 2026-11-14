@@ -62,6 +62,12 @@ type Model struct {
 	suggest    []email.Contact
 	suggestIdx int
 
+	// signatureFor returns the signature text of a From address; sigBlock is
+	// the block currently in the body, so it can be swapped when From
+	// changes and left alone once the user has edited it.
+	signatureFor func(from string) string
+	sigBlock     string
+
 	// AI state
 	aiCfg     config.AIConfig
 	aiPending bool
@@ -260,7 +266,9 @@ func (m Model) cycleField(dir int) (Model, tea.Cmd) {
 	if m.focused < fieldCount {
 		m.inputs[m.focused].Blur()
 	}
-
+	if m.focused == fieldFrom {
+		m = m.swapSignature() // From may have changed: use that identity's signature
+	}
 	m.focused = (m.focused + dir + total) % total
 
 	var cmds []tea.Cmd
@@ -488,7 +496,9 @@ func (m Model) updateFieldStyles() Model {
 func (m Model) saveDraftCmd() tea.Cmd {
 	d, _ := m.currentDraft(false)
 	// If everything is empty, just close without saving
-	if len(d.To) == 0 && len(d.Cc) == 0 && len(d.Bcc) == 0 && d.Subject == "" && d.Body == "" && len(d.Attachments) == 0 {
+	// A body holding nothing but the inserted signature counts as empty.
+	bodyEmpty := strings.TrimSpace(d.Body) == "" || (m.sigBlock != "" && strings.TrimSpace(d.Body) == strings.TrimSpace(m.sigBlock))
+	if len(d.To) == 0 && len(d.Cc) == 0 && len(d.Bcc) == 0 && d.Subject == "" && bodyEmpty && len(d.Attachments) == 0 {
 		return func() tea.Msg { return util.ComposeCloseMsg{} }
 	}
 	return func() tea.Msg { return util.ComposeSaveDraftMsg{Draft: d} }
@@ -777,3 +787,53 @@ func (m Model) acceptSuggestion() Model {
 
 // SuggestionsForTest exposes the current suggestions to tests.
 func (m Model) SuggestionsForTest() []email.Contact { return m.suggest }
+
+// WithSignatures gives the composer the account's signatures. A new
+// message, reply or forward gets the signature of its From address; an
+// opened draft is only checked for one it already carries. Call it after
+// WithIdentities, which settles the From field.
+func (m Model) WithSignatures(signatureFor func(from string) string) Model {
+	m.signatureFor, m.sigBlock = signatureFor, ""
+	if signatureFor == nil {
+		return m
+	}
+	block := email.SignatureBlock(signatureFor(m.inputs[fieldFrom].Value()))
+	body := m.editor.GetBuffer().Text()
+	if m.draft.ID != "" {
+		if block != "" && strings.Count(body, block) == 1 {
+			m.sigBlock = block
+		}
+		return m
+	}
+	if block != "" {
+		m.sigBlock = block
+		m = m.setBody(email.InsertSignature(body, block))
+	}
+	return m
+}
+
+// swapSignature replaces the signature after the From address changed. A
+// signature the user has edited is left as it is.
+func (m Model) swapSignature() Model {
+	if m.signatureFor == nil {
+		return m
+	}
+	block := email.SignatureBlock(m.signatureFor(m.inputs[fieldFrom].Value()))
+	if block == m.sigBlock {
+		return m
+	}
+	body, ok := email.ReplaceSignature(m.editor.GetBuffer().Text(), m.sigBlock, block)
+	if !ok {
+		return m
+	}
+	m.sigBlock = block
+	return m.setBody(body)
+}
+
+// setBody replaces the editor content.
+func (m Model) setBody(body string) Model {
+	m.editor = newEditor(email.SanitizeText(body))
+	m.editorMode = vimtea.ModeNormal
+	m.registerCommands()
+	return m
+}

@@ -91,3 +91,13 @@ func TestHTMLOnlyMessageWithoutTextRenders(t *testing.T) {
 		t.Fatal("image-only message rendered as nothing")
 	}
 }
+
+func TestExternalOpenerPerPlatform(t *testing.T) {
+	path := `C:\Users\me\AppData\Local\Temp\vimail-1\msg & calc.html`
+	for goos, want := range map[string]string{"darwin": "open", "linux": "xdg-open", "freebsd": "xdg-open", "windows": "rundll32"} {
+		name, args := externalOpener(goos, path)
+		if name != want || args[len(args)-1] != path {
+			t.Errorf("%s: %s %q", goos, name, args)
+		}
+	}
+}

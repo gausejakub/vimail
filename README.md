@@ -33,7 +33,7 @@ vimail brings the speed of Vim navigation to your inbox with a 3-pane layout, mo
 
 ### Download binary
 
-Grab the latest release from [GitHub Releases](https://github.com/gausejakub/vimail/releases/latest) — no Go required.
+Grab the latest release from [GitHub Releases](https://github.com/gausejakub/vimail/releases/latest) — no Go required. macOS and Linux come as `.tar.gz`, Windows as a `.zip` with `vimail.exe` (new and not yet tested on a real Windows machine; use Windows Terminal for truecolor).
 
 Releases are built by CI and ship with checksums and signed build provenance. To verify a download:
 
@@ -121,7 +121,7 @@ You do not need a password manager: by default vimail uses the credential store 
 |--------|----------------------------------------|
 | macOS | **Keychain** — entries appear in Keychain Access under the service name `vimail` |
 | Linux | **Secret Service** — GNOME Keyring, KWallet, or KeePassXC acting as the Secret Service provider |
-| Windows | **Credential Manager** (when built from source; there are no prebuilt Windows binaries yet) |
+| Windows | **Credential Manager** (Windows builds are new and have not been tested on a real Windows machine yet) |
 
 OAuth2 tokens (Gmail, Outlook) and the key that encrypts the local mail cache live in the same store.
 

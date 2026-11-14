@@ -132,6 +132,8 @@ func NormalizeAddresses(entries []string) ([]string, error) {
 // SplitAddressField parses a free-text address field such as the composer's
 // To line ("a@x, Bob <b@y>").
 func SplitAddressField(s string) ([]string, error) {
+	// A trailing separator is what completing a recipient leaves behind.
+	s = strings.TrimRight(strings.TrimSpace(s), ", ")
 	if strings.TrimSpace(s) == "" {
 		return nil, nil
 	}

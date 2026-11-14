@@ -394,3 +394,28 @@ func TestDraftOutputSanitizesAttachmentContentType(t *testing.T) {
 		t.Fatalf("content_type = %q", d.Attachments[0].ContentType)
 	}
 }
+
+func TestSearchContacts(t *testing.T) {
+	store := seededStore(t)
+	seedThread(t, store)
+	session := connectCfg(t, store, draftCfg())
+	var out searchContactsResult
+	call(t, session, "search_contacts", map[string]any{"query": "partner"}, &out)
+	var addrs []string
+	for _, c := range out.Contacts {
+		addrs = append(addrs, c.Address)
+	}
+	got := strings.Join(addrs, ",")
+	// x@partner.test was written to (Sent), petr@partner.test only wrote in.
+	if len(out.Contacts) < 2 || out.Contacts[0].Address != "x@partner.test" || out.Contacts[0].Sent != 1 || !strings.Contains(got, "petr@partner.test") {
+		t.Fatalf("contacts = %+v", out.Contacts)
+	}
+	for _, own := range []string{testAcct, aliasAddr} {
+		if strings.Contains(got, own) {
+			t.Fatalf("own address %s offered: %s", own, got)
+		}
+	}
+	if !callErr(t, session, "search_contacts", map[string]any{"query": " "}) {
+		t.Fatal("empty query accepted")
+	}
+}

@@ -2159,7 +2159,7 @@ func (m Model) ownAddresses() email.AddressSet {
 // reply-all, without the user's own addresses), In-Reply-To/References for
 // threading, and the identity the original was addressed to as From.
 func (m Model) replyDraft(acct string, orig email.Message, all bool) email.Draft {
-	to, cc := email.ReplyRecipients(orig, all, m.ownAddresses())
+	to, cc := email.ReplyRecipients(orig, all, m.replyingAs(acct))
 	d := email.Draft{
 		Account:    acct,
 		From:       email.PickIdentity(orig, m.identities(acct)),
@@ -2197,4 +2197,15 @@ func (m Model) forwardDraft(acct string, orig email.Message) email.Draft {
 		}
 	}
 	return d
+}
+
+// replyingAs is the set of addresses of the account a reply is written
+// from: its own address and its identities. Only these are left out of a
+// reply's recipients. The user's other accounts are ordinary correspondents
+// here: a message from jakub@gause.cz answered in the Gmail account goes
+// back to jakub@gause.cz.
+func (m Model) replyingAs(acct string) email.AddressSet {
+	own := email.NewAddressSet(m.identities(acct)...)
+	own[strings.ToLower(acct)] = true
+	return own
 }

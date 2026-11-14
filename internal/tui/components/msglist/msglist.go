@@ -3,6 +3,7 @@ package msglist
 import (
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -41,6 +42,11 @@ type Model struct {
 	motion       bool
 	highlights   map[uint32]float64
 	lastMotion   time.Time
+
+	// threaded groups the messages of a conversation together; threadPos
+	// describes each row while the grouping is applied (nil when flat).
+	threaded  bool
+	threadPos []email.ThreadPos
 }
 
 // folderLoadedMsg carries the result of an async folder load.
@@ -157,6 +163,8 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			m.totalCount = msg.TotalCount
 			m.loadOffset = 0
 			m.loading = false
+			m.threadPos = nil // a different list: nothing to carry over
+			m.applyThreads()
 			if len(m.messages) > 0 {
 				return m, m.selectCurrent()
 			}
@@ -166,6 +174,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			m.messages = msg.Messages
 			m.loadOffset = msg.LoadOffset
 			m.loading = false
+			m.threadPos = nil
 			m.cursor = msg.Cursor
 			if m.cursor >= len(m.messages) {
 				m.cursor = len(m.messages) - 1
@@ -173,6 +182,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			if m.cursor < 0 {
 				m.cursor = 0
 			}
+			m.applyThreads()
 			m.ensureVisible()
 			return m, m.selectCurrent()
 		}
@@ -181,6 +191,12 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			old := make(map[uint32]bool, len(m.messages))
 			for _, existing := range m.messages {
 				old[existing.UID] = true
+			}
+			// While grouped, the reload comes back in date order: keep the
+			// cursor on its message rather than on its row number.
+			keepID := ""
+			if m.threadPos != nil && m.cursor < len(m.messages) {
+				keepID = m.messages[m.cursor].ID
 			}
 			m.totalCount = m.store.MessageCount(msg.Account, msg.Folder)
 			// Reload the current window.
@@ -194,6 +210,15 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			}
 			if m.cursor >= len(m.messages) && len(m.messages) > 0 {
 				m.cursor = len(m.messages) - 1
+			}
+			m.applyThreads()
+			if keepID != "" {
+				for i, loaded := range m.messages {
+					if loaded.ID == keepID {
+						m.cursor = i
+						break
+					}
+				}
 			}
 			m.ensureVisible()
 			return m, m.selectCurrent()
@@ -625,6 +650,15 @@ func (m Model) renderMessage(idx int, msg email.Message) string {
 	}
 	fromName := sanitize(displayName(addr))
 	subject := sanitize(msg.Subject)
+	// Grouped by conversation: the first row carries the count, the rest
+	// are marked as belonging to it.
+	if idx < len(m.threadPos) {
+		if pos := m.threadPos[idx]; pos.Member {
+			subject = "↳ " + subject
+		} else if pos.Count > 1 {
+			subject = fmt.Sprintf("(%d) %s", pos.Count, subject)
+		}
+	}
 	// In search mode, prepend folder context to subject.
 	if m.searchActive && msg.Folder != "" {
 		prefix := msg.Folder
@@ -920,4 +954,70 @@ func (m Model) SelectedMessages() []email.Message {
 	result := make([]email.Message, hi-lo+1)
 	copy(result, m.messages[lo:hi+1])
 	return result
+}
+
+// SetThreaded turns grouping by conversation on or off.
+func (m Model) SetThreaded(on bool) Model {
+	m.threaded = on
+	m.applyThreads()
+	m.ensureVisible()
+	return m
+}
+
+// Threaded reports whether grouping by conversation is on.
+func (m Model) Threaded() bool { return m.threaded }
+
+// applyThreads regroups the loaded messages after they changed. Grouping
+// is applied only when the whole folder is loaded: in a longer folder the
+// list is a sliding window, and a conversation reaching outside it would be
+// shown in pieces that jump as the window moves. The cursor and the visual
+// anchor stay on the messages they were on.
+func (m *Model) applyThreads() {
+	wanted := m.threaded && !m.searchActive && m.loadOffset == 0 && len(m.messages) > 0 && len(m.messages) >= m.totalCount
+	if !wanted && m.threadPos == nil {
+		return
+	}
+	idAt := func(i int) string {
+		if i >= 0 && i < len(m.messages) {
+			return m.messages[i].ID
+		}
+		return ""
+	}
+	cursorID, anchorID := idAt(m.cursor), idAt(m.visualAnchor)
+	if wanted {
+		// Group from date order, so regrouping an already grouped list
+		// (after a refresh) gives the same result.
+		sortNewestFirst(m.messages)
+		m.messages, m.threadPos = email.GroupThreads(m.messages)
+	} else {
+		sortNewestFirst(m.messages)
+		m.threadPos = nil
+	}
+	for i, msg := range m.messages {
+		if cursorID != "" && msg.ID == cursorID {
+			m.cursor = i
+		}
+		if anchorID != "" && msg.ID == anchorID {
+			m.visualAnchor = i
+		}
+	}
+}
+
+// sortNewestFirst restores the order the store returns: date, then UID.
+func sortNewestFirst(msgs []email.Message) {
+	sort.SliceStable(msgs, func(i, j int) bool {
+		if !msgs[i].Date.Equal(msgs[j].Date) {
+			return msgs[i].Date.After(msgs[j].Date)
+		}
+		return msgs[i].UID > msgs[j].UID
+	})
+}
+
+// SelectCurrentCmd re-announces the message under the cursor (after the
+// list was reordered).
+func (m Model) SelectCurrentCmd() tea.Cmd {
+	if len(m.messages) == 0 {
+		return nil
+	}
+	return m.selectCurrent()
 }

@@ -154,6 +154,14 @@ func (c *Coordinator) reconcileDrafts(w *IMAPWorker, account string, syncStart t
 			continue
 		}
 		logging.Info("draft", "imported server draft", logging.Acct(account), logging.KV("draft_id", id))
+		// The same draft changed here and in another client: vimail's version
+		// was uploaded, the other client's arrives as a new draft. Mark the
+		// pair so the user can tell they belong together and keep one.
+		d.ID = id
+		if other := c.store.DraftVersionOf(account, d); other != "" {
+			c.store.MarkDraftConflict(account, id, other)
+			logging.Info("draft", "two versions of a draft", logging.Acct(account), logging.KV("draft_id", id), logging.KV("other", other))
+		}
 	}
 
 	if n := c.store.EnsureDraftUploads(account); n > 0 {

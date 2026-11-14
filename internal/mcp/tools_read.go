@@ -87,24 +87,25 @@ type listMessagesArgs struct {
 }
 
 type messageHeader struct {
-	Account    string   `json:"account,omitempty"`
-	UID        uint32   `json:"uid"`
-	DraftID    string   `json:"draft_id,omitempty"`
-	From       string   `json:"from"`
-	To         []string `json:"to,omitempty"`
-	Cc         []string `json:"cc,omitempty"`
-	Bcc        []string `json:"bcc,omitempty"`
-	ReplyTo    []string `json:"reply_to,omitempty"`
-	Subject    string   `json:"subject"`
-	Date       string   `json:"date"`
-	MessageID  string   `json:"message_id,omitempty"`
-	InReplyTo  string   `json:"in_reply_to,omitempty"`
-	References []string `json:"references,omitempty"`
-	ThreadID   string   `json:"thread_id,omitempty"`
-	Unread     bool     `json:"unread"`
-	Flagged    bool     `json:"flagged,omitempty"`
-	Answered   bool     `json:"answered"`
-	Folder     string   `json:"folder,omitempty"`
+	Account            string   `json:"account,omitempty"`
+	UID                uint32   `json:"uid"`
+	DraftID            string   `json:"draft_id,omitempty"`
+	DraftConflictsWith string   `json:"draft_conflicts_with,omitempty"`
+	From               string   `json:"from"`
+	To                 []string `json:"to,omitempty"`
+	Cc                 []string `json:"cc,omitempty"`
+	Bcc                []string `json:"bcc,omitempty"`
+	ReplyTo            []string `json:"reply_to,omitempty"`
+	Subject            string   `json:"subject"`
+	Date               string   `json:"date"`
+	MessageID          string   `json:"message_id,omitempty"`
+	InReplyTo          string   `json:"in_reply_to,omitempty"`
+	References         []string `json:"references,omitempty"`
+	ThreadID           string   `json:"thread_id,omitempty"`
+	Unread             bool     `json:"unread"`
+	Flagged            bool     `json:"flagged,omitempty"`
+	Answered           bool     `json:"answered"`
+	Folder             string   `json:"folder,omitempty"`
 }
 
 type listMessagesResult struct {
@@ -240,6 +241,7 @@ func header(m email.Message, includeFolder bool) messageHeader {
 	}
 	if m.Folder == "Drafts" && m.UID == 0 {
 		h.DraftID = m.ID
+		h.DraftConflictsWith = m.DraftConflict
 		h.Unread = false
 	}
 	if includeFolder {

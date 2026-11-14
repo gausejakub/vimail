@@ -615,15 +615,20 @@ func (m Model) attachmentLine() string {
 }
 
 func (m Model) title() string {
+	title := "Compose New Message"
 	switch {
 	case m.draft.Source != nil && m.draft.Source.Kind == email.SourceReply:
-		return "Reply"
+		title = "Reply"
 	case m.draft.Source != nil && m.draft.Source.Kind == email.SourceForward:
-		return "Forward"
+		title = "Forward"
 	case m.draft.ID != "":
-		return "Edit Draft"
+		title = "Edit Draft"
 	}
-	return "Compose New Message"
+	if m.draft.ConflictWith != "" {
+		// The same draft was changed here and in another mail client.
+		title += " · another version exists (⚠ in Drafts): send or delete one"
+	}
+	return title
 }
 
 func humanSize(n int) string {

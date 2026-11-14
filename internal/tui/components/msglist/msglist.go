@@ -625,6 +625,9 @@ func (m Model) renderMessage(idx int, msg email.Message) string {
 	}
 	fromName := sanitize(displayName(addr))
 	subject := sanitize(msg.Subject)
+	if msg.DraftConflict != "" {
+		subject = "⚠ 2 versions · " + subject
+	}
 	// In search mode, prepend folder context to subject.
 	if m.searchActive && msg.Folder != "" {
 		prefix := msg.Folder

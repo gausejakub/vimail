@@ -105,7 +105,10 @@ type draftInfo struct {
 	Attachments []draftAttachmentInfo `json:"attachments,omitempty"`
 	Date        string                `json:"date"`
 	// ServerSynced reports that the server Drafts folder holds this version.
-	ServerSynced    bool   `json:"server_synced"`
+	ServerSynced bool `json:"server_synced"`
+	// ConflictsWith is the id of another draft that looks like a second
+	// version of this one (changed in two mail clients before syncing).
+	ConflictsWith   string `json:"conflicts_with,omitempty"`
 	ServerMessageID string `json:"server_message_id,omitempty"`
 }
 
@@ -132,6 +135,7 @@ func toDraftInfo(d email.Draft) draftInfo {
 		InReplyTo: email.SanitizeLine(d.InReplyTo), References: sanitizeList(d.References),
 		Date: d.Date.Format(time.RFC3339), ServerSynced: d.Synced, ServerMessageID: email.SanitizeLine(d.ServerMessageID),
 	}
+	info.ConflictsWith = d.ConflictWith
 	if info.To == nil {
 		info.To = []string{}
 	}

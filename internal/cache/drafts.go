@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/gausejakub/vimail/internal/email"
@@ -24,14 +26,14 @@ import (
 //     or deleted elsewhere) is dropped. See worker.reconcileDrafts.
 
 const draftCols = `id, account, from_addr, to_addr, to_list, cc_addr, bcc_addr, subject, body, date,
-	in_reply_to, refs, source, version, synced_version, server_msgid, server_uid`
+	in_reply_to, refs, source, version, synced_version, server_msgid, server_uid, conflict_with`
 
 func (s *SQLiteStore) scanDraft(scan func(...any) error) (email.Draft, error) {
 	var d email.Draft
 	var toDisp, toList, cc, bcc, refs, source, dateStr string
 	var version, synced int
 	err := scan(&d.ID, &d.Account, &d.From, &toDisp, &toList, &cc, &bcc, &d.Subject, &d.Body, &dateStr,
-		&d.InReplyTo, &refs, &source, &version, &synced, &d.ServerMessageID, &d.ServerUID)
+		&d.InReplyTo, &refs, &source, &version, &synced, &d.ServerMessageID, &d.ServerUID, &d.ConflictWith)
 	if err != nil {
 		return d, err
 	}
@@ -237,6 +239,7 @@ func (s *SQLiteStore) DeleteDraft(acctEmail, id string) {
 	}
 	s.db.Exec(`DELETE FROM draft_attachments WHERE draft_id = ?`, id)
 	s.db.Exec(`DELETE FROM drafts WHERE id = ? AND account = ?`, id, acctEmail)
+	s.clearDraftConflict(acctEmail, id)
 	var ids []string
 	for _, v := range []string{serverID, uploadID} {
 		if v != "" {
@@ -252,6 +255,7 @@ func (s *SQLiteStore) DeleteDraft(acctEmail, id string) {
 func (s *SQLiteStore) DropDraftLocal(acctEmail, id string) {
 	s.db.Exec(`DELETE FROM draft_attachments WHERE draft_id = ?`, id)
 	s.db.Exec(`DELETE FROM drafts WHERE id = ? AND account = ?`, id, acctEmail)
+	s.clearDraftConflict(acctEmail, id)
 }
 
 // NextDraftID returns a new draft id, unique across processes and restarts.
@@ -431,4 +435,52 @@ func (s *SQLiteStore) DraftCount(acctEmail string) int {
 	var n int
 	s.db.QueryRow(`SELECT COUNT(*) FROM drafts WHERE account = ?`, acctEmail).Scan(&n)
 	return n
+}
+
+// clearDraftConflict removes the conflict mark from drafts that pointed at
+// a draft that no longer exists: with one version gone there is nothing
+// left to choose between.
+func (s *SQLiteStore) clearDraftConflict(acctEmail, goneID string) {
+	s.db.Exec(`UPDATE drafts SET conflict_with = '' WHERE account = ? AND conflict_with = ?`, acctEmail, goneID)
+}
+
+// MarkDraftConflict records that two drafts look like versions of the same
+// message. Neither is changed otherwise; the user keeps one.
+func (s *SQLiteStore) MarkDraftConflict(acctEmail, a, b string) {
+	s.db.Exec(`UPDATE drafts SET conflict_with = ? WHERE account = ? AND id = ?`, b, acctEmail, a)
+	s.db.Exec(`UPDATE drafts SET conflict_with = ? WHERE account = ? AND id = ?`, a, acctEmail, b)
+}
+
+// DraftVersionOf finds a draft that an imported server draft appears to be
+// another version of: the same reply (In-Reply-To), or, for a new message,
+// the same subject and recipients. It returns "" when there is none.
+func (s *SQLiteStore) DraftVersionOf(acctEmail string, imported email.Draft) string {
+	subject := strings.ToLower(strings.TrimSpace(imported.Subject))
+	to := recipientKey(imported.To)
+	for _, d := range s.Drafts(acctEmail) {
+		if d.ID == imported.ID || d.ConflictWith != "" {
+			continue
+		}
+		switch {
+		case imported.InReplyTo != "" || d.InReplyTo != "":
+			if imported.InReplyTo == d.InReplyTo {
+				return d.ID
+			}
+		case subject != "" && to != "" && strings.ToLower(strings.TrimSpace(d.Subject)) == subject && recipientKey(d.To) == to:
+			return d.ID
+		}
+	}
+	return ""
+}
+
+// recipientKey is the sorted set of bare addresses of a recipient list.
+func recipientKey(list []string) string {
+	addrs := make([]string, 0, len(list))
+	for _, e := range list {
+		if a := email.AddrSpec(e); a != "" {
+			addrs = append(addrs, a)
+		}
+	}
+	sort.Strings(addrs)
+	return strings.Join(addrs, ",")
 }

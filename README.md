@@ -147,7 +147,7 @@ Drafts are saved locally and uploaded to the account's server Drafts folder, so 
 
 A draft keeps everything that goes into the message: From identity, To, Cc, Bcc, subject, body, attachments, and for replies the `In-Reply-To`/`References` headers. When a reply or forward is sent, the original is marked answered (`\Answered`) or forwarded (`$Forwarded`). Bcc is kept in the draft and in your Sent copy, never in the transmitted message.
 
-Two limits: edits made to the same draft in vimail and in another client before either syncs produce two drafts (nothing is lost, nothing is merged), and the server copy of a draft includes its Bcc and attachments.
+Two limits: edits made to the same draft in vimail and in another client before either syncs produce two drafts (nothing is lost, nothing is merged). Both are marked `⚠ 2 versions` in the Drafts list; send or delete one and the mark on the other goes away. And the server copy of a draft includes its Bcc and attachments.
 
 ### Passwords from a password manager or another store
 

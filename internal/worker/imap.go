@@ -358,35 +358,37 @@ func (w *IMAPWorker) listMailboxes() ([]string, error) {
 	cancel := w.opTimer(opDeadline)
 	defer cancel()
 
-	listCmd := w.client.List("", "*", nil)
-	mailboxes, err := listCmd.Collect()
+	mailboxes, err := w.client.List("", "*", listOptions(w.client)).Collect()
 	if err != nil {
 		return nil, fmt.Errorf("LIST: %w", err)
 	}
+	listed := listedFrom(mailboxes)
+	display := assignFolderNames(listed, w.acct.Folders)
 
 	var names []string
-	for _, mbox := range mailboxes {
-		// Skip IMAP internal noselect mailboxes.
-		noSelect := false
-		for _, attr := range mbox.Attrs {
-			if attr == imap.MailboxAttrNoSelect {
-				noSelect = true
-				break
-			}
+	for _, lm := range listed {
+		displayName, ok := display[lm.name]
+		if !ok {
+			continue // noselect
 		}
-		if noSelect {
-			continue
-		}
-		displayName := email.SanitizeLine(FolderName(mbox.Mailbox))
 		// Always populate folderMap (needed for IMAP operations like restore).
-		w.folderMap[displayName] = mbox.Mailbox
-		// Skip redundant folders from sync and sidebar.
-		if w.acct.ShouldSkipFolder(displayName) {
+		w.folderMap[displayName] = lm.name
+		// A folder cached under its raw name by an earlier version (before
+		// its role was known) would otherwise stay in the sidebar next to
+		// the renamed one.
+		if raw := email.SanitizeLine(lm.name); raw != displayName && !displayTaken(display, raw) {
+			w.store.DeleteFolder(w.acct.Email, raw)
+		}
+		// Skip redundant folders from sync and sidebar. A folder named like a
+		// skipped one (a "[Gmail]All Mail" label next to the real All Mail)
+		// stays hidden too, as it did before roles were read.
+		if w.acct.ShouldSkipFolder(displayName) || w.acct.ShouldSkipFolder(FolderName(lm.name)) {
 			continue
 		}
 		names = append(names, displayName)
 		w.store.EnsureFolder(w.acct.Email, displayName)
 	}
+	pruneCachedFolders(w.store, w.acct.Email, names)
 
 	return names, nil
 }

@@ -229,3 +229,16 @@ func (s *SQLiteStore) MarkHeadersCurrent(acctEmail, folder string, uid uint32) {
 	s.db.Exec(`UPDATE messages SET headers_v = ? WHERE uid = ? AND folder_id = (SELECT id FROM folders WHERE account = ? AND name = ?)`,
 		HeadersVersion, uid, acctEmail, folder)
 }
+
+// likeEscape escapes LIKE wildcards in user input (used with ESCAPE '\').
+var likeEscape = strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`)
+
+// containsFold reports whether any entry contains the lower-cased query.
+func containsFold(list []string, lowerQuery string) bool {
+	for _, v := range list {
+		if strings.Contains(strings.ToLower(v), lowerQuery) {
+			return true
+		}
+	}
+	return false
+}

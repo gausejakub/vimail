@@ -1,6 +1,7 @@
 package config
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,6 +40,16 @@ type AccountConfig struct {
 	// was addressed to. The provider must allow sending as the address
 	// (e.g. Gmail "Send mail as"), or it may rewrite From.
 	Identities []string `toml:"identities"`
+	// Folders names the server folder for a role when the server neither
+	// advertises roles (SPECIAL-USE) nor uses a name vimail recognises, e.g.
+	// folders = { sent = "Odoslané", trash = "Kôš" }. Keys: sent, drafts,
+	// trash, spam, archive, all, starred, important.
+	Folders map[string]string `toml:"folders"`
+	// Signature is appended to new messages, replies and forwards, under
+	// the usual "-- " line. Signatures gives an identity its own, keyed by
+	// address. A value starting with "file:" is read from that path.
+	Signature  string            `toml:"signature"`
+	Signatures map[string]string `toml:"signatures"`
 }
 
 // SenderAddresses returns every address the account may send from: the
@@ -148,13 +159,14 @@ type MCPConfig struct {
 }
 
 type Config struct {
-	General  GeneralConfig   `toml:"general"`
-	Accounts []AccountConfig `toml:"accounts"`
-	Theme    ThemeConfig     `toml:"theme"`
-	AI       AIConfig        `toml:"ai"`
-	MCP      MCPConfig       `toml:"mcp"`
-	Sync     SyncConfig      `toml:"sync"`
-	Cache    CacheConfig     `toml:"cache"`
+	General  GeneralConfig       `toml:"general"`
+	Accounts []AccountConfig     `toml:"accounts"`
+	Theme    ThemeConfig         `toml:"theme"`
+	AI       AIConfig            `toml:"ai"`
+	MCP      MCPConfig           `toml:"mcp"`
+	Sync     SyncConfig          `toml:"sync"`
+	Cache    CacheConfig         `toml:"cache"`
+	Notify   NotificationsConfig `toml:"notifications"`
 }
 
 func DefaultConfig() Config {
@@ -211,4 +223,88 @@ func Load() (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// maxSignatureBytes bounds a signature read from a file.
+const maxSignatureBytes = 16 * 1024
+
+// SignatureFor returns the signature text for a From address: the
+// identity's own from `signatures`, else the account's `signature`. An
+// unreadable signature file yields no signature.
+func (a AccountConfig) SignatureFor(from string) string {
+	sig := a.Signature
+	if addr, ok := email.SingleAddress(from); ok {
+		for key, value := range a.Signatures {
+			if strings.EqualFold(strings.TrimSpace(key), addr) {
+				sig = value
+				break
+			}
+		}
+	}
+	if path, isFile := strings.CutPrefix(sig, "file:"); isFile {
+		path = strings.TrimSpace(path)
+		if path == "~" || strings.HasPrefix(path, "~/") {
+			if home, err := os.UserHomeDir(); err == nil {
+				path = filepath.Join(home, strings.TrimPrefix(path, "~"))
+			}
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return ""
+		}
+		defer f.Close()
+		data, err := io.ReadAll(io.LimitReader(f, maxSignatureBytes))
+		if err != nil {
+			return ""
+		}
+		sig = string(data)
+	}
+	return sig
+}
+
+// NotificationsConfig controls desktop notifications for new mail.
+type NotificationsConfig struct {
+	Enabled bool `toml:"enabled"`
+	// HideSubject shows only the sender, for shared screens.
+	HideSubject bool `toml:"hide_subject"`
+	// Folders to watch (display names); empty means Inbox.
+	Folders []string `toml:"folders"`
+	// Accounts to watch; empty means all.
+	Accounts []string `toml:"accounts"`
+	// Command replaces the platform notifier (notify-send on Linux,
+	// osascript on macOS). It is run directly, without a shell, with the
+	// title and the body appended as the last two arguments.
+	Command []string `toml:"command"`
+}
+
+// Watches reports whether new mail in the account's folder should notify.
+func (n NotificationsConfig) Watches(account, folder string) bool {
+	if !n.Enabled {
+		return false
+	}
+	if len(n.Accounts) > 0 {
+		found := false
+		for _, a := range n.Accounts {
+			if strings.EqualFold(a, account) {
+				found = true
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	for _, f := range n.WatchedFolders() {
+		if f == folder {
+			return true
+		}
+	}
+	return false
+}
+
+// WatchedFolders returns the folders to watch.
+func (n NotificationsConfig) WatchedFolders() []string {
+	if len(n.Folders) == 0 {
+		return []string{"Inbox"}
+	}
+	return n.Folders
 }

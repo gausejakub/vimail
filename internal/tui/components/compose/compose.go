@@ -322,7 +322,7 @@ func (m Model) View() string {
 		if i == m.suggestIdx {
 			style, mark = lipgloss.NewStyle().Foreground(t.Primary()).Bold(true), "→ "
 		}
-		lines = append(lines, style.Render(truncate("         "+mark+email.SanitizeLine(c.Formatted()), innerWidth+2)))
+		lines = append(lines, style.Render("         "+mark+c.Suggestion(innerWidth-11)))
 	}
 	lines = append(lines, lipgloss.NewStyle().
 		Foreground(t.BorderNormal()).

@@ -50,7 +50,7 @@ func TestRecipientSuggestions(t *testing.T) {
 	if got := m.SuggestionsForTest(); len(got) != 2 || got[0].Address != "martin@topol.test" {
 		t.Fatalf("suggestions = %+v", got)
 	}
-	if view := m.View(); !strings.Contains(view, "Martin Dlužanský <martin@topol.test>") || !strings.Contains(view, "Enter: use suggestion") {
+	if view := m.View(); !strings.Contains(view, "martin@topol.test  Martin Dlužanský") || !strings.Contains(view, "martina@firma.test  Martina Nová  · has only written to you") || !strings.Contains(view, "Enter: use suggestion") {
 		t.Fatalf("suggestions not shown:\n%s", view)
 	}
 

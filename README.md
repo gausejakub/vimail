@@ -331,7 +331,7 @@ Press `Enter` on a message, or focus the preview pane (`l` / `Tab`) and press `E
 | `Enter` | Open draft (in Drafts folder), otherwise open the Vim reader |
 | `Ctrl+S` | Send message (in compose) |
 | `:attach <path>` / `:detach [n]` | Add or remove an attachment (compose editor) |
-| `Enter` / `↑` `↓` in To, Cc, Bcc | Take / choose a suggested recipient (people from your cached mail; those you have written to come first) |
+| `Enter` / `↑` `↓` in To, Cc, Bcc | Take / choose a suggested recipient: the address comes first; people you have written to always rank above addresses that have only written to you, which are marked "has only written to you" |
 | `Esc` | Close overlay / save draft / clear search |
 | `/` | Search all accounts and folders |
 

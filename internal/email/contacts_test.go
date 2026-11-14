@@ -1,6 +1,7 @@
 package email
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -62,5 +63,34 @@ func TestContactBookRanksAndMatches(t *testing.T) {
 		if _, ok := SingleAddress(c.Formatted()); !ok {
 			t.Errorf("suggestion %q is not one mailbox", c.Formatted())
 		}
+	}
+}
+
+// Someone who mailed the user once under a colleague's name does not
+// outrank the colleague, however often they write, and is labelled.
+func TestReceivedOnlyContactsRankBelowWrittenTo(t *testing.T) {
+	b := NewContactBook(nil)
+	b.Add("Martin Novák <martin@corp.test>", true, time.Now())
+	for i := 0; i < 100; i++ {
+		b.Add("Martin Novák <martin.novak@corp-mail.example>", false, time.Now())
+	}
+	b.Add("Marta <marta@corp.test>", true, time.Now())
+	got := MatchContacts(b.Contacts(), "mart", 5)
+	if len(got) != 3 || got[0].Sent == 0 || got[1].Sent == 0 || got[2].Address != "martin.novak@corp-mail.example" {
+		t.Fatalf("order = %+v", got)
+	}
+	// Even a weak match of a written-to contact beats a strong match of a
+	// received-only one.
+	if got := MatchContacts(b.Contacts(), "corp", 5); got[len(got)-1].Sent != 0 {
+		t.Fatalf("received-only not last: %+v", got)
+	}
+	s := got[len(got)-1].Suggestion(40)
+	if !strings.HasPrefix(s, "martin.novak@corp-mail.example") || !strings.HasSuffix(s, "has only written to you") {
+		t.Fatalf("suggestion = %q", s)
+	}
+	// A long display name is cut, never the address.
+	long := Contact{Name: strings.Repeat("Martin ", 30), Address: "m@x.test", Sent: 1}
+	if s := long.Suggestion(30); !strings.HasPrefix(s, "m@x.test  ") || len([]rune(s)) > 30 {
+		t.Fatalf("long name: %q", s)
 	}
 }

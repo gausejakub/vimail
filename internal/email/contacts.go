@@ -122,32 +122,61 @@ func displayName(entry, addr string) string {
 }
 
 // MatchContacts returns up to limit contacts matching what the user has
-// typed, from an already ranked list. A match at the start of the name, of a
-// word in the name, or of the address ranks above a match elsewhere.
-// Matching ignores case and diacritics, so "zofie" finds "Žofie".
+// typed, from an already ranked list. People the user has written to come
+// before addresses that have only written to the user, whatever their
+// display name: anyone can mail the user under a name like a colleague's,
+// so a received-only address never outranks someone the user really writes
+// to. Within each group, a match at the start of the name, of a word in the
+// name, or of the address ranks above a match elsewhere. Matching ignores
+// case and diacritics, so "zofie" finds "Žofie".
 func MatchContacts(contacts []Contact, query string, limit int) []Contact {
 	q := fold(strings.TrimSpace(query))
 	if q == "" || limit <= 0 {
 		return nil
 	}
-	var strong, weak []Contact
+	var groups [4][]Contact // written-to strong, written-to weak, received strong, received weak
 	for _, c := range contacts {
 		name, addr := fold(c.Name), fold(c.Address)
+		base := 0
+		if c.Sent == 0 {
+			base = 2
+		}
 		switch {
 		case strings.HasPrefix(addr, q), strings.HasPrefix(name, q), wordPrefix(name, q):
-			strong = append(strong, c)
+			groups[base] = append(groups[base], c)
 		case strings.Contains(addr, q), strings.Contains(name, q):
-			weak = append(weak, c)
-		}
-		if len(strong) >= limit {
-			break
+			groups[base+1] = append(groups[base+1], c)
 		}
 	}
-	out := append(strong, weak...)
+	var out []Contact
+	for _, g := range groups {
+		out = append(out, g...)
+	}
 	if len(out) > limit {
 		out = out[:limit]
 	}
 	return out
+}
+
+// Suggestion is how a contact is shown in the composer's suggestion list:
+// the address first, which is what the message will be sent to, then the
+// display name (shortened), and a note for addresses that have only
+// written to the user.
+func (c Contact) Suggestion(width int) string {
+	addr := SanitizeLine(c.Address)
+	note := ""
+	if c.Sent == 0 {
+		note = "  · has only written to you"
+	}
+	name := SanitizeLine(c.Name)
+	room := width - len([]rune(addr)) - len([]rune(note)) - 3
+	if name == "" || room < 4 {
+		return addr + note
+	}
+	if r := []rune(name); len(r) > room {
+		name = string(r[:room-1]) + "…"
+	}
+	return addr + "  " + name + note
 }
 
 func wordPrefix(name, q string) bool {

@@ -205,7 +205,66 @@ func Open(path string) (*sql.DB, error) {
 	// Migrate existing pending_deletes into pending_ops.
 	migratePendingDeletes(db)
 
+	migrateFullHeaders(db)
+
 	return db, nil
+}
+
+// HeadersVersion is the header set a cached message row holds. Rows below it
+// were cached before full recipient lists and threading headers were stored;
+// sync refetches their headers (bodies are kept), see StaleHeaderUIDs.
+const HeadersVersion = 1
+
+// migrateFullHeaders adds full-fidelity header columns to messages, the
+// fields a draft needs to round-trip (cc, bcc, identity, threading, source,
+// server copy), and the draft attachment table. Each ALTER is idempotent:
+// it fails harmlessly when the column already exists.
+func migrateFullHeaders(db *sql.DB) {
+	for _, col := range []string{
+		// JSON arrays of "Name <addr>" entries, encrypted like from/to.
+		`to_list TEXT NOT NULL DEFAULT ''`,
+		`cc_addr TEXT NOT NULL DEFAULT ''`,
+		`bcc_addr TEXT NOT NULL DEFAULT ''`,
+		`reply_to TEXT NOT NULL DEFAULT ''`,
+		`delivered_to TEXT NOT NULL DEFAULT ''`,
+		// Message-IDs (no brackets), stored like message_id.
+		`in_reply_to TEXT NOT NULL DEFAULT ''`,
+		`refs TEXT NOT NULL DEFAULT ''`,
+		`thread_id TEXT NOT NULL DEFAULT ''`,
+		`headers_v INTEGER NOT NULL DEFAULT 0`,
+	} {
+		db.Exec(`ALTER TABLE messages ADD COLUMN ` + col)
+	}
+	db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id)`)
+	db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_headers_v ON messages(folder_id, headers_v)`)
+
+	for _, col := range []string{
+		`to_list TEXT NOT NULL DEFAULT ''`,
+		`cc_addr TEXT NOT NULL DEFAULT ''`,
+		`bcc_addr TEXT NOT NULL DEFAULT ''`,
+		`in_reply_to TEXT NOT NULL DEFAULT ''`,
+		`refs TEXT NOT NULL DEFAULT ''`,
+		`source TEXT NOT NULL DEFAULT ''`,
+		// Server copy in the Drafts folder. version counts local saves;
+		// synced_version is the version the server copy holds.
+		`version INTEGER NOT NULL DEFAULT 1`,
+		`synced_version INTEGER NOT NULL DEFAULT 0`,
+		`server_msgid TEXT NOT NULL DEFAULT ''`,
+		`server_uid INTEGER NOT NULL DEFAULT 0`,
+		`upload_msgid TEXT NOT NULL DEFAULT ''`,
+		`uploaded_at DATETIME`,
+	} {
+		db.Exec(`ALTER TABLE drafts ADD COLUMN ` + col)
+	}
+	db.Exec(`CREATE TABLE IF NOT EXISTS draft_attachments (
+		draft_id     TEXT NOT NULL REFERENCES drafts(id) ON DELETE CASCADE,
+		idx          INTEGER NOT NULL,
+		filename     TEXT NOT NULL,
+		content_type TEXT NOT NULL DEFAULT '',
+		size         INTEGER NOT NULL DEFAULT 0,
+		data         BLOB NOT NULL,
+		PRIMARY KEY (draft_id, idx)
+	)`)
 }
 
 // migratePendingDeletes moves rows from the old pending_deletes table into

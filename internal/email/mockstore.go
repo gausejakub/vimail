@@ -11,6 +11,7 @@ type MockStore struct {
 	folders  map[string][]Folder
 	messages map[string]map[string][]Message
 	draftSeq int
+	drafts   map[string]Draft
 }
 
 // NewMockStore creates a MockStore populated with sample data.
@@ -211,19 +212,28 @@ func (s *MockStore) MessageCount(email, folder string) int {
 	return len(s.MessagesFor(email, folder))
 }
 
-func (s *MockStore) SaveDraft(email string, msg Message) {
+func (s *MockStore) SaveDraft(email string, d Draft) error {
 	acct, ok := s.messages[email]
 	if !ok {
-		return
+		return fmt.Errorf("unknown account %s", email)
 	}
+	if s.drafts == nil {
+		s.drafts = map[string]Draft{}
+	}
+	if d.Date.IsZero() {
+		d.Date = time.Now()
+	}
+	d.Account = email
+	s.drafts[d.ID] = d
+	msg := d.AsMessage()
 	drafts := acct["Drafts"]
 
 	// Update existing draft if ID matches.
-	for i, d := range drafts {
-		if d.ID == msg.ID {
+	for i, existing := range drafts {
+		if existing.ID == msg.ID {
 			drafts[i] = msg
 			acct["Drafts"] = drafts
-			return
+			return nil
 		}
 	}
 
@@ -239,6 +249,21 @@ func (s *MockStore) SaveDraft(email string, msg Message) {
 			}
 		}
 	}
+	return nil
+}
+
+// Draft returns a saved draft, or a seeded sample draft converted from its
+// message form.
+func (s *MockStore) Draft(email, id string) (Draft, bool) {
+	if d, ok := s.drafts[id]; ok && d.Account == email {
+		return d, true
+	}
+	for _, m := range s.messages[email]["Drafts"] {
+		if m.ID == id {
+			return Draft{ID: m.ID, Account: email, From: m.From, To: []string{m.To}, Subject: m.Subject, Body: m.Body, Date: m.Date}, true
+		}
+	}
+	return Draft{}, false
 }
 
 func (s *MockStore) DeleteDraft(email, id string) {

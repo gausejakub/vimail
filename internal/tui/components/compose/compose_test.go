@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/gausejakub/vimail/internal/config"
+	"github.com/gausejakub/vimail/internal/email"
 )
 
 // A stored draft can come from an AI client (MCP save_draft); opening it must
@@ -12,8 +13,8 @@ import (
 func TestOpeningADraftSanitizesItsContent(t *testing.T) {
 	hidden := string(rune(0xE0049)) + string(rune(0xE0047))
 	m := New(config.AIConfig{}).SetSize(100, 30)
-	m = m.ShowDraft("draft-1", "bob@example.com\x1b]0;pwned\x07", "Hi\x1b[2J"+hidden,
-		"first line\x1b]52;c;QUJD\x07\nsecond‮ line"+hidden)
+	m = m.ShowDraft(email.Draft{ID: "draft-1", To: []string{"bob@example.com\x1b]0;pwned\x07"}, Subject: "Hi\x1b[2J" + hidden,
+		Body: "first line\x1b]52;c;QUJD\x07\nsecond‮ line" + hidden})
 
 	view := m.View()
 	for _, bad := range []string{"\x1b]52", "\x1b]0;", "\x1b[2J", "‮", hidden} {

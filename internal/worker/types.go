@@ -1,6 +1,9 @@
 package worker
 
 import (
+	"strings"
+	"time"
+
 	"github.com/gausejakub/vimail/internal/cache"
 	"github.com/gausejakub/vimail/internal/email"
 )
@@ -21,10 +24,71 @@ type SyncResult struct {
 
 // SendRequest is a request to send an email via SMTP.
 type SendRequest struct {
-	From    string
-	To      string
-	Subject string
-	Body    string
+	From string // header From: the account address or one of its identities
+	// To is a comma-separated recipient string (legacy callers); ToList
+	// holds one address per entry. Both are sent to.
+	To          string
+	ToList      []string
+	Cc          []string
+	Bcc         []string // envelope only; never in the transmitted headers
+	Subject     string
+	Body        string
+	InReplyTo   string
+	References  []string
+	Attachments []email.DraftAttachment
+	// Source is the replied-to or forwarded original; after a successful send
+	// it is flagged \Answered or $Forwarded.
+	Source *email.DraftSource
+	// MessageID and Date pin the message identity across retries.
+	MessageID string
+	Date      time.Time
+}
+
+// allTo returns every To recipient (legacy string and list).
+func (r SendRequest) allTo() []string {
+	out := append([]string(nil), r.ToList...)
+	if strings.TrimSpace(r.To) != "" {
+		out = append(out, r.To)
+	}
+	return out
+}
+
+// envelopeRecipients returns the bare address of every recipient (To, Cc,
+// Bcc), one RCPT each, without duplicates.
+func (r SendRequest) envelopeRecipients() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, group := range [][]string{r.allTo(), r.Cc, r.Bcc} {
+		for _, entry := range group {
+			for _, addr := range recipientAddresses(entry) {
+				key := strings.ToLower(addr)
+				if addr == "" || seen[key] {
+					continue
+				}
+				seen[key] = true
+				out = append(out, addr)
+			}
+		}
+	}
+	return out
+}
+
+// sendPayload converts a request to its queued form.
+func (r SendRequest) sendPayload() cache.SendPayload {
+	return cache.SendPayload{
+		From: r.From, To: r.To, ToList: r.ToList, Cc: r.Cc, Bcc: r.Bcc,
+		Subject: r.Subject, Body: r.Body, InReplyTo: r.InReplyTo, References: r.References,
+		Attachments: r.Attachments, Source: r.Source, MessageID: r.MessageID, Date: r.Date,
+	}
+}
+
+// sendRequestFromPayload restores a queued send.
+func sendRequestFromPayload(p cache.SendPayload) SendRequest {
+	return SendRequest{
+		From: p.From, To: p.To, ToList: p.ToList, Cc: p.Cc, Bcc: p.Bcc,
+		Subject: p.Subject, Body: p.Body, InReplyTo: p.InReplyTo, References: p.References,
+		Attachments: p.Attachments, Source: p.Source, MessageID: p.MessageID, Date: p.Date,
+	}
 }
 
 // SendResult is the result of sending an email.

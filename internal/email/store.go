@@ -8,7 +8,10 @@ type Store interface {
 	MessagesFor(email, folder string) []Message
 	MessagesForPage(email, folder string, offset, limit int) []Message
 	MessageCount(email, folder string) int
-	SaveDraft(email string, msg Message)
+	// SaveDraft creates or updates a draft (attachments must carry content).
+	SaveDraft(email string, d Draft) error
+	// Draft returns one draft including attachment content.
+	Draft(email, id string) (Draft, bool)
 	DeleteDraft(email, id string)
 	NextDraftID() string
 	MarkRead(email, folder, id string)

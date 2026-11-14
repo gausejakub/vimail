@@ -45,6 +45,7 @@ type NormalKeyMap struct {
 	NextPane key.Binding
 	PrevPane key.Binding
 	Reply    key.Binding
+	ReplyAll key.Binding
 	Forward  key.Binding
 	Delete   key.Binding
 	Compose  key.Binding
@@ -80,7 +81,8 @@ var Normal = NormalKeyMap{
 	NextPane: key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "next pane")),
 	PrevPane: key.NewBinding(key.WithKeys("shift+tab"), key.WithHelp("shift+tab", "prev pane")),
 	Reply:    key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "reply")),
-	Forward:  key.NewBinding(key.WithKeys("f"), key.WithHelp("f", "forward")),
+	ReplyAll: key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "reply all")),
+	Forward:  key.NewBinding(key.WithKeys("F"), key.WithHelp("F", "forward")),
 	Delete:   key.NewBinding(key.WithKeys("d"), key.WithHelp("dd", "delete")),
 	Compose:  key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "compose")),
 	Refresh:  key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "refresh")),

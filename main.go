@@ -138,6 +138,13 @@ func openStore(cfg config.Config) (*cache.SQLiteStore, *sql.DB, error) {
 	} else if n > 0 {
 		logging.Info("app", "encrypted legacy cache rows", logging.KV("rows", n))
 	}
+	// One-time fix: attachment names cached with RFC 2047 encoded-words left
+	// in them ("=?UTF-8?Q?...?=") by older versions.
+	if n, err := sqlStore.DecodeAttachmentNames(); err != nil {
+		logging.Warn("app", "decoding cached attachment names failed", logging.Err(err))
+	} else if n > 0 {
+		logging.Info("app", "decoded cached attachment names", logging.KV("rows", n))
+	}
 
 	// Seed accounts from config.
 	for _, acct := range cfg.Accounts {

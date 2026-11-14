@@ -16,7 +16,7 @@ func TestHeaderSanitizesCachedFields(t *testing.T) {
 		To:      "me@example.com\x1b]52;c;QUJD\x07",
 		Subject: "Invoice" + hidden,
 	}, false)
-	if h.From != "PayPal <x@evil.test>" || h.To != "me@example.com" || h.Subject != "Invoice" {
+	if h.From != "PayPal <x@evil.test>" || len(h.To) != 1 || h.To[0] != "me@example.com" || h.Subject != "Invoice" {
 		t.Fatalf("header = %+v", h)
 	}
 }
@@ -47,23 +47,26 @@ func TestListOperationsSanitizesFolderAndError(t *testing.T) {
 }
 
 // A draft saved by an AI client is stored clean, so the TUI never has to
-// trust it.
+// trust it. A recipient carrying a header injection is rejected outright.
 func TestSaveDraftSanitizesArguments(t *testing.T) {
 	store := seededStore(t)
 	session := connect(t, store)
+	if !callErr(t, session, "save_draft", map[string]any{"to": "bob@example.com\r\nBcc: evil@example.com"}) {
+		t.Fatal("save_draft accepted a recipient with an injected header")
+	}
 	var out saveDraftResult
 	call(t, session, "save_draft", map[string]any{
-		"to": "bob@example.com\r\nBcc: evil@example.com", "subject": "Hi\x1b[2J",
+		"to": "bob@example.com", "subject": "Hi\x1b[2J",
 		"body": "hello\x1b]52;c;QUJD\x07\nworld",
 	}, &out)
-	for _, d := range store.MessagesForPage(testAcct, "Drafts", 0, 0) {
-		if d.ID != out.ID {
-			continue
-		}
-		if d.To != "bob@example.com  Bcc: evil@example.com" || d.Subject != "Hi" || d.Body != "hello\nworld" {
-			t.Fatalf("stored draft to=%q subject=%q body=%q", d.To, d.Subject, d.Body)
-		}
-		return
+	d, ok := store.Draft(testAcct, out.ID)
+	if !ok {
+		t.Fatal("draft not stored")
 	}
-	t.Fatal("draft not stored")
+	if len(d.To) != 1 || d.To[0] != "bob@example.com" || len(d.Bcc) != 0 || d.Subject != "Hi" || d.Body != "hello\nworld" {
+		t.Fatalf("stored draft to=%q bcc=%q subject=%q body=%q", d.To, d.Bcc, d.Subject, d.Body)
+	}
+	if len(store.Drafts(testAcct)) != 1 {
+		t.Fatalf("rejected call stored a draft: %d drafts", len(store.Drafts(testAcct)))
+	}
 }

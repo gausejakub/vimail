@@ -1,7 +1,6 @@
 package worker
 
 import (
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -126,7 +125,7 @@ func (w *IMAPWorker) dial(withIDLE bool) (*imapclient.Client, error) {
 	}
 
 	opts := &imapclient.Options{
-		TLSConfig: &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12},
+		TLSConfig: clientTLSConfig(host),
 		Dialer: &net.Dialer{
 			Timeout:   30 * time.Second,
 			KeepAlive: 30 * time.Second, // Detect dead connections via TCP keepalive.
@@ -561,7 +560,7 @@ func (w *IMAPWorker) VerifyFolder(folder string) (VerifyResult, error) {
 		for _, uid := range missing[start:end] {
 			set.AddNum(imap.UID(uid))
 		}
-		fetch := w.client.Fetch(set, &imap.FetchOptions{UID: true, Flags: true, Envelope: true})
+		fetch := w.client.Fetch(set, headerFetchOptions())
 		for {
 			data := fetch.Next()
 			if data == nil {
@@ -571,7 +570,7 @@ func (w *IMAPWorker) VerifyFolder(folder string) (VerifyResult, error) {
 			if collectErr != nil {
 				continue
 			}
-			if err := w.store.UpsertMessage(w.acct.Email, folder, ParseEnvelope(uint32(buf.UID), buf.Envelope, buf.Flags)); err != nil {
+			if err := w.store.UpsertMessage(w.acct.Email, folder, parseFetchedHeaders(buf)); err != nil {
 				return result, err
 			}
 			result.MissingAdded++
@@ -632,11 +631,7 @@ func (w *IMAPWorker) syncFolder(folder string, full bool, onProgress ...func(fet
 		seqSet.AddRange(1, imap.UID(math.MaxUint32))
 	}
 
-	fetchOptions := &imap.FetchOptions{
-		Envelope: true,
-		Flags:    true,
-		UID:      true,
-	}
+	fetchOptions := headerFetchOptions()
 
 	fetchCmd := w.client.Fetch(seqSet, fetchOptions)
 	newCount := 0
@@ -658,7 +653,7 @@ func (w *IMAPWorker) syncFolder(folder string, full bool, onProgress ...func(fet
 			continue
 		}
 
-		msg := ParseEnvelope(uint32(buf.UID), buf.Envelope, buf.Flags)
+		msg := parseFetchedHeaders(buf)
 		if full {
 			snapshot = append(snapshot, msg)
 		} else {
@@ -1119,6 +1114,9 @@ func (w *IMAPWorker) AppendToFolder(folder string, message []byte, flags []imap.
 	}
 	if err := appendCmd.Close(); err != nil {
 		return fmt.Errorf("APPEND close: %w", err)
+	}
+	if _, err := appendCmd.Wait(); err != nil {
+		return fmt.Errorf("APPEND %s: %w", imapName, err)
 	}
 	return nil
 }

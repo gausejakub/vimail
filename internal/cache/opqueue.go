@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"time"
+
+	"github.com/gausejakub/vimail/internal/email"
 )
 
 // OpType identifies the kind of queued operation.
@@ -18,6 +20,13 @@ const (
 	OpFlag       OpType = "flag"
 	OpMove       OpType = "move"
 	OpVerify     OpType = "verify"
+	// OpDraftUpload writes a draft's current version to the server Drafts
+	// folder (APPEND the new copy, then remove the previous one).
+	OpDraftUpload OpType = "draft_upload"
+	// OpDraftDelete removes server Drafts copies by Message-ID.
+	OpDraftDelete OpType = "draft_delete"
+	// OpSetFlag adds a keyword or system flag (\Answered, $Forwarded).
+	OpSetFlag OpType = "set_flag"
 )
 
 // OpStatus tracks the lifecycle of a queued operation.
@@ -51,11 +60,42 @@ type DeletePayload struct {
 }
 
 // SendPayload is the JSON payload for send operations.
+// The payload is encrypted at rest; fields beyond From/To/Subject/Body were
+// added later and are empty in ops queued by older versions.
 type SendPayload struct {
-	From    string `json:"from"`
-	To      string `json:"to"`
-	Subject string `json:"subject"`
-	Body    string `json:"body"`
+	From        string                  `json:"from"`
+	To          string                  `json:"to"`
+	ToList      []string                `json:"to_list,omitempty"`
+	Cc          []string                `json:"cc,omitempty"`
+	Bcc         []string                `json:"bcc,omitempty"`
+	Subject     string                  `json:"subject"`
+	Body        string                  `json:"body"`
+	InReplyTo   string                  `json:"in_reply_to,omitempty"`
+	References  []string                `json:"references,omitempty"`
+	Attachments []email.DraftAttachment `json:"attachments,omitempty"`
+	Source      *email.DraftSource      `json:"source,omitempty"`
+	// MessageID and Date are fixed when the op is queued so a retry sends
+	// the identical message (same Message-ID), never a second variant.
+	MessageID string    `json:"message_id,omitempty"`
+	Date      time.Time `json:"date,omitempty"`
+}
+
+// DraftUploadPayload identifies the local draft to upload.
+type DraftUploadPayload struct {
+	DraftID string `json:"draft_id"`
+}
+
+// DraftDeletePayload lists server Drafts copies to remove.
+type DraftDeletePayload struct {
+	MessageIDs []string `json:"message_ids"`
+}
+
+// SetFlagPayload adds Flag to UIDs. MessageID guards against a UID that was
+// reused for another message.
+type SetFlagPayload struct {
+	UIDs      []uint32 `json:"uids"`
+	Flag      string   `json:"flag"`
+	MessageID string   `json:"message_id,omitempty"`
 }
 
 // MarkReadPayload is the JSON payload for mark-read operations.
@@ -180,10 +220,11 @@ func (s *SQLiteStore) stripSentBody(id int64) {
 		return
 	}
 	var p SendPayload
-	if err := json.Unmarshal([]byte(decrypt(s.encKey, stored)), &p); err != nil || p.Body == "" {
+	if err := json.Unmarshal([]byte(decrypt(s.encKey, stored)), &p); err != nil || (p.Body == "" && len(p.Attachments) == 0) {
 		return
 	}
 	p.Body = ""
+	p.Attachments = nil
 	data, err := json.Marshal(p)
 	if err != nil {
 		return

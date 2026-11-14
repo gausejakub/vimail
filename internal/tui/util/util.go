@@ -34,22 +34,19 @@ type MessageSelectedMsg struct {
 	Message email.Message
 }
 
-// ComposeSubmitMsg is emitted when the compose overlay submits.
+// ComposeSubmitMsg is emitted when the compose overlay submits. Draft holds
+// every field (identity, cc, bcc, threading headers, source, attachments).
 type ComposeSubmitMsg struct {
-	To      string
-	Subject string
-	Body    string
+	Draft email.Draft
 }
 
 // ComposeCloseMsg is emitted when the compose overlay should close without saving.
 type ComposeCloseMsg struct{}
 
 // ComposeSaveDraftMsg is emitted when compose closes and should save a draft.
+// Draft.ID is empty for a new draft.
 type ComposeSaveDraftMsg struct {
-	DraftID string // empty for new drafts
-	To      string
-	Subject string
-	Body    string
+	Draft email.Draft
 }
 
 // OpenDraftMsg requests opening a draft message in the compose overlay.

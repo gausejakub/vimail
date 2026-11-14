@@ -13,6 +13,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/emersion/go-imap/v2"
 	"github.com/gausejakub/vimail/internal/auth"
 	"github.com/gausejakub/vimail/internal/cache"
 	"github.com/gausejakub/vimail/internal/config"
@@ -1001,9 +1002,18 @@ func (c *Coordinator) SendAndArchive(acctEmail string, req SendRequest) tea.Cmd 
 	return func() tea.Msg {
 		logging.Info("send", "sending email", logging.Acct(acctEmail))
 		start := time.Now()
-		opID, _ := c.store.QueueOp(cache.OpSend, acctEmail, "", cache.SendPayload{
-			From: req.From, To: req.To, Subject: req.Subject, Body: req.Body,
-		})
+		if req.From == "" {
+			req.From = c.defaultFrom(acctEmail)
+		}
+		// Pin the identity first: a retry of this op must resend the same
+		// message (same Message-ID), not a second variant.
+		if req.MessageID == "" {
+			req.MessageID = NewMessageID(req.From)
+		}
+		if req.Date.IsZero() {
+			req.Date = time.Now()
+		}
+		opID, _ := c.store.QueueOp(cache.OpSend, acctEmail, "", req.sendPayload())
 		if !c.store.StartOp(opID) {
 			// Another process's drainer claimed the send — executing here too
 			// would produce a duplicate outbound email.
@@ -1028,13 +1038,14 @@ func (c *Coordinator) SendAndArchive(acctEmail string, req SendRequest) tea.Cmd 
 		// Append to Sent folder via IMAP.
 		imapW := c.getIMAPWorker(acctEmail)
 		if imapW != nil && sentMsg != nil {
-			if err := imapW.AppendToFolder("Sent", sentMsg, nil); err != nil {
+			if err := imapW.AppendToFolder("Sent", sentMsg, []imap.Flag{imap.FlagSeen}); err != nil {
 				logging.Warn("send", "IMAP APPEND to Sent failed", logging.Acct(acctEmail), logging.Err(err))
 			}
 		}
 
 		c.store.CompleteOp(opID)
 		logging.Info("send", "email sent", logging.Acct(acctEmail), logging.KV("message_id", msgID), logging.Dur(time.Since(start)))
+		c.flagSource(acctEmail, req.Source)
 		return SendResult{MessageID: msgID}
 	}
 }
@@ -1479,17 +1490,16 @@ func (c *Coordinator) RetryPendingOps() tea.Cmd {
 					err = workerErr
 					break
 				}
-				_, sentMsg, sendErr := smtpW.Send(SendRequest{
-					From: payload.From, To: payload.To,
-					Subject: payload.Subject, Body: payload.Body,
-				})
+				req := sendRequestFromPayload(payload)
+				_, sentMsg, sendErr := smtpW.Send(req)
 				if sendErr != nil {
 					err = sendErr
 				} else {
 					imapW, _ := getIMAP(op.Account)
 					if imapW != nil && sentMsg != nil {
-						imapW.AppendToFolder("Sent", sentMsg, nil)
+						imapW.AppendToFolder("Sent", sentMsg, []imap.Flag{imap.FlagSeen})
 					}
+					c.flagSource(op.Account, req.Source)
 				}
 
 			case cache.OpMarkRead:
@@ -1584,6 +1594,14 @@ func (c *Coordinator) RetryPendingOps() tea.Cmd {
 					err = workerErr
 				} else {
 					err = c.executeMove(w, op.Account, op.Folder, payload)
+				}
+
+			case cache.OpDraftUpload, cache.OpDraftDelete, cache.OpSetFlag:
+				w, workerErr := getIMAP(op.Account)
+				if workerErr != nil {
+					err = workerErr
+				} else {
+					err = c.executeDraftOp(w, op)
 				}
 
 			case cache.OpVerify:
@@ -1980,6 +1998,19 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig, full bool) (int, er
 			} else {
 				c.store.CompleteOp(op.ID)
 			}
+		case cache.OpDraftUpload, cache.OpDraftDelete, cache.OpSetFlag:
+			draftWorker, workerErr := c.ensureIMAPWorker(acct)
+			if workerErr != nil {
+				c.store.FailOp(op.ID, workerErr.Error())
+				continue
+			}
+			w = draftWorker
+			if err := c.executeDraftOp(w, op); err != nil {
+				logging.Warn("retry", "draft op failed", logging.Acct(op.Account), logging.KV("op_type", string(op.Type)), logging.Err(err))
+				c.store.FailOp(op.ID, err.Error())
+			} else {
+				c.store.CompleteOp(op.ID)
+			}
 		case cache.OpVerify:
 			// Audit record only; nothing to deliver (left pending by a crash).
 			c.store.CompleteOp(op.ID)
@@ -2012,6 +2043,8 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig, full bool) (int, er
 	// Sync each folder with progress reporting.
 	// Use STATUS pre-check to skip folders with no new messages.
 	synced := 0
+	syncStart := time.Now()
+	draftsSynced := false
 	newTotal := 0
 	var syncErrors []error
 	for i, folder := range folders {
@@ -2034,7 +2067,8 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig, full bool) (int, er
 			}
 			storedUV, _ := c.store.GetUIDValidity(acct.Email, folder)
 			highUID, _ := c.store.HighestUID(acct.Email, folder)
-			if storedUV == uidValidity && highUID > 0 && uidNext <= highUID+1 {
+			if storedUV == uidValidity && highUID > 0 && uidNext <= highUID+1 &&
+				folder != draftsFolder && !c.store.HasStaleHeaders(acct.Email, folder) {
 				logging.Debug("sync", "folder skipped, no new messages", logging.Acct(acct.Email), logging.Fld(folder), logging.KV("uidnext", uidNext), logging.KV("high_uid", highUID))
 				continue
 			}
@@ -2058,7 +2092,7 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig, full bool) (int, er
 			}
 		}
 		var n int
-		if full {
+		if full || folder == draftsFolder {
 			n, err = w.SyncFolderFull(folder, onProgress)
 		} else {
 			n, err = w.SyncFolder(folder, onProgress)
@@ -2069,9 +2103,21 @@ func (c *Coordinator) syncAccount(acct config.AccountConfig, full bool) (int, er
 				syncErrors = append(syncErrors, fmt.Errorf("%s: %w", folder, err))
 			}
 		} else {
-			newTotal += n
+			if full || folder != draftsFolder {
+				newTotal += n // Drafts is re-listed in full every sync; not new mail
+			}
 			logging.Debug("sync", "folder synced", logging.Acct(acct.Email), logging.Fld(folder), logging.Dur(time.Since(folderStart)))
+			if folder == draftsFolder {
+				draftsSynced = true
+			} else if filled, err := w.BackfillHeaders(folder); err != nil {
+				logging.Warn("sync", "header backfill incomplete", logging.Acct(acct.Email), logging.Fld(folder), logging.Err(err))
+			} else if filled > 0 {
+				logging.Info("sync", "headers backfilled", logging.Acct(acct.Email), logging.Fld(folder), logging.KV("count", filled))
+			}
 		}
+	}
+	if draftsSynced {
+		c.reconcileDrafts(w, acct.Email, syncStart)
 	}
 	logging.Info("sync", "account folders synced", logging.Acct(acct.Email), logging.KV("synced", synced), logging.KV("total", len(folders)))
 	if len(syncErrors) > 0 {

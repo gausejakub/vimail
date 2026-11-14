@@ -11,8 +11,10 @@ import (
 	"time"
 
 	"github.com/emersion/go-message/mail"
+	"github.com/emersion/go-message/textproto"
 
 	"github.com/gausejakub/vimail/internal/email"
+	"github.com/gausejakub/vimail/internal/pgp"
 )
 
 // ComposeOptions controls how a message is serialized.
@@ -25,6 +27,13 @@ type ComposeOptions struct {
 	// retried send and its Sent copy carry the same identity.
 	MessageID string
 	Date      time.Time
+	// PGP signs and encrypts messages that ask for it; nil when PGP is off.
+	PGP *pgp.Client
+	// DraftCopy encrypts to the sender alone (the copy in the Drafts folder).
+	DraftCopy bool
+	// memo lets the transmitted message and the kept copy share one
+	// signing/encryption run.
+	memo *pgpMemo
 	// Extra headers (name → value), e.g. X-Vimail-Source on drafts.
 	Extra map[string]string
 }
@@ -86,6 +95,40 @@ func ComposeMessage(req SendRequest, opt ComposeOptions) (string, []byte, error)
 		}
 	}
 
+	// PGP: build the content on its own, wrap it, and put the message
+	// headers around the result.
+	if req.Sign || req.Encrypt {
+		var wrapped pgpBody
+		if opt.memo != nil && opt.memo.done {
+			wrapped = opt.memo.body
+		} else {
+			_, entity, err := composeEntity("", mail.Header{}, req)
+			if err != nil {
+				return "", nil, err
+			}
+			if wrapped, err = pgpWrap(opt.PGP, entity, req, opt.DraftCopy); err != nil {
+				return "", nil, err
+			}
+			if opt.memo != nil {
+				opt.memo.done, opt.memo.body = true, wrapped
+			}
+		}
+		h.Set("MIME-Version", "1.0")
+		h.SetContentType(wrapped.contentType, wrapped.params)
+		var buf bytes.Buffer
+		if err := textproto.WriteHeader(&buf, h.Header.Header); err != nil {
+			return "", nil, err
+		}
+		buf.Write(wrapped.body)
+		return msgID, buf.Bytes(), nil
+	}
+	return composeEntity(msgID, h, req)
+}
+
+// composeEntity writes the content of a message under the given header:
+// the whole message when h holds the message headers, or just its MIME
+// entity (for signing and encrypting) when h is empty.
+func composeEntity(msgID string, h mail.Header, req SendRequest) (string, []byte, error) {
 	body := strings.ReplaceAll(req.Body, "\r\n", "\n")
 	// A Markdown body is sent as multipart/alternative: the text exactly as
 	// written, and its rendering as HTML.
@@ -311,4 +354,11 @@ func sanitizeForMsgID(s string) string {
 
 func encodeBase64(data []byte) string {
 	return base64.StdEncoding.EncodeToString(data)
+}
+
+// pgpMemo holds the wrapped content between two ComposeMessage calls for
+// the same message.
+type pgpMemo struct {
+	done bool
+	body pgpBody
 }

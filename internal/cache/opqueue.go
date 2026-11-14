@@ -71,6 +71,8 @@ type SendPayload struct {
 	Subject     string                  `json:"subject"`
 	Body        string                  `json:"body"`
 	Markdown    bool                    `json:"markdown,omitempty"`
+	Sign        bool                    `json:"pgp_sign,omitempty"`
+	Encrypt     bool                    `json:"pgp_encrypt,omitempty"`
 	Calendar    *CalendarPayload        `json:"calendar,omitempty"`
 	InReplyTo   string                  `json:"in_reply_to,omitempty"`
 	References  []string                `json:"references,omitempty"`

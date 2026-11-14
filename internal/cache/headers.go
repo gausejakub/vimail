@@ -10,16 +10,17 @@ import (
 
 // extraHeaderCols are the full-fidelity header columns appended to message
 // SELECTs; scan them with extraHeaders.dest and apply with apply.
-const extraHeaderCols = `to_list, cc_addr, bcc_addr, reply_to, delivered_to, in_reply_to, refs, thread_id, answered`
+const extraHeaderCols = `to_list, cc_addr, bcc_addr, reply_to, delivered_to, in_reply_to, refs, thread_id, answered, security`
 
 type extraHeaders struct {
 	toList, cc, bcc, replyTo, deliveredTo string
 	inReplyTo, refs, threadID             string
 	answered                              int
+	security                              string
 }
 
 func (e *extraHeaders) dest() []any {
-	return []any{&e.toList, &e.cc, &e.bcc, &e.replyTo, &e.deliveredTo, &e.inReplyTo, &e.refs, &e.threadID, &e.answered}
+	return []any{&e.toList, &e.cc, &e.bcc, &e.replyTo, &e.deliveredTo, &e.inReplyTo, &e.refs, &e.threadID, &e.answered, &e.security}
 }
 
 func (s *SQLiteStore) apply(e *extraHeaders, m *email.Message) {
@@ -39,6 +40,7 @@ func (s *SQLiteStore) apply(e *extraHeaders, m *email.Message) {
 		m.ThreadID = email.ThreadIDFor(m.MessageID, m.InReplyTo, m.References)
 	}
 	m.Answered = e.answered != 0
+	m.Security = e.security
 }
 
 // encList stores an address list as an encrypted JSON array (” when empty).
@@ -229,3 +231,13 @@ func (s *SQLiteStore) MarkHeadersCurrent(acctEmail, folder string, uid uint32) {
 	s.db.Exec(`UPDATE messages SET headers_v = ? WHERE uid = ? AND folder_id = (SELECT id FROM folders WHERE account = ? AND name = ?)`,
 		HeadersVersion, uid, acctEmail, folder)
 }
+
+// SetMessageSecurity records the outcome of OpenPGP processing for a
+// message (empty for ordinary mail).
+func (s *SQLiteStore) SetMessageSecurity(acctEmail, folder string, uid uint32, security string) {
+	s.db.Exec(`UPDATE messages SET security = ? WHERE uid = ? AND folder_id = (SELECT id FROM folders WHERE account = ? AND name = ?)`,
+		email.SanitizeLine(security), uid, acctEmail, folder)
+}
+
+// EncryptionEnabled reports whether the cache encrypts what it stores.
+func (s *SQLiteStore) EncryptionEnabled() bool { return len(s.encKey) > 0 }

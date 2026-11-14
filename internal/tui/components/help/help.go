@@ -38,6 +38,7 @@ var bindings = []binding{
 	{"Ctrl+S", "Send (in compose)"},
 	{":attach", "Attach a file (in compose)"},
 	{":markdown", "Send as Markdown + HTML (in compose)"},
+	{":sign / :encrypt", "OpenPGP sign / encrypt (in compose)"},
 	{"", ""},
 	{"Modes", sectionMarker},
 	{":", "Command mode"},

@@ -12,6 +12,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"database/sql"
 	"math/big"
 	"net"
 	"strconv"
@@ -26,6 +27,7 @@ import (
 	"github.com/emersion/go-imap/v2/imapserver/imapmemserver"
 
 	"github.com/gausejakub/vimail/internal/auth"
+	"github.com/gausejakub/vimail/internal/cache"
 	"github.com/gausejakub/vimail/internal/worker"
 )
 
@@ -268,3 +270,14 @@ func testCreds(user string) *auth.Credentials {
 }
 
 var _ = worker.SetTestTLSRoots
+
+// openMemory opens a private in-memory cache database.
+func openMemory(t *testing.T) *sql.DB {
+	t.Helper()
+	db, err := cache.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db
+}

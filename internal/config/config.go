@@ -40,6 +40,11 @@ type AccountConfig struct {
 	// are sent with an HTML alternative rendered from the text. Switch per
 	// message with :markdown in the composer.
 	Markdown bool `toml:"markdown"`
+	// PGPSign and PGPEncrypt make new messages of this account signed or
+	// encrypted by default (needs [pgp] enabled). Switch per message with
+	// :sign and :encrypt in the composer.
+	PGPSign    bool `toml:"pgp_sign"`
+	PGPEncrypt bool `toml:"pgp_encrypt"`
 }
 
 // SenderAddresses returns every address the account may send from: the
@@ -156,6 +161,7 @@ type Config struct {
 	MCP      MCPConfig       `toml:"mcp"`
 	Sync     SyncConfig      `toml:"sync"`
 	Cache    CacheConfig     `toml:"cache"`
+	PGP      PGPConfig       `toml:"pgp"`
 }
 
 func DefaultConfig() Config {
@@ -212,4 +218,13 @@ func Load() (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// PGPConfig turns on OpenPGP through the user's own GnuPG.
+type PGPConfig struct {
+	// Enabled checks signatures and decrypts when reading, and allows
+	// signing and encrypting when writing.
+	Enabled bool `toml:"enabled"`
+	// GPG is the gpg binary; empty means "gpg" from PATH.
+	GPG string `toml:"gpg"`
 }

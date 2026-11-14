@@ -9,6 +9,7 @@ import (
 	"github.com/emersion/go-message/mail"
 
 	"github.com/gausejakub/vimail/internal/email"
+	"github.com/gausejakub/vimail/internal/pgp"
 )
 
 // ParseDraftMessage turns a message from the server Drafts folder into a
@@ -16,6 +17,24 @@ import (
 // body, threading headers, source and attachment content. The content was
 // written by whatever client saved the draft, so every field is sanitized.
 func ParseDraftMessage(raw []byte) (email.Draft, error) {
+	return ParseDraftMessagePGP(raw, nil)
+}
+
+// ParseDraftMessagePGP is ParseDraftMessage for a draft that may be
+// encrypted (to its author): its content is decrypted with the client. An
+// encrypted draft that cannot be decrypted is an error, never an empty draft.
+func ParseDraftMessagePGP(raw []byte, client *pgp.Client) (email.Draft, error) {
+	content := raw
+	if mt, params := topContentType(raw); mt == "multipart/encrypted" && strings.EqualFold(params["protocol"], "application/pgp-encrypted") {
+		if client == nil {
+			return email.Draft{}, fmt.Errorf("the draft is encrypted and OpenPGP is not enabled")
+		}
+		plain, _, err := client.Decrypt(encryptedPayload(raw))
+		if err != nil {
+			return email.Draft{}, fmt.Errorf("decrypt draft: %w", err)
+		}
+		content = plain
+	}
 	mr, err := mail.CreateReader(bytes.NewReader(raw))
 	if err != nil {
 		return email.Draft{}, fmt.Errorf("parse draft: %w", err)
@@ -58,7 +77,7 @@ func ParseDraftMessage(raw []byte) (email.Draft, error) {
 	}
 	mr.Close()
 
-	body, err := ParseBody(raw)
+	body, err := ParseBody(content)
 	switch {
 	case err != nil:
 	case strings.TrimSpace(body.Plain) != "":
@@ -69,7 +88,15 @@ func ParseDraftMessage(raw []byte) (email.Draft, error) {
 		d.Body = strings.TrimRight(body.Text, "\n")
 	}
 	d.Markdown = h.Get(draftMarkdownHeader) == "1"
-	parts, err := ExtractAttachmentData(raw)
+	for _, flag := range strings.Split(h.Get(draftPGPHeader), ",") {
+		switch strings.TrimSpace(flag) {
+		case "sign":
+			d.Sign = true
+		case "encrypt":
+			d.Encrypt = true
+		}
+	}
+	parts, err := ExtractAttachmentData(content)
 	if err == nil {
 		for _, p := range parts {
 			d.Attachments = append(d.Attachments, email.DraftAttachment{

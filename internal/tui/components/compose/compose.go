@@ -56,6 +56,12 @@ type Model struct {
 	// first is the default.
 	identities []string
 
+	// pgpCheck reports why a draft that asks for OpenPGP cannot be sent (no
+	// key for a recipient, no secret key to sign with); nil when OpenPGP is
+	// off. It runs before the composer closes, so nothing is lost to a
+	// missing key.
+	pgpCheck func(email.Draft) error
+
 	// AI state
 	aiCfg     config.AIConfig
 	aiPending bool
@@ -65,6 +71,7 @@ type Model struct {
 type attachMsg struct{ path string }
 type detachMsg struct{ index string }
 type markdownMsg struct{}
+type pgpMsg struct{ encrypt bool }
 
 func New(aiCfg config.AIConfig) Model {
 	inputs := make([]textinput.Model, fieldCount)
@@ -164,6 +171,20 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 		return m, info(text, false)
 
+	case pgpMsg:
+		if m.pgpCheck == nil {
+			return m, info("OpenPGP is off: set [pgp] enabled = true in the config", true)
+		}
+		text := ""
+		if msg.encrypt {
+			m.draft.Encrypt = !m.draft.Encrypt
+			text = map[bool]string{true: "Will be encrypted to the recipients", false: "Will not be encrypted"}[m.draft.Encrypt]
+		} else {
+			m.draft.Sign = !m.draft.Sign
+			text = map[bool]string{true: "Will be signed", false: "Will not be signed"}[m.draft.Sign]
+		}
+		return m, info(text, false)
+
 	case detachMsg:
 		return m.detach(msg.index)
 
@@ -173,6 +194,13 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			d, err := m.currentDraft(true)
 			if err != nil {
 				return m, func() tea.Msg { return util.InfoMsg{Text: err.Error(), IsError: true} }
+			}
+			// A missing key is found now, while the message can still be
+			// changed, not after the composer has closed.
+			if (d.Sign || d.Encrypt) && m.pgpCheck != nil {
+				if err := m.pgpCheck(d); err != nil {
+					return m, func() tea.Msg { return util.InfoMsg{Text: err.Error(), IsError: true} }
+				}
 			}
 			return m, func() tea.Msg { return util.ComposeSubmitMsg{Draft: d} }
 
@@ -546,6 +574,12 @@ func (m *Model) registerCommands() {
 	m.editor.AddCommand("markdown", func(buf vimtea.Buffer, args []string) tea.Cmd {
 		return func() tea.Msg { return markdownMsg{} }
 	})
+	m.editor.AddCommand("sign", func(buf vimtea.Buffer, args []string) tea.Cmd {
+		return func() tea.Msg { return pgpMsg{} }
+	})
+	m.editor.AddCommand("encrypt", func(buf vimtea.Buffer, args []string) tea.Cmd {
+		return func() tea.Msg { return pgpMsg{encrypt: true} }
+	})
 	m.editor.AddCommand("detach", func(buf vimtea.Buffer, args []string) tea.Cmd {
 		index := strings.Join(args, " ")
 		return func() tea.Msg { return detachMsg{index: index} }
@@ -639,6 +673,12 @@ func (m Model) title() string {
 	if m.draft.Markdown {
 		title += " · Markdown"
 	}
+	if m.draft.Sign {
+		title += " · signed"
+	}
+	if m.draft.Encrypt {
+		title += " · encrypted"
+	}
 	if m.draft.ConflictWith != "" {
 		// The same draft was changed here and in another mail client.
 		title += " · another version exists (⚠ in Drafts): send or delete one"
@@ -707,6 +747,17 @@ func (m Model) CurrentDraftForTest() (email.Draft, error) {
 func (m Model) WithMarkdownDefault(markdown bool) Model {
 	if m.draft.ID == "" {
 		m.draft.Markdown = markdown
+	}
+	return m
+}
+
+// WithPGP enables :sign and :encrypt. sign and encrypt are the account's
+// defaults, applied to a new message, reply or forward; a saved draft keeps
+// its own choice. check runs when the message is sent.
+func (m Model) WithPGP(sign, encrypt bool, check func(email.Draft) error) Model {
+	m.pgpCheck = check
+	if check != nil && m.draft.ID == "" {
+		m.draft.Sign, m.draft.Encrypt = sign, encrypt
 	}
 	return m
 }

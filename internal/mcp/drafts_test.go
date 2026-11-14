@@ -433,3 +433,37 @@ func TestSaveDraftMarkdown(t *testing.T) {
 		t.Fatal("markdown=true not stored")
 	}
 }
+
+func TestSaveDraftSignAndEncrypt(t *testing.T) {
+	store := seededStore(t)
+	// OpenPGP off: asking for it is an error, and nothing is stored.
+	session := connectCfg(t, store, draftCfg())
+	if !callErr(t, session, "save_draft", map[string]any{"to": "a@x.test", "body": "x", "encrypt": true}) {
+		t.Fatal("encrypt accepted without OpenPGP enabled")
+	}
+	if n := len(store.Drafts(testAcct)); n != 0 {
+		t.Fatalf("%d drafts stored", n)
+	}
+
+	cfg := draftCfg()
+	cfg.PGP.Enabled = true
+	cfg.PGP.GPG = "/nonexistent/gpg" // this test must never reach a real keyring
+	cfg.Accounts[0].PGPSign = true
+	session = connectCfg(t, store, cfg)
+	var out saveDraftResult
+	call(t, session, "save_draft", map[string]any{"to": "a@x.test", "body": "x"}, &out)
+	if !out.Draft.Sign || out.Draft.Encrypt {
+		t.Fatalf("account defaults: %+v", out.Draft)
+	}
+	id := out.ID
+	out = saveDraftResult{}
+	call(t, session, "save_draft", map[string]any{"id": id, "encrypt": true, "sign": false}, &out)
+	if d, _ := store.Draft(testAcct, id); out.Draft.Sign || !out.Draft.Encrypt || d.Sign || !d.Encrypt {
+		t.Fatalf("explicit choice: %+v stored=%+v", out.Draft, d)
+	}
+	var read draftInfo
+	call(t, session, "read_draft", map[string]any{"id": id}, &read)
+	if !read.Encrypt || read.Sign {
+		t.Fatalf("read_draft: %+v", read)
+	}
+}

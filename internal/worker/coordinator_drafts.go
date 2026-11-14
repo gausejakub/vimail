@@ -63,7 +63,7 @@ func DraftSendRequest(d email.Draft, defaultFrom string) SendRequest {
 	}
 	return SendRequest{
 		From: from, ToList: d.To, Cc: d.Cc, Bcc: d.Bcc,
-		Subject: d.Subject, Body: d.Body, Markdown: d.Markdown,
+		Subject: d.Subject, Body: d.Body, Markdown: d.Markdown, Sign: d.Sign, Encrypt: d.Encrypt,
 		InReplyTo: d.InReplyTo, References: d.References,
 		Attachments: d.Attachments, Source: d.Source,
 	}
@@ -88,7 +88,17 @@ func (c *Coordinator) uploadDraft(w *IMAPWorker, account, id string) error {
 	if d.Markdown {
 		opts.Extra[draftMarkdownHeader] = "1"
 	}
-	_, raw, err := ComposeMessage(DraftSendRequest(d, from), opts)
+	// The copy in the Drafts folder is never signed (that would ask for the
+	// key on every save), and an encrypted draft is encrypted to its author
+	// alone. Without OpenPGP available it is not uploaded at all, rather
+	// than in the clear.
+	req := DraftSendRequest(d, from)
+	req.Sign = false
+	if flags := draftPGPFlags(d); flags != "" {
+		opts.Extra[draftPGPHeader] = flags
+	}
+	opts.PGP, opts.DraftCopy = c.pgp, true
+	_, raw, err := ComposeMessage(req, opts)
 	if err != nil {
 		return fmt.Errorf("compose draft: %w", err)
 	}
@@ -147,7 +157,7 @@ func (c *Coordinator) reconcileDrafts(w *IMAPWorker, account string, syncStart t
 			logging.Warn("draft", "fetching server draft failed", logging.Acct(account), logging.MsgUID(uid), logging.Err(err))
 			continue
 		}
-		d, err := ParseDraftMessage(raw)
+		d, err := ParseDraftMessagePGP(raw, c.pgp)
 		if err != nil {
 			logging.Warn("draft", "parsing server draft failed", logging.Acct(account), logging.MsgUID(uid), logging.Err(err))
 			continue

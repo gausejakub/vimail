@@ -35,6 +35,10 @@ type SendRequest struct {
 	Body    string
 	// Markdown sends the body with a rendered text/html alternative.
 	Markdown bool
+	// Sign and Encrypt ask for OpenPGP (PGP/MIME) with the sender's key and
+	// the recipients' keys.
+	Sign    bool
+	Encrypt bool
 	// Calendar adds a calendar object as an alternative of the body (the
 	// answer to an invitation).
 	Calendar    *CalendarPart
@@ -82,7 +86,7 @@ func (r SendRequest) envelopeRecipients() []string {
 func (r SendRequest) sendPayload() cache.SendPayload {
 	return cache.SendPayload{
 		From: r.From, To: r.To, ToList: r.ToList, Cc: r.Cc, Bcc: r.Bcc,
-		Subject: r.Subject, Body: r.Body, Markdown: r.Markdown, Calendar: r.Calendar.payload(), InReplyTo: r.InReplyTo, References: r.References,
+		Subject: r.Subject, Body: r.Body, Markdown: r.Markdown, Sign: r.Sign, Encrypt: r.Encrypt, Calendar: r.Calendar.payload(), InReplyTo: r.InReplyTo, References: r.References,
 		Attachments: r.Attachments, Source: r.Source, MessageID: r.MessageID, Date: r.Date,
 	}
 }
@@ -91,7 +95,7 @@ func (r SendRequest) sendPayload() cache.SendPayload {
 func sendRequestFromPayload(p cache.SendPayload) SendRequest {
 	return SendRequest{
 		From: p.From, To: p.To, ToList: p.ToList, Cc: p.Cc, Bcc: p.Bcc,
-		Subject: p.Subject, Body: p.Body, Markdown: p.Markdown, Calendar: calendarFromPayload(p.Calendar), InReplyTo: p.InReplyTo, References: p.References,
+		Subject: p.Subject, Body: p.Body, Markdown: p.Markdown, Sign: p.Sign, Encrypt: p.Encrypt, Calendar: calendarFromPayload(p.Calendar), InReplyTo: p.InReplyTo, References: p.References,
 		Attachments: p.Attachments, Source: p.Source, MessageID: p.MessageID, Date: p.Date,
 	}
 }
@@ -111,10 +115,12 @@ type FetchBodyRequest struct {
 
 // FetchBodyResult is the result of fetching a message body.
 type FetchBodyResult struct {
-	Account     string
-	Folder      string
-	UID         uint32
-	Body        string
+	Account string
+	Folder  string
+	UID     uint32
+	Body    string
+	// Security is the outcome of OpenPGP processing ("" for ordinary mail).
+	Security    string
 	HTMLBody    string
 	Attachments []email.Attachment
 	Err         error

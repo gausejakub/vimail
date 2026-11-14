@@ -87,6 +87,7 @@ type FetchBodyCompleteMsg struct {
 	Folder      string
 	UID         uint32
 	Body        string
+	Security    string
 	HTMLBody    string
 	Attachments []email.Attachment
 	Err         error

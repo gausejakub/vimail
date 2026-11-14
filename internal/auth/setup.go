@@ -14,7 +14,7 @@ import (
 func RunSetup(cfg config.Config) error {
 	if len(cfg.Accounts) == 0 {
 		fmt.Println("No accounts configured in config.toml")
-		fmt.Println("Add accounts to ~/.config/vimail/config.toml first.")
+		fmt.Println("Run `vimail setup add` to add one.")
 		return nil
 	}
 

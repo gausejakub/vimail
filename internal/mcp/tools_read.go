@@ -182,14 +182,18 @@ type searchMessagesArgs struct {
 	Account string `json:"account,omitempty" jsonschema:"account email; may be omitted when exactly one account is configured"`
 	Query   string `json:"query" jsonschema:"text matched against subject, sender, recipients, and cached bodies"`
 	Limit   int    `json:"limit,omitempty" jsonschema:"maximum results (default 50)"`
+	Server  bool   `json:"server,omitempty" jsonschema:"also ask the mail server (IMAP SEARCH over headers and bodies); finds mail whose body was never downloaded, at the cost of a network round trip per folder"`
 }
 
 type searchMessagesResult struct {
-	Account   string          `json:"account"`
-	Query     string          `json:"query"`
-	Limit     int             `json:"limit"`
-	Truncated bool            `json:"truncated"`
-	Messages  []messageHeader `json:"messages"`
+	Account   string `json:"account"`
+	Query     string `json:"query"`
+	Limit     int    `json:"limit"`
+	Truncated bool   `json:"truncated"`
+	// Searched is "cache", or "cache+server" when the server was asked too.
+	Searched     string          `json:"searched"`
+	ServerErrors []string        `json:"server_errors,omitempty"`
+	Messages     []messageHeader `json:"messages"`
 }
 
 // resolveAccount validates the requested account against the cache, and lets
@@ -610,7 +614,7 @@ func (s *Server) registerReadTools() {
 
 	addTool(s, &sdk.Tool{
 		Name:        "search_messages",
-		Description: "Search the local cache across subject, sender, recipients, and cached bodies. Results contain real folder/UID handles and report when the requested limit truncated the result set.",
+		Description: "Search mail by text. By default only the local cache is searched: subject, sender, To, Cc, Reply-To, and the bodies that have been downloaded, so a phrase inside a message that was never opened is not found. Set server=true to also ask the mail server, which searches every header and body (Trash, Spam and Drafts excluded). `searched` says which was done. Results contain real folder/UID handles and report when the requested limit truncated the result set.",
 	}, func(ctx context.Context, req *sdk.CallToolRequest, args searchMessagesArgs) (*sdk.CallToolResult, searchMessagesResult, error) {
 		acct, err := s.resolveAccount(args.Account)
 		if err != nil {
@@ -627,7 +631,20 @@ func (s *Server) registerReadTools() {
 			limit = maxSearchLimit
 		}
 		matches := s.store.SearchMessages(acct, args.Query, limit+1)
-		out := searchMessagesResult{Account: acct, Query: args.Query, Limit: limit}
+		out := searchMessagesResult{Account: acct, Query: args.Query, Limit: limit, Searched: "cache"}
+		if args.Server {
+			if s.coord == nil {
+				out.ServerErrors = []string{"server search unavailable: no coordinator configured"}
+			} else {
+				s.resolveCreds()
+				res := s.coord.SearchServerNow(acct, args.Query, limit+1)
+				out.Searched = "cache+server"
+				for _, err := range res.Errors {
+					out.ServerErrors = append(out.ServerErrors, email.SanitizeLine(err.Error()))
+				}
+				matches = email.MergeSearchResults(matches, res.Messages)
+			}
+		}
 		if len(matches) > limit {
 			out.Truncated = true
 			matches = matches[:limit]

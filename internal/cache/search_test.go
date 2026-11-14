@@ -117,3 +117,42 @@ func TestSearchMessagesTreatsBackslashLiterally(t *testing.T) {
 		}
 	}
 }
+
+// Cc and Reply-To are searched, with and without cache encryption.
+func TestSearchMatchesCcAndReplyTo(t *testing.T) {
+	for _, encrypted := range []bool{false, true} {
+		s := testStore(t)
+		if encrypted {
+			key, _ := GenerateEncryptionKey()
+			s.SetEncryptionKey(key)
+		}
+		seedWithFolders(t, s, "Me", "me@x.test")
+		msgs := []email.Message{
+			{UID: 1, MessageID: "a@x", From: "Petr <petr@partner.test>", ToList: []string{"me@x.test"}, Cc: []string{"Senk & Co <senk@partner.test>"}, Subject: "one", Date: time.Now()},
+			{UID: 2, MessageID: "b@x", From: "List <list@lists.test>", ToList: []string{"me@x.test"}, ReplyTo: []string{"Team <team@partner.test>"}, Subject: "two", Date: time.Now()},
+			{UID: 3, MessageID: "c@x", From: "Other <other@else.test>", ToList: []string{"me@x.test"}, Subject: "three", Date: time.Now()},
+		}
+		for _, m := range msgs {
+			if err := s.UpsertMessage("me@x.test", "Inbox", m); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for query, want := range map[string]string{
+			"senk@partner":        "one",
+			"SENK":                "one",
+			"<senk@partner.test>": "one", // stored JSON-escaped
+			"Senk & Co":           "one",
+			"team@partner.test":   "two",
+			"nobody@nowhere.test": "",
+		} {
+			got := s.SearchMessages("me@x.test", query, 10)
+			subject := ""
+			if len(got) == 1 {
+				subject = got[0].Subject
+			}
+			if len(got) > 1 || subject != want {
+				t.Errorf("encrypted=%v query %q: got %d results (%q), want %q", encrypted, query, len(got), subject, want)
+			}
+		}
+	}
+}

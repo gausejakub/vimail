@@ -847,8 +847,12 @@ func (s *SQLiteStore) SearchMessages(acctEmail, query string, limit int) []email
 		return nil
 	}
 	// Escape LIKE wildcards in user input.
-	escaped := strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`).Replace(query)
+	escaped := likeEscape.Replace(query)
 	pattern := "%" + escaped + "%"
+	// Cc and Reply-To are stored as JSON arrays, where <, > and & are written
+	// as \u escapes: match the query the way it is stored.
+	jsonQuery, _ := json.Marshal(query)
+	listPattern := "%" + likeEscape.Replace(strings.Trim(string(jsonQuery), `"`)) + "%"
 
 	// When encryption is enabled, body is encrypted in the DB so we can't
 	// LIKE-search it in SQL. Search header fields in SQL, then post-filter
@@ -864,12 +868,12 @@ func (s *SQLiteStore) SearchMessages(acctEmail, query string, limit int) []email
 		querySQL += ` WHERE f.account = ?`
 		args = append(args, acctEmail)
 		if bodySearchInSQL {
-			querySQL += ` AND (m.subject LIKE ? ESCAPE '\' OR m.from_addr LIKE ? ESCAPE '\' OR m.to_addr LIKE ? ESCAPE '\' OR m.body LIKE ? ESCAPE '\')`
-			args = append(args, pattern, pattern, pattern, pattern)
+			querySQL += ` AND (m.subject LIKE ? ESCAPE '\' OR m.from_addr LIKE ? ESCAPE '\' OR m.to_addr LIKE ? ESCAPE '\' OR m.cc_addr LIKE ? ESCAPE '\' OR m.reply_to LIKE ? ESCAPE '\' OR m.body LIKE ? ESCAPE '\')`
+			args = append(args, pattern, pattern, pattern, listPattern, listPattern, pattern)
 		}
 	} else if bodySearchInSQL {
-		querySQL += ` WHERE (m.subject LIKE ? ESCAPE '\' OR m.from_addr LIKE ? ESCAPE '\' OR m.to_addr LIKE ? ESCAPE '\' OR m.body LIKE ? ESCAPE '\')`
-		args = append(args, pattern, pattern, pattern, pattern)
+		querySQL += ` WHERE (m.subject LIKE ? ESCAPE '\' OR m.from_addr LIKE ? ESCAPE '\' OR m.to_addr LIKE ? ESCAPE '\' OR m.cc_addr LIKE ? ESCAPE '\' OR m.reply_to LIKE ? ESCAPE '\' OR m.body LIKE ? ESCAPE '\')`
+		args = append(args, pattern, pattern, pattern, listPattern, listPattern, pattern)
 	}
 	// Do not LIMIT candidates before deduplication: many label copies may
 	// precede later unique messages. Rows are streamed and iteration stops as
@@ -911,7 +915,8 @@ func (s *SQLiteStore) SearchMessages(acctEmail, query string, limit int) []email
 		if !bodySearchInSQL {
 			headerMatch := strings.Contains(strings.ToLower(m.Subject), lowerQuery) ||
 				strings.Contains(strings.ToLower(m.From), lowerQuery) ||
-				strings.Contains(strings.ToLower(m.To), lowerQuery)
+				strings.Contains(strings.ToLower(m.To), lowerQuery) ||
+				containsFold(m.Cc, lowerQuery) || containsFold(m.ReplyTo, lowerQuery)
 			if !headerMatch && !strings.Contains(strings.ToLower(m.Body), lowerQuery) {
 				continue
 			}

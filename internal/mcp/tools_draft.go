@@ -66,6 +66,9 @@ type saveDraftArgs struct {
 
 	Markdown *bool `json:"markdown,omitempty" jsonschema:"treat body as Markdown: the message is sent with a formatted HTML alternative next to the text as written. Default for new drafts: the account setting; on update: unchanged"`
 
+	Sign    *bool `json:"sign,omitempty" jsonschema:"OpenPGP-sign the message when the user sends it (needs [pgp] enabled). Default for new drafts: the account setting"`
+	Encrypt *bool `json:"encrypt,omitempty" jsonschema:"OpenPGP-encrypt the message to its recipients when the user sends it; the draft copy on the server is encrypted to the user alone. Default for new drafts: the account setting"`
+
 	Attachments *[]string `json:"attachments,omitempty" jsonschema:"local file paths to attach (must be inside an [mcp] attachment_dirs directory). Replaces the draft's attachments; [] removes them; omit to keep them"`
 }
 
@@ -102,6 +105,8 @@ type draftInfo struct {
 	Subject     string                `json:"subject"`
 	Body        string                `json:"body"`
 	Markdown    bool                  `json:"markdown,omitempty"`
+	Sign        bool                  `json:"sign,omitempty"`
+	Encrypt     bool                  `json:"encrypt,omitempty"`
 	InReplyTo   string                `json:"in_reply_to,omitempty"`
 	References  []string              `json:"references,omitempty"`
 	Source      *draftSourceInfo      `json:"source,omitempty"`
@@ -139,6 +144,7 @@ func toDraftInfo(d email.Draft) draftInfo {
 		Date: d.Date.Format(time.RFC3339), ServerSynced: d.Synced, ServerMessageID: email.SanitizeLine(d.ServerMessageID),
 	}
 	info.ConflictsWith = d.ConflictWith
+	info.Sign, info.Encrypt = d.Sign, d.Encrypt
 	info.Markdown = d.Markdown
 	if info.To == nil {
 		info.To = []string{}
@@ -354,6 +360,21 @@ func (s *Server) buildDraft(acct string, args saveDraftArgs) (email.Draft, error
 		d.Markdown = *args.Markdown
 	case args.ID == "":
 		d.Markdown = acctCfg.Markdown
+	}
+	// OpenPGP: the account's defaults for a new draft, explicit choices
+	// otherwise. Asking for it without OpenPGP enabled is an error: the
+	// draft must not silently go out unprotected.
+	if args.ID == "" && s.cfg.PGP.Enabled {
+		d.Sign, d.Encrypt = acctCfg.PGPSign, acctCfg.PGPEncrypt
+	}
+	if args.Sign != nil {
+		d.Sign = *args.Sign
+	}
+	if args.Encrypt != nil {
+		d.Encrypt = *args.Encrypt
+	}
+	if (d.Sign || d.Encrypt) && !s.cfg.PGP.Enabled {
+		return d, fmt.Errorf("sign and encrypt need OpenPGP: set [pgp] enabled = true in the vimail config")
 	}
 	d.Date = time.Now()
 	return d, nil

@@ -59,6 +59,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	case util.FetchBodyCompleteMsg:
 		if m.message != nil && m.message.UID == msg.UID {
 			m.message.Body = msg.Body
+			m.message.Security = msg.Security
 			m.message.HTMLBody = msg.HTMLBody
 			m.message.Attachments = msg.Attachments
 			m.scrollOffset = 0
@@ -251,6 +252,22 @@ func (m Model) View() string {
 		labelStyle.Render("From: ")+valueStyle.Render(sanitize(msg.From)),
 		labelStyle.Render("To:   ")+valueStyle.Render(sanitize(msg.To)),
 		labelStyle.Render("Date: ")+valueStyle.Render(msg.Date.Format("Jan 2, 2006 3:04 PM")),
+	)
+	// OpenPGP verdict: produced by vimail, shown with the headers and never
+	// as part of the message text, where a sender could imitate it.
+	if msg.Security != "" {
+		color := t.Success()
+		switch {
+		case strings.Contains(msg.Security, "BAD SIGNATURE"):
+			color = t.Error()
+		case strings.Contains(msg.Security, "not verified"), strings.Contains(msg.Security, "differs from"),
+			strings.Contains(msg.Security, "not checked"), strings.Contains(msg.Security, "not decrypted"),
+			strings.Contains(msg.Security, "not signed"), strings.Contains(msg.Security, "expired"), strings.Contains(msg.Security, "could not"):
+			color = t.Warning()
+		}
+		allLines = append(allLines, labelStyle.Render("PGP:  ")+lipgloss.NewStyle().Foreground(color).Render(sanitize(msg.Security)))
+	}
+	allLines = append(allLines,
 		subjStyle.Render(sanitize(msg.Subject)),
 		lipgloss.NewStyle().Foreground(t.BorderDim()).Render(strings.Repeat("─", m.width)),
 	)

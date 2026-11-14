@@ -125,7 +125,10 @@ type readMessageArgs struct {
 
 type readMessageResult struct {
 	messageHeader
-	Body          string   `json:"body,omitempty"`
+	Body string `json:"body,omitempty"`
+	// Security is vimail's own OpenPGP verdict (encrypted? signature good?),
+	// not text from the message.
+	Security      string   `json:"security,omitempty"`
 	BodyCached    bool     `json:"body_cached"`
 	BodyChars     int      `json:"body_chars,omitempty"`
 	BodyTruncated bool     `json:"body_truncated,omitempty"`
@@ -309,6 +312,7 @@ func (s *Server) readCachedMessage(account, folder string, uid uint32) (readMess
 		// Sanitized again on the way out: the cache may hold mail stored before
 		// a sanitizing rule existed (e.g. invisible Unicode tag characters).
 		Body:       email.SanitizeText(m.Body),
+		Security:   email.SanitizeLine(m.Security),
 		BodyCached: bodyCached,
 	}
 	if !bodyCached {

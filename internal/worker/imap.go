@@ -19,6 +19,7 @@ import (
 	"github.com/gausejakub/vimail/internal/cache"
 	"github.com/gausejakub/vimail/internal/config"
 	"github.com/gausejakub/vimail/internal/email"
+	"github.com/gausejakub/vimail/internal/pgp"
 )
 
 const (
@@ -54,6 +55,8 @@ type IMAPWorker struct {
 	// opDeadline and is configurable by loopback tests that exercise timeout
 	// behavior without waiting 45 seconds.
 	commandDeadline time.Duration
+
+	pgp *pgp.Client // nil when PGP is off
 
 	// Maps display folder name → actual IMAP mailbox name.
 	folderMap map[string]string
@@ -728,7 +731,7 @@ func (w *IMAPWorker) FetchBody(folder string, uid uint32) (BodyResult, error) {
 				if err != nil {
 					continue
 				}
-				parsed, err := ParseBody(data)
+				parsed, err := w.parseBody(data)
 				if err != nil {
 					result = BodyResult{Text: string(data)}
 				} else {
@@ -747,7 +750,7 @@ func (w *IMAPWorker) FetchBody(folder string, uid uint32) (BodyResult, error) {
 	}
 
 	// Cache text + HTML body + attachment metadata.
-	w.store.UpdateMessageBody(w.acct.Email, folder, uid, result.Text, result.HTML, result.Attachments)
+	w.cacheBody(folder, uid, result)
 
 	return result, nil
 }
@@ -840,7 +843,7 @@ func (w *IMAPWorker) fetchBodyDirect(folder string, uid uint32, peek bool) (Body
 				if err != nil {
 					continue
 				}
-				parsed, err := ParseBody(data)
+				parsed, err := w.parseBody(data)
 				if err != nil {
 					result = BodyResult{Text: string(data)}
 				} else {
@@ -885,7 +888,7 @@ func (w *IMAPWorker) fetchBodyDirect(folder string, uid uint32, peek bool) (Body
 								if err != nil {
 									continue
 								}
-								parsed, err := ParseBody(data)
+								parsed, err := w.parseBody(data)
 								if err != nil {
 									result = BodyResult{Text: string(data)}
 								} else {
@@ -904,7 +907,7 @@ func (w *IMAPWorker) fetchBodyDirect(folder string, uid uint32, peek bool) (Body
 	}
 
 	// Cache the result.
-	w.store.UpdateMessageBody(w.acct.Email, folder, uid, result.Text, result.HTML, result.Attachments)
+	w.cacheBody(folder, uid, result)
 
 	return result, nil
 }

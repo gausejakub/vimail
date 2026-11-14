@@ -19,6 +19,11 @@ type Draft struct {
 	// Markdown marks the body as Markdown: the message is sent as
 	// multipart/alternative with the text as written and a rendered HTML part.
 	Markdown bool
+	// Sign and Encrypt ask for OpenPGP when the draft is sent. The copy of
+	// an Encrypt draft in the server Drafts folder is encrypted to the
+	// author alone.
+	Sign    bool
+	Encrypt bool
 	// Threading headers (Message-IDs without angle brackets).
 	InReplyTo  string
 	References []string

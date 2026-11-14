@@ -14,12 +14,14 @@ import (
 	"github.com/gausejakub/vimail/internal/auth"
 	"github.com/gausejakub/vimail/internal/config"
 	"github.com/gausejakub/vimail/internal/email"
+	"github.com/gausejakub/vimail/internal/pgp"
 )
 
 // SMTPWorker handles sending email via SMTP.
 type SMTPWorker struct {
 	acct  config.AccountConfig
 	creds *auth.Credentials
+	pgp   *pgp.Client // nil when PGP is off
 }
 
 // NewSMTPWorker creates a new SMTP worker.
@@ -52,7 +54,7 @@ func (w *SMTPWorker) Send(req SendRequest) (string, []byte, error) {
 	// The transmitted message has no Bcc header; the copy kept in Sent does,
 	// so the user can still see who was blind-copied. Both share one
 	// Message-ID and Date.
-	opts := ComposeOptions{MessageID: req.MessageID, Date: req.Date}
+	opts := ComposeOptions{MessageID: req.MessageID, Date: req.Date, PGP: w.pgp, memo: &pgpMemo{}}
 	msgID, rawMsg, err := ComposeMessage(req, opts)
 	if err != nil {
 		return "", nil, fmt.Errorf("compose: %w", err)

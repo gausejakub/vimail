@@ -512,3 +512,82 @@ func (env *e2eEnv) partnerSync(t *testing.T) *cache.SQLiteStore {
 	}
 	return store
 }
+
+// The same draft changed in vimail and in another client before either
+// synced: both versions are kept and marked as a pair; removing one clears
+// the mark on the other.
+func TestDraftChangedInTwoClientsIsMarkedAsConflict(t *testing.T) {
+	env := newE2E(t)
+	reply := email.Draft{ID: "d1", To: []string{partner}, Subject: "Re: Plan", Body: "first", InReplyTo: "orig@partner.test"}
+	if err := env.store.SaveDraft(me, reply); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.coord.FlushDraftOpsNow(me); err != nil {
+		t.Fatal(err)
+	}
+	env.sync(t, me)
+
+	// vimail edits it (not yet uploaded) while the phone replaces the server
+	// copy with its own version.
+	reply.Body = "edited in vimail"
+	if err := env.store.SaveDraft(me, reply); err != nil {
+		t.Fatal(err)
+	}
+	c := env.imap.client(t, me)
+	if _, err := c.Select("Drafts", nil).Wait(); err != nil {
+		t.Fatal(err)
+	}
+	var first imap.SeqSet
+	first.AddNum(1)
+	if err := c.Store(first, &imap.StoreFlags{Op: imap.StoreFlagsAdd, Flags: []imap.Flag{imap.FlagDeleted}}, nil).Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Expunge().Close(); err != nil {
+		t.Fatal(err)
+	}
+	env.imap.appendRaw(t, me, "Drafts", []byte("From: "+me+"\r\nTo: "+partner+"\r\nSubject: Re: Plan\r\nMessage-ID: <phone-2@ecomail.test>\r\n"+
+		"In-Reply-To: <orig@partner.test>\r\n\r\nedited on the phone\r\n"), imap.FlagDraft)
+	// An unrelated draft from the phone must not be marked.
+	env.imap.appendRaw(t, me, "Drafts", []byte("From: "+me+"\r\nTo: x@other.test\r\nSubject: Other\r\nMessage-ID: <phone-3@ecomail.test>\r\n\r\nunrelated\r\n"), imap.FlagDraft)
+	env.sync(t, me)
+
+	byBody := map[string]email.Draft{}
+	for _, d := range env.store.Drafts(me) {
+		byBody[d.Body] = d
+	}
+	mine, theirs, other := byBody["edited in vimail"], byBody["edited on the phone"], byBody["unrelated"]
+	if len(byBody) != 3 || mine.ID == "" || theirs.ID == "" {
+		t.Fatalf("drafts after the conflict: %+v", byBody)
+	}
+	if mine.ConflictWith != theirs.ID || theirs.ConflictWith != mine.ID || other.ConflictWith != "" {
+		t.Fatalf("conflict marks: mine→%q theirs→%q other→%q", mine.ConflictWith, theirs.ConflictWith, other.ConflictWith)
+	}
+	// Both versions are on the server; nothing was lost or merged.
+	if n := len(env.imap.messages(t, me, "Drafts")); n != 3 {
+		t.Fatalf("%d drafts on the server, want 3", n)
+	}
+	// The list and MCP show the pair.
+	for _, m := range env.store.MessagesFor(me, "Drafts") {
+		if (m.ID == mine.ID || m.ID == theirs.ID) != (m.DraftConflict != "") {
+			t.Fatalf("list row %s: conflict=%q", m.ID, m.DraftConflict)
+		}
+	}
+	var info struct {
+		ConflictsWith string `json:"conflicts_with"`
+	}
+	callTool(t, env.mcpSession(t), "read_draft", map[string]any{"account": me, "id": mine.ID}, &info)
+	if info.ConflictsWith != theirs.ID {
+		t.Fatalf("read_draft conflicts_with = %q", info.ConflictsWith)
+	}
+
+	// Keeping one: delete the other, and the mark is gone, also after a sync.
+	env.store.DeleteDraft(me, theirs.ID)
+	if err := env.coord.FlushDraftOpsNow(me); err != nil {
+		t.Fatal(err)
+	}
+	env.sync(t, me)
+	kept, ok := env.store.Draft(me, mine.ID)
+	if !ok || kept.ConflictWith != "" || len(env.store.Drafts(me)) != 2 {
+		t.Fatalf("after keeping one: %+v (ok=%v, %d drafts)", kept, ok, len(env.store.Drafts(me)))
+	}
+}

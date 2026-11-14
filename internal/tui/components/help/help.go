@@ -34,6 +34,7 @@ var bindings = []binding{
 	{"u", "Restore from Trash"},
 	{"E", "Export message(s) to ZIP"},
 	{"R", "Refresh"},
+	{":accept", "Answer an invitation (:tentative, :decline)"},
 	{"Ctrl+S", "Send (in compose)"},
 	{":attach", "Attach a file (in compose)"},
 	{":markdown", "Send as Markdown + HTML (in compose)"},

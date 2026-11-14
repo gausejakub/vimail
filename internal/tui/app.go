@@ -985,6 +985,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.showOps = true
 		return m, nil
 
+	case worker.InvitationReply:
+		var cmd tea.Cmd
+		m.status, cmd = m.status.Update(util.ProcessEndMsg{ID: "invite"})
+		cmds = append(cmds, cmd)
+		text, isErr := "", false
+		if msg.Err != nil {
+			text, isErr = "Invitation not answered: "+email.SanitizeLine(msg.Err.Error()), true
+		} else {
+			verb := map[string]string{email.PartAccepted: "Accepted", email.PartTentative: "Tentatively accepted", email.PartDeclined: "Declined"}[msg.Status]
+			// Name where the answer went: the organizer is whoever the
+			// invitation says, not necessarily the sender of the message.
+			text = fmt.Sprintf("%s: %s. Answer sent to %s", verb, email.SanitizeLine(msg.Summary), email.SanitizeLine(msg.Organizer))
+		}
+		cmds = append(cmds, func() tea.Msg { return util.InfoMsg{Text: text, IsError: isErr} })
+		return m, tea.Batch(cmds...)
+
 	case util.SearchResultsMsg:
 		logging.Info("search", "results received", logging.KV("count", len(msg.Results)))
 		m.msglist = m.msglist.SetSearchResults(msg.Query, msg.Results)
@@ -1621,6 +1637,32 @@ func (m Model) executeCommand(input string) tea.Cmd {
 		}
 		query := strings.Join(parts[1:], " ")
 		return m.executeSearch(query)
+
+	case "accept", "tentative", "decline":
+		status := map[string]string{"accept": email.PartAccepted, "tentative": email.PartTentative, "decline": email.PartDeclined}[parts[0]]
+		sel := m.msglist.SelectedMessage()
+		if sel == nil || sel.UID == 0 {
+			return func() tea.Msg {
+				return util.InfoMsg{Text: "Select the message with the invitation first", IsError: true}
+			}
+		}
+		if m.coordinator == nil {
+			return func() tea.Msg { return util.InfoMsg{Text: "Answering needs a configured account", IsError: true} }
+		}
+		acct, folder := m.mailbox.SelectedEmail(), m.msglist.CurrentFolder()
+		if sel.Account != "" {
+			acct = sel.Account
+		}
+		if sel.Folder != "" { // search results name their own folder ("Inbox +2")
+			folder = sel.Folder
+			if i := strings.Index(folder, " +"); i > 0 {
+				folder = folder[:i]
+			}
+		}
+		return tea.Batch(
+			func() tea.Msg { return util.ProcessStartMsg{ID: "invite", Label: "↑ answering the invitation"} },
+			m.coordinator.RespondToInvitation(acct, folder, sel.UID, status),
+		)
 
 	case "processes", "ps":
 		return func() tea.Msg { return showProcessesMsg{} }

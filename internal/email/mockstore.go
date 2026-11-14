@@ -2,6 +2,7 @@ package email
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -380,4 +381,25 @@ func (s *MockStore) DeleteMessages(acctEmail, folder string, ids []string) {
 
 func (s *MockStore) SearchMessages(acctEmail, query string, limit int) []Message {
 	return nil
+}
+
+// Contacts collects correspondents from the sample messages.
+func (s *MockStore) Contacts(own []string) []Contact {
+	set := NewAddressSet(own...)
+	for _, a := range s.accounts {
+		set[strings.ToLower(a.Email)] = true
+	}
+	book := NewContactBook(set)
+	for _, folders := range s.messages {
+		for folder, msgs := range folders {
+			for _, m := range msgs {
+				if folder == "Sent" || folder == "Drafts" {
+					book.Add(m.To, true, m.Date)
+				} else {
+					book.Add(m.From, false, m.Date)
+				}
+			}
+		}
+	}
+	return book.Contacts()
 }

@@ -331,6 +331,7 @@ Press `Enter` on a message, or focus the preview pane (`l` / `Tab`) and press `E
 | `Enter` | Open draft (in Drafts folder), otherwise open the Vim reader |
 | `Ctrl+S` | Send message (in compose) |
 | `:attach <path>` / `:detach [n]` | Add or remove an attachment (compose editor) |
+| `Enter` / `↑` `↓` in To, Cc, Bcc | Take / choose a suggested recipient (people from your cached mail; those you have written to come first) |
 | `Esc` | Close overlay / save draft / clear search |
 | `/` | Search all accounts and folders |
 
@@ -495,7 +496,7 @@ Any tool that accepts a prompt as an argument and prints the response to stdout 
 }
 ```
 
-Reads (`list_accounts`, `list_folders`, `list_messages`, `read_message`, `search_messages`, `read_draft`) are served from the local cache; search results expose usable folder/UID handles and a `truncated` flag. Write tools include `mark_read`, `mark_unread`, `flag_message`, `unflag_message`, `move_message`, Trash-safe delete/restore, draft operations, and `verify`. For natural review tasks, `list_recent_messages` can sync and list a time window across every account in one call, excluding non-received folders and collapsing Gmail label copies; `read_messages` then opens the selected bodies as one batch and can fetch missing bodies without marking messages read.
+Reads (`list_accounts`, `list_folders`, `list_messages`, `read_message`, `search_messages`, `read_draft`, `search_contacts`) are served from the local cache; `search_contacts` resolves part of a name to an address the way the composer does; search results expose usable folder/UID handles and a `truncated` flag. Write tools include `mark_read`, `mark_unread`, `flag_message`, `unflag_message`, `move_message`, Trash-safe delete/restore, draft operations, and `verify`. For natural review tasks, `list_recent_messages` can sync and list a time window across every account in one call, excluding non-received folders and collapsing Gmail label copies; `read_messages` then opens the selected bodies as one batch and can fetch missing bodies without marking messages read.
 
 Drafts are full-fidelity, so a draft prepared by an AI client is a message you can review and send as is. `save_draft` takes `to`, `cc` and `bcc` as address lists (`to` also accepts one comma-separated string), a `from` identity, local file `attachments`, and either `reply_to_message` (`account`/`folder`/`uid`, with `reply_all` and `quote_original`) or `forward_message`. A reply gets `In-Reply-To` and `References` from the original, a `Re:` subject, recipients from Reply-To/From (plus To/Cc for reply-all, without your own addresses), and the identity the original was addressed to as From. Explicit fields override the computed ones; on update (`id`), omitted fields keep their value. The result, and `read_draft`, return every field, plus whether the server Drafts folder already holds this version (`server_sync`). `delete_draft` removes the server copy too. MCP never sends a draft: you open it in vimail and send it yourself.
 

@@ -20,4 +20,7 @@ type Store interface {
 	DeleteMessage(email, folder, id string)
 	DeleteMessages(email, folder string, ids []string)
 	SearchMessages(acctEmail, query string, limit int) []Message
+	// Contacts returns correspondents from cached mail, best first, leaving
+	// out the given (own) addresses.
+	Contacts(own []string) []Contact
 }

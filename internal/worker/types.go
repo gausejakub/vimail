@@ -108,12 +108,10 @@ type FetchBodyRequest struct {
 
 // FetchBodyResult is the result of fetching a message body.
 type FetchBodyResult struct {
-	Account string
-	Folder  string
-	UID     uint32
-	Body    string
-	// Markdown sends the body with a rendered text/html alternative.
-	Markdown    bool
+	Account     string
+	Folder      string
+	UID         uint32
+	Body        string
 	HTMLBody    string
 	Attachments []email.Attachment
 	Err         error

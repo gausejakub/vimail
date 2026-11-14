@@ -513,6 +513,17 @@ func (env *e2eEnv) partnerSync(t *testing.T) *cache.SQLiteStore {
 	return store
 }
 
+// rebuildCoordinator recreates the coordinator after env.cfg was changed.
+func (env *e2eEnv) rebuildCoordinator(t *testing.T) {
+	t.Helper()
+	env.coord.DisconnectAll()
+	env.coord = worker.NewCoordinator(env.cfg, env.store)
+	for _, a := range env.cfg.Accounts {
+		env.coord.SetTestCredentials(a.Email, testCreds(a.Email))
+	}
+	t.Cleanup(env.coord.DisconnectAll)
+}
+
 // The same draft changed in vimail and in another client before either
 // synced: both versions are kept and marked as a pair; removing one clears
 // the mark on the other.

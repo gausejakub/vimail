@@ -28,7 +28,7 @@ jobs:
       - name: Test
         run: go vet ./... && go test ./...
 
-      - name: Build tarballs
+      - name: Build archives
         env:
           CGO_ENABLED: '0'
           GOWORK: 'off'   # build exactly what `go install …@tag` builds
@@ -41,12 +41,22 @@ jobs:
             tar -C dist -czf "dist/$name.tar.gz" "$name"
             rm "dist/$name"
           done
-          (cd dist && sha256sum *.tar.gz > SHA256SUMS && cat SHA256SUMS)
+          # Windows: a zip holding vimail.exe.
+          for arch in amd64 arm64; do
+            name="vimail-windows-$arch"
+            mkdir "dist/$name"
+            GOOS=windows GOARCH=$arch go build -trimpath -ldflags='-s -w' -o "dist/$name/vimail.exe" .
+            (cd "dist/$name" && zip -q "../$name.zip" vimail.exe)
+            rm -r "dist/$name"
+          done
+          (cd dist && sha256sum *.tar.gz *.zip > SHA256SUMS && cat SHA256SUMS)
 
       - name: Attest build provenance
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
-          subject-path: 'dist/*.tar.gz'
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
 
       - name: Publish release
         env:
@@ -61,7 +71,7 @@ jobs:
             echo
             echo '```'
             echo "sha256sum -c SHA256SUMS --ignore-missing"
-            echo "gh attestation verify vimail-<os>-<arch>.tar.gz -R $GITHUB_REPOSITORY"
+            echo "gh attestation verify vimail-<os>-<arch>.tar.gz -R $GITHUB_REPOSITORY   (the .zip on Windows)"
             echo '```'
           } >> notes.md
-          gh release create "$TAG" --latest --title "$TAG" --notes-file notes.md dist/*.tar.gz dist/SHA256SUMS
+          gh release create "$TAG" --latest --title "$TAG" --notes-file notes.md dist/*.tar.gz dist/*.zip dist/SHA256SUMS

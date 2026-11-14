@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"mime"
 	"net/mail"
+	"sort"
 	"strings"
 	"time"
 
@@ -132,6 +133,8 @@ func NormalizeAddresses(entries []string) ([]string, error) {
 // SplitAddressField parses a free-text address field such as the composer's
 // To line ("a@x, Bob <b@y>").
 func SplitAddressField(s string) ([]string, error) {
+	// A trailing separator is what completing a recipient leaves behind.
+	s = strings.TrimRight(strings.TrimSpace(s), ", ")
 	if strings.TrimSpace(s) == "" {
 		return nil, nil
 	}
@@ -230,8 +233,10 @@ func (s AddressSet) Has(entry string) bool { return s[AddrSpec(entry)] }
 // ReplyRecipients computes the recipients of a reply to orig. To is the
 // original's Reply-To, or its From. When the original was written by the
 // user (a message in Sent), the reply goes to its original recipients
-// instead. With all=true, the original's To and Cc are added to Cc. The
-// user's own addresses are never included, and nobody appears twice.
+// instead. With all=true, the original's To and Cc are added to Cc. own is
+// the replying account's addresses (its address and identities): they are
+// never included, and nobody appears twice. The user's other accounts are
+// not in own, so a message from one of them is answered like any other.
 func ReplyRecipients(orig Message, all bool, own AddressSet) (to, cc []string) {
 	seen := map[string]bool{}
 	add := func(dst *[]string, entries []string) {
@@ -336,4 +341,28 @@ func DecodeHeaderWords(s string) string {
 		return dec
 	}
 	return s
+}
+
+// MergeSearchResults combines local and server search hits into one list,
+// newest first, with each message once (label copies and messages found by
+// both searches share a Message-ID).
+func MergeSearchResults(local, server []Message) []Message {
+	seen := map[string]bool{}
+	key := func(m Message) string {
+		if m.MessageID != "" {
+			return m.Account + "\x00" + m.MessageID
+		}
+		return m.Account + "\x00" + m.Folder + "\x00" + m.ID
+	}
+	out := make([]Message, 0, len(local)+len(server))
+	for _, list := range [][]Message{local, server} {
+		for _, m := range list {
+			if k := key(m); !seen[k] {
+				seen[k] = true
+				out = append(out, m)
+			}
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Date.After(out[j].Date) })
+	return out
 }

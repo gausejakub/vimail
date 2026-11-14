@@ -58,6 +58,14 @@ type Model struct {
 
 	syncPending   int             // number of accounts still syncing
 	syncCompleted map[string]bool // completion deduplication for the active cycle
+
+	// mailSeen is, per account and watched folder, the highest UID already
+	// considered for a new-mail notification.
+	mailSeen map[string]uint32
+	// pendingMove holds the messages a ":move <folder>" started with m (one
+	// message, or a visual selection) applies to; empty for a typed :move.
+	pendingMove []email.Message
+	contactsAt  time.Time // when the recipient-completion contacts were last loaded
 }
 
 // syncTickMsg triggers periodic sync refresh.
@@ -114,12 +122,13 @@ func New(cfg config.Config, store email.Store) Model {
 		focusedPane:   layout.PaneMsgList,
 		layout:        layout.SplitPaneLayout{ShowPreview: cfg.General.PreviewPane},
 		mailbox:       mailbox.New(store),
-		msglist:       msglist.New(store).SetMotion(cfg.General.Motion).Focus(),
+		msglist:       msglist.New(store).SetMotion(cfg.General.Motion).SetThreaded(cfg.General.Threads).Focus(),
 		preview:       preview.New(),
 		status:        status.New().SetMotion(cfg.General.Motion),
 		compose:       compose.New(cfg.AI),
 		cmdInput:      cmdInput,
 		syncCompleted: make(map[string]bool),
+		mailSeen:      make(map[string]uint32),
 	}
 	if store, ok := store.(cacheVersionStore); ok {
 		m.cacheVersion, _ = store.DataVersion()
@@ -209,12 +218,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.resizePanes()
 		m.status = m.status.SetWidth(msg.Width)
 
+	case contactsLoadedMsg:
+		m.compose = m.compose.SetContacts(msg.contacts)
+		return m, nil
+
 	case cacheVersionMsg:
 		cmds = append(cmds, pollCacheVersion(m.store))
 		if msg.err != nil || msg.version == m.cacheVersion {
 			return m, tea.Batch(cmds...)
 		}
 		m.cacheVersion = msg.version
+		cmds = append(cmds, m.newMailCmd()) // another process (the MCP server) may have synced
 		m.mailbox = m.mailbox.Reload()
 		account := m.msglist.CurrentAccount()
 		folder := m.msglist.CurrentFolder()
@@ -340,7 +354,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			})
 			return m, tea.Batch(cmds...)
 		}
-		m.compose = m.compose.ShowDraft(draft).WithIdentities(m.identities(acct)).SetSize(m.width, m.height)
+		m.compose = m.compose.ShowDraft(draft).WithIdentities(m.identities(acct)).WithSignatures(m.signatureFor(acct)).SetSize(m.width, m.height)
+		cmds = append(cmds, m.loadContactsCmd())
 		m.mode = keys.ModeNormal
 		cmds = append(cmds, func() tea.Msg {
 			return keys.ModeChangedMsg{Mode: keys.ModeNormal}
@@ -439,6 +454,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.syncCompleted[msg.Account] = true
+		cmds = append(cmds, m.newMailCmd())
 		logging.Info("sync", "account sync complete (TUI)", logging.Acct(msg.Account), logging.Err(msg.Err), logging.KV("pending", m.syncPending-1))
 		m.syncPending--
 		m.mailbox = m.mailbox.SetAccountSyncing(msg.Account, false)
@@ -475,6 +491,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case worker.SyncAccountLateCompleteMsg:
+		cmds = append(cmds, m.newMailCmd())
 		m.mailbox = m.mailbox.Reload()
 		if msg.Account == m.msglist.CurrentAccount() {
 			currentAcct, currentFolder := m.msglist.CurrentAccount(), m.msglist.CurrentFolder()
@@ -539,6 +556,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case worker.SyncResult:
+		cmds = append(cmds, m.newMailCmd())
 		if msg.Err != nil {
 			cmds = append(cmds, func() tea.Msg {
 				return util.InfoMsg{Text: "Sync error: " + msg.Err.Error(), IsError: true}
@@ -985,6 +1003,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.showOps = true
 		return m, nil
 
+	case util.ToggleThreadsMsg:
+		m.msglist = m.msglist.SetThreaded(!m.msglist.Threaded())
+		text := "Conversations: off"
+		if m.msglist.Threaded() {
+			text = "Conversations: on (folders with up to 500 messages)"
+		}
+		cmds = append(cmds, m.msglist.SelectCurrentCmd(), func() tea.Msg { return util.InfoMsg{Text: text} })
+		return m, tea.Batch(cmds...)
+
 	case util.SearchResultsMsg:
 		logging.Info("search", "results received", logging.KV("count", len(msg.Results)))
 		m.msglist = m.msglist.SetSearchResults(msg.Query, msg.Results)
@@ -998,8 +1025,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		q := msg.Query
 		n := len(msg.Results)
+		// Say what was searched: the cache alone misses text in bodies that
+		// were never downloaded.
+		text, isErr := fmt.Sprintf("Search %q: %d results in the cache (:ss %s also asks the server)", q, n, q), false
+		if msg.Server != "" {
+			text = fmt.Sprintf("Search %q: %d results (cache and the %s server)", q, n, msg.Server)
+			if msg.ServerError != nil {
+				text, isErr = fmt.Sprintf("Search %q: %d results; server search incomplete: %s", q, n, email.SanitizeLine(msg.ServerError.Error())), true
+			}
+		}
 		cmds = append(cmds, func() tea.Msg {
-			return util.InfoMsg{Text: fmt.Sprintf("Search %q: %d results", q, n), IsError: false}
+			return util.InfoMsg{Text: text, IsError: isErr}
 		})
 		return m, tea.Batch(cmds...)
 
@@ -1164,8 +1200,23 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return keys.ModeChangedMsg{Mode: keys.ModeCommand}
 		})
 
+	case key.Matches(msg, keys.Normal.Archive):
+		if sel := m.msglist.SelectedMessage(); sel != nil {
+			cmds = append(cmds, m.archiveCmd([]email.Message{*sel}))
+		}
+
+	case key.Matches(msg, keys.Normal.Move):
+		if sel := m.msglist.SelectedMessage(); sel != nil {
+			m.pendingMove = []email.Message{*sel}
+			m = m.openMovePrompt()
+			cmds = append(cmds, func() tea.Msg {
+				return keys.ModeChangedMsg{Mode: keys.ModeCommand}
+			})
+		}
+
 	case key.Matches(msg, keys.Normal.Compose):
-		m.compose = m.compose.Show().WithIdentities(m.identities(m.mailbox.SelectedEmail())).SetSize(m.width, m.height)
+		m.compose = m.compose.Show().WithIdentities(m.identities(m.mailbox.SelectedEmail())).WithSignatures(m.signatureFor(m.mailbox.SelectedEmail())).SetSize(m.width, m.height)
+		cmds = append(cmds, m.loadContactsCmd())
 		m.mode = keys.ModeInsert
 		cmds = append(cmds, func() tea.Msg {
 			return keys.ModeChangedMsg{Mode: keys.ModeInsert}
@@ -1185,7 +1236,8 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			} else {
 				d = m.replyDraft(acct, orig, key.Matches(msg, keys.Normal.ReplyAll))
 			}
-			m.compose = m.compose.ShowReply(d).WithIdentities(m.identities(acct)).SetSize(m.width, m.height)
+			m.compose = m.compose.ShowReply(d).WithIdentities(m.identities(acct)).WithSignatures(m.signatureFor(acct)).SetSize(m.width, m.height)
+			cmds = append(cmds, m.loadContactsCmd())
 			m.mode = keys.ModeNormal
 			cmds = append(cmds, func() tea.Msg {
 				return keys.ModeChangedMsg{Mode: keys.ModeNormal}
@@ -1525,6 +1577,26 @@ func (m Model) handleVisualKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+	case "A", "m":
+		selected := m.msglist.SelectedMessages()
+		lo, _ := m.msglist.VisualRange()
+		m.msglist = m.msglist.ExitVisual()
+		m.msglist = m.msglist.SetCursor(lo)
+		m.mode = keys.ModeNormal
+		if len(selected) == 0 {
+			cmds = append(cmds, func() tea.Msg { return keys.ModeChangedMsg{Mode: keys.ModeNormal} })
+			break
+		}
+		if k == "A" {
+			cmds = append(cmds, func() tea.Msg { return keys.ModeChangedMsg{Mode: keys.ModeNormal} })
+			cmds = append(cmds, m.archiveCmd(selected))
+			break
+		}
+		// Move: ask for the folder, keeping the selection for the command.
+		m.pendingMove = selected
+		m = m.openMovePrompt()
+		cmds = append(cmds, func() tea.Msg { return keys.ModeChangedMsg{Mode: keys.ModeCommand} })
+
 	case "esc", "v", "V":
 		m.msglist = m.msglist.ExitVisual()
 		m.mode = keys.ModeNormal
@@ -1548,6 +1620,7 @@ func (m Model) handleCommandKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, keys.Command.Cancel):
 		m.cmdActive = false
+		m.pendingMove = nil
 		m.cmdInput.Blur()
 		m.cmdInput.Prompt = ":"
 		m.mode = keys.ModeNormal
@@ -1563,6 +1636,7 @@ func (m Model) handleCommandKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			cmd = m.executeCommand(m.cmdInput.Value())
 		}
 		m.cmdActive = false
+		m.pendingMove = nil // the command captured it
 		m.cmdInput.Blur()
 		m.cmdInput.Prompt = ":"
 		m.mode = keys.ModeNormal
@@ -1622,6 +1696,17 @@ func (m Model) executeCommand(input string) tea.Cmd {
 		query := strings.Join(parts[1:], " ")
 		return m.executeSearch(query)
 
+	case "search-server", "ss":
+		if len(parts) < 2 {
+			return func() tea.Msg {
+				return util.InfoMsg{Text: "Usage: :search-server <query>", IsError: true}
+			}
+		}
+		return m.executeServerSearch(strings.Join(parts[1:], " "))
+
+	case "threads":
+		return func() tea.Msg { return util.ToggleThreadsMsg{} }
+
 	case "processes", "ps":
 		return func() tea.Msg { return showProcessesMsg{} }
 
@@ -1646,18 +1731,18 @@ func (m Model) executeCommand(input string) tea.Cmd {
 		if len(parts) < 2 {
 			return func() tea.Msg { return util.InfoMsg{Text: "Usage: :move <folder>", IsError: true} }
 		}
-		if m.coordinator == nil {
-			return func() tea.Msg { return util.InfoMsg{Text: "Move requires a configured account", IsError: true} }
+		// Started with m (one message or a visual selection), or typed: the
+		// selected message.
+		msgs := m.pendingMove
+		if len(msgs) == 0 {
+			if sel := m.msglist.SelectedMessage(); sel != nil {
+				msgs = []email.Message{*sel}
+			}
 		}
-		sel := m.msglist.SelectedMessage()
-		if sel == nil || sel.UID == 0 {
+		if len(msgs) == 0 {
 			return func() tea.Msg { return util.InfoMsg{Text: "No message selected", IsError: true} }
 		}
-		acct, source, destination := m.mailbox.SelectedEmail(), m.msglist.CurrentFolder(), strings.Join(parts[1:], " ")
-		if destination == source {
-			return func() tea.Msg { return util.InfoMsg{Text: "Message is already in " + destination, IsError: true} }
-		}
-		return tea.Sequence(m.coordinator.MoveMessages(acct, source, destination, []uint32{sel.UID}), func() tea.Msg { return util.FolderRefreshMsg{Account: acct, Folder: source} })
+		return m.moveCmd(msgs, strings.Join(parts[1:], " "))
 
 	default:
 		return func() tea.Msg {
@@ -2159,7 +2244,7 @@ func (m Model) ownAddresses() email.AddressSet {
 // reply-all, without the user's own addresses), In-Reply-To/References for
 // threading, and the identity the original was addressed to as From.
 func (m Model) replyDraft(acct string, orig email.Message, all bool) email.Draft {
-	to, cc := email.ReplyRecipients(orig, all, m.ownAddresses())
+	to, cc := email.ReplyRecipients(orig, all, m.replyingAs(acct))
 	d := email.Draft{
 		Account:    acct,
 		From:       email.PickIdentity(orig, m.identities(acct)),
@@ -2197,4 +2282,214 @@ func (m Model) forwardDraft(acct string, orig email.Message) email.Draft {
 		}
 	}
 	return d
+}
+
+// executeServerSearch searches the cache (all accounts) and, for the
+// selected account, the mail server, which also covers bodies that were
+// never downloaded.
+func (m Model) executeServerSearch(query string) tea.Cmd {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil
+	}
+	if m.coordinator == nil {
+		return func() tea.Msg { return util.InfoMsg{Text: "Server search needs a configured account", IsError: true} }
+	}
+	store, coord, acct := m.store, m.coordinator, m.mailbox.SelectedEmail()
+	search := func() tea.Msg {
+		res := coord.SearchServerNow(acct, query, 200)
+		return util.SearchResultsMsg{
+			Query:       query,
+			Results:     email.MergeSearchResults(store.SearchMessages("", query, 200), res.Messages),
+			Server:      acct,
+			ServerError: errors.Join(res.Errors...),
+		}
+	}
+	return tea.Batch(
+		func() tea.Msg {
+			return util.ProcessStartMsg{ID: "search", Label: "⌕ searching " + acct + " on the server"}
+		},
+		tea.Sequence(search, func() tea.Msg { return util.ProcessEndMsg{ID: "search"} }),
+	)
+}
+
+// openMovePrompt opens the command line with "move " typed in, so the user
+// only enters the folder.
+func (m Model) openMovePrompt() Model {
+	m.cmdActive = true
+	m.cmdInput.Prompt = ":"
+	m.cmdInput.SetValue("move ")
+	m.cmdInput.CursorEnd()
+	m.cmdInput.Focus()
+	m.mode = keys.ModeCommand
+	return m
+}
+
+// moveTargets groups messages by the account and folder they live in.
+// Search results carry their own account and folder; everything else is in
+// the folder being shown. Local drafts (no UID) cannot be moved.
+type moveGroup struct {
+	account, folder string
+	uids            []uint32
+}
+
+func (m Model) moveTargets(msgs []email.Message) []moveGroup {
+	var groups []moveGroup
+	index := map[string]int{}
+	for _, msg := range msgs {
+		if msg.UID == 0 {
+			continue
+		}
+		acct, folder := m.msglist.CurrentAccount(), m.msglist.CurrentFolder()
+		if acct == "" {
+			acct = m.mailbox.SelectedEmail()
+		}
+		if msg.Account != "" {
+			acct = msg.Account
+		}
+		if msg.Folder != "" {
+			folder = msg.Folder
+			if i := strings.Index(folder, " +"); i > 0 { // "Inbox +2" in search results
+				folder = folder[:i]
+			}
+		}
+		key := acct + "\x00" + folder
+		i, ok := index[key]
+		if !ok {
+			i = len(groups)
+			index[key] = i
+			groups = append(groups, moveGroup{account: acct, folder: folder})
+		}
+		groups[i].uids = append(groups[i].uids, msg.UID)
+	}
+	return groups
+}
+
+// archiveCmd archives messages and reports the outcome.
+func (m Model) archiveCmd(msgs []email.Message) tea.Cmd {
+	return m.relocateCmd(msgs, "", "archived")
+}
+
+// moveCmd moves messages to a folder of their account.
+func (m Model) moveCmd(msgs []email.Message, destination string) tea.Cmd {
+	return m.relocateCmd(msgs, destination, "moved to "+email.SanitizeLine(destination))
+}
+
+// relocateCmd moves (destination set) or archives (destination empty) the
+// messages through the operation queue, then refreshes the list and reports
+// how many were handled, or the first error.
+func (m Model) relocateCmd(msgs []email.Message, destination, done string) tea.Cmd {
+	if m.coordinator == nil {
+		return func() tea.Msg { return util.InfoMsg{Text: "Needs a configured account", IsError: true} }
+	}
+	groups := m.moveTargets(msgs)
+	if len(groups) == 0 {
+		return func() tea.Msg { return util.InfoMsg{Text: "Nothing to move here", IsError: true} }
+	}
+	coord, store := m.coordinator, m.store
+	refreshAcct, refreshFolder := m.msglist.CurrentAccount(), m.msglist.CurrentFolder()
+	if refreshAcct == "" {
+		refreshAcct = m.mailbox.SelectedEmail()
+	}
+	work := func() tea.Msg {
+		count := 0
+		var firstErr error
+		for _, g := range groups {
+			var res worker.OperationResult
+			if destination == "" {
+				res = coord.ArchiveMessagesNow(g.account, g.folder, g.uids)
+			} else if dest, ok := matchFolder(store.FoldersFor(g.account), destination); !ok {
+				res.Err = fmt.Errorf("no folder %q in %s", email.SanitizeLine(destination), g.account)
+			} else if dest == g.folder {
+				res.Err = fmt.Errorf("already in %s", dest)
+			} else if dest == "Drafts" || g.folder == "Drafts" {
+				res.Err = fmt.Errorf("drafts cannot be moved")
+			} else {
+				res = coord.MoveMessagesNow(g.account, g.folder, dest, g.uids)
+			}
+			// A queued move (offline) has updated the cache and will be
+			// delivered later: that is a success for the user.
+			if res.Err != nil && res.OpID == 0 {
+				if firstErr == nil {
+					firstErr = res.Err
+				}
+				continue
+			}
+			count += len(g.uids)
+		}
+		if firstErr != nil && count == 0 {
+			return util.InfoMsg{Text: firstErr.Error(), IsError: true}
+		}
+		text := fmt.Sprintf("%d %s", count, done)
+		if count == 1 {
+			text = "Message " + done
+		}
+		if firstErr != nil {
+			return util.InfoMsg{Text: text + "; " + firstErr.Error(), IsError: true}
+		}
+		return util.InfoMsg{Text: text}
+	}
+	return tea.Sequence(work, func() tea.Msg { return util.FolderRefreshMsg{Account: refreshAcct, Folder: refreshFolder} })
+}
+
+// matchFolder finds a folder by name, ignoring case, or by a unique prefix,
+// so ":move arch" reaches Archive.
+func matchFolder(folders []email.Folder, name string) (string, bool) {
+	name = strings.TrimSpace(name)
+	var prefix []string
+	for _, f := range folders {
+		if strings.EqualFold(f.Name, name) {
+			return f.Name, true
+		}
+		if name != "" && strings.HasPrefix(strings.ToLower(f.Name), strings.ToLower(name)) {
+			prefix = append(prefix, f.Name)
+		}
+	}
+	if len(prefix) == 1 {
+		return prefix[0], true
+	}
+	return "", false
+}
+
+// contactsLoadedMsg carries the correspondents for recipient completion.
+type contactsLoadedMsg struct{ contacts []email.Contact }
+
+// contactsMaxAge is how long a loaded contact list is reused.
+const contactsMaxAge = 5 * time.Minute
+
+// loadContactsCmd reads the contacts from the cache in the background when
+// the composer opens, at most once per contactsMaxAge. The composer keeps
+// the previous list until the new one arrives.
+func (m *Model) loadContactsCmd() tea.Cmd {
+	if !m.contactsAt.IsZero() && time.Since(m.contactsAt) < contactsMaxAge {
+		return nil
+	}
+	m.contactsAt = time.Now()
+	store, own := m.store, m.cfg.OwnAddresses()
+	return func() tea.Msg { return contactsLoadedMsg{contacts: store.Contacts(own)} }
+}
+
+// replyingAs is the set of addresses of the account a reply is written
+// from: its own address and its identities. Only these are left out of a
+// reply's recipients. The user's other accounts are ordinary correspondents
+// here: a message from jakub@gause.cz answered in the Gmail account goes
+// back to jakub@gause.cz.
+func (m Model) replyingAs(acct string) email.AddressSet {
+	own := email.NewAddressSet(m.identities(acct)...)
+	own[strings.ToLower(acct)] = true
+	return own
+}
+
+// signatureFor returns the signature lookup of an account, for the composer.
+func (m Model) signatureFor(acct string) func(from string) string {
+	a, ok := m.cfg.Account(acct)
+	if !ok {
+		return nil
+	}
+	return func(from string) string {
+		if strings.TrimSpace(from) == "" {
+			from = a.Email
+		}
+		return a.SignatureFor(from)
+	}
 }

@@ -220,4 +220,12 @@ type SearchResultsMsg struct {
 	Query   string
 	Account string // empty = all accounts
 	Results []email.Message
+	// Server is the account whose mail server was searched too ("" when
+	// only the cache was); ServerError is what went wrong there, if anything.
+	Server      string
+	ServerError error
 }
+
+// ToggleThreadsMsg switches the message list between flat and grouped by
+// conversation.
+type ToggleThreadsMsg struct{}

@@ -141,6 +141,19 @@ identities = ["Jakub <jakub@alias.example>", "jakub@other-domain.example"]
 
 The mail provider must allow sending as these addresses (Gmail: *Settings → Accounts → Send mail as*), or it may rewrite the From header. The SMTP envelope sender stays the account's own address.
 
+### Special folders (Sent, Drafts, Trash, Spam)
+
+vimail finds an account's special folders from the roles the mail server advertises, so they work whatever they are called (`Gesendet`, `Envoyés`, `[Gmail]/Papierkorb`). They always appear as Sent, Drafts, Trash, Spam, Archive, All Mail and Starred. If the server advertises no roles, vimail falls back to the folder name; when it does not recognise that either, name the folder yourself:
+
+```toml
+[[accounts]]
+email = "me@example.sk"
+# ...
+folders = { sent = "Odoslané", drafts = "Koncepty", trash = "Kôš", spam = "Nevyžiadaná" }
+```
+
+Accepted keys: `sent`, `drafts`, `trash`, `spam`, `archive`, `all`, `starred`, `important`. The value is the folder's name on the server.
+
 ### Drafts
 
 Drafts are saved locally and uploaded to the account's server Drafts folder, so they also show up in other mail clients (Gmail, your phone). Every save replaces the server copy. Drafts written in another client appear in vimail after the next sync. A draft deleted or sent elsewhere disappears from vimail too, unless it has edits that have not been uploaded yet. Offline, uploads wait in the operation queue (`:ops`).

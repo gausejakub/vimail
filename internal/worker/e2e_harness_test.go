@@ -68,14 +68,32 @@ type imapTestServer struct {
 	users map[string]*imapmemserver.User
 }
 
+// testMailboxes is the folder layout the next startIMAP creates; tests that
+// need localized names with roles set it before newE2E.
+var testMailboxes = defaultMailboxes
+
+var defaultMailboxes = []testMailbox{{name: "INBOX"}, {name: "Sent"}, {name: "Drafts"}}
+
+type testMailbox struct {
+	name string
+	use  imap.MailboxAttr // SPECIAL-USE role, "" for none
+}
+
 func startIMAP(t *testing.T, cert tls.Certificate, pool *x509.CertPool, users ...string) *imapTestServer {
 	t.Helper()
 	mem := imapmemserver.New()
 	srv := &imapTestServer{pool: pool, users: map[string]*imapmemserver.User{}}
+	caps := imap.CapSet{imap.CapIMAP4rev1: {}}
+	boxes := testMailboxes
 	for _, u := range users {
 		user := imapmemserver.NewUser(u, testPassword)
-		for _, box := range []string{"INBOX", "Sent", "Drafts"} {
-			if err := user.Create(box, nil); err != nil {
+		for _, box := range testMailboxes {
+			var opts *imap.CreateOptions
+			if box.use != "" {
+				opts = &imap.CreateOptions{SpecialUse: []imap.MailboxAttr{box.use}}
+				caps[imap.CapSpecialUse], caps[imap.CapListExtended] = struct{}{}, struct{}{}
+			}
+			if err := user.Create(box.name, opts); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -84,10 +102,14 @@ func startIMAP(t *testing.T, cert tls.Certificate, pool *x509.CertPool, users ..
 	}
 	server := imapserver.New(&imapserver.Options{
 		NewSession: func(*imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
-			return mem.NewSession(), nil, nil
+			var session imapserver.Session = mem.NewSession()
+			if caps.Has(imap.CapSpecialUse) {
+				session = &roleSession{Session: session, boxes: boxes}
+			}
+			return session, nil, nil
 		},
 		TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}},
-		Caps:      imap.CapSet{imap.CapIMAP4rev1: {}},
+		Caps:      caps,
 	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -268,3 +290,24 @@ func testCreds(user string) *auth.Credentials {
 }
 
 var _ = worker.SetTestTLSRoots
+
+// roleSession adds SPECIAL-USE attributes to LIST, which the in-memory
+// server stores nowhere. Like a real server with LIST-EXTENDED, it returns
+// them only when the client asks with RETURN (SPECIAL-USE).
+type roleSession struct {
+	imapserver.Session
+	boxes []testMailbox
+}
+
+func (s *roleSession) List(w *imapserver.ListWriter, ref string, patterns []string, options *imap.ListOptions) error {
+	for _, box := range s.boxes {
+		data := &imap.ListData{Mailbox: box.name, Delim: '/'}
+		if box.use != "" && options != nil && options.ReturnSpecialUse {
+			data.Attrs = []imap.MailboxAttr{box.use}
+		}
+		if err := w.WriteList(data); err != nil {
+			return err
+		}
+	}
+	return nil
+}

@@ -36,6 +36,11 @@ type AccountConfig struct {
 	// was addressed to. The provider must allow sending as the address
 	// (e.g. Gmail "Send mail as"), or it may rewrite From.
 	Identities []string `toml:"identities"`
+	// Folders names the server folder for a role when the server neither
+	// advertises roles (SPECIAL-USE) nor uses a name vimail recognises, e.g.
+	// folders = { sent = "Odoslané", trash = "Kôš" }. Keys: sent, drafts,
+	// trash, spam, archive, all, starred, important.
+	Folders map[string]string `toml:"folders"`
 }
 
 // SenderAddresses returns every address the account may send from: the

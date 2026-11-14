@@ -358,28 +358,48 @@ func (w *IMAPWorker) listMailboxes() ([]string, error) {
 	cancel := w.opTimer(opDeadline)
 	defer cancel()
 
-	listCmd := w.client.List("", "*", nil)
+	// Ask for folder roles (RFC 6154) when the server offers them through
+	// the extended LIST; servers with SPECIAL-USE alone put the role
+	// attributes into a plain LIST response.
+	var opts *imap.ListOptions
+	if caps := w.client.Caps(); caps.Has(imap.CapSpecialUse) && caps.Has(imap.CapListExtended) {
+		opts = &imap.ListOptions{ReturnSpecialUse: true}
+	}
+	listCmd := w.client.List("", "*", opts)
 	mailboxes, err := listCmd.Collect()
 	if err != nil {
 		return nil, fmt.Errorf("LIST: %w", err)
 	}
 
-	var names []string
+	var listed []listedMailbox
 	for _, mbox := range mailboxes {
-		// Skip IMAP internal noselect mailboxes.
-		noSelect := false
+		lm := listedMailbox{name: mbox.Mailbox}
 		for _, attr := range mbox.Attrs {
 			if attr == imap.MailboxAttrNoSelect {
-				noSelect = true
-				break
+				lm.noSelect = true
+			}
+			if role := roleDisplayName(attr); role != "" && lm.role == "" {
+				lm.role = role
 			}
 		}
-		if noSelect {
-			continue
+		listed = append(listed, lm)
+	}
+	display := assignFolderNames(listed, w.acct.Folders)
+
+	var names []string
+	for _, lm := range listed {
+		displayName, ok := display[lm.name]
+		if !ok {
+			continue // noselect
 		}
-		displayName := email.SanitizeLine(FolderName(mbox.Mailbox))
 		// Always populate folderMap (needed for IMAP operations like restore).
-		w.folderMap[displayName] = mbox.Mailbox
+		w.folderMap[displayName] = lm.name
+		// A folder cached under its raw name by an earlier version (before
+		// its role was known) would otherwise stay in the sidebar next to
+		// the renamed one.
+		if raw := email.SanitizeLine(lm.name); raw != displayName && !displayTaken(display, raw) {
+			w.store.DeleteFolder(w.acct.Email, raw)
+		}
 		// Skip redundant folders from sync and sidebar.
 		if w.acct.ShouldSkipFolder(displayName) {
 			continue

@@ -18,6 +18,7 @@ import (
 	"github.com/gausejakub/vimail/internal/email"
 	"github.com/gausejakub/vimail/internal/logging"
 	vmcp "github.com/gausejakub/vimail/internal/mcp"
+	"github.com/gausejakub/vimail/internal/setup"
 	"github.com/gausejakub/vimail/internal/tui"
 	"github.com/gausejakub/vimail/internal/tui/components/preview"
 	"github.com/gausejakub/vimail/internal/worker"
@@ -40,9 +41,10 @@ func main() {
 			fmt.Println("Usage: vimail [command]")
 			fmt.Println()
 			fmt.Println("Commands:")
-			fmt.Println("  setup    Configure account credentials (passwords, OAuth2)")
-			fmt.Println("  mcp      Run a Model Context Protocol server on stdio (for AI clients)")
-			fmt.Println("  help     Show this help")
+			fmt.Println("  setup      Add your first account, or re-enter credentials for configured ones")
+			fmt.Println("  setup add  Add another account from its email address")
+			fmt.Println("  mcp        Run a Model Context Protocol server on stdio (for AI clients)")
+			fmt.Println("  help       Show this help")
 			fmt.Println()
 			fmt.Println("Run without arguments to start the email client.")
 			return
@@ -58,10 +60,20 @@ func runSetup() {
 		fmt.Fprintf(os.Stderr, "vimail: failed to load config: %v\n", err)
 		os.Exit(1)
 	}
+	// `vimail setup add`, or plain `vimail setup` on a fresh install, adds
+	// an account from its email address.
+	if len(cfg.Accounts) == 0 || (len(os.Args) > 2 && os.Args[2] == "add") {
+		if _, err := setup.NewFlow().Add(context.Background(), cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "vimail: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := auth.RunSetup(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "vimail: setup failed: %v\n", err)
 		os.Exit(1)
 	}
+	fmt.Println("To add another account, run `vimail setup add`.")
 }
 
 // initCacheKey loads the body-encryption key from [cache] key_cmd or the OS

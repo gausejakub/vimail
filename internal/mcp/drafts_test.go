@@ -394,3 +394,65 @@ func TestDraftOutputSanitizesAttachmentContentType(t *testing.T) {
 		t.Fatalf("content_type = %q", d.Attachments[0].ContentType)
 	}
 }
+
+func TestSearchContacts(t *testing.T) {
+	store := seededStore(t)
+	seedThread(t, store)
+	session := connectCfg(t, store, draftCfg())
+	var out searchContactsResult
+	call(t, session, "search_contacts", map[string]any{"query": "partner"}, &out)
+	var addrs []string
+	for _, c := range out.Contacts {
+		addrs = append(addrs, c.Address)
+	}
+	got := strings.Join(addrs, ",")
+	// x@partner.test was written to (Sent), petr@partner.test only wrote in.
+	if len(out.Contacts) < 2 || out.Contacts[0].Address != "x@partner.test" || out.Contacts[0].Sent != 1 || !strings.Contains(got, "petr@partner.test") {
+		t.Fatalf("contacts = %+v", out.Contacts)
+	}
+	for _, own := range []string{testAcct, aliasAddr} {
+		if strings.Contains(got, own) {
+			t.Fatalf("own address %s offered: %s", own, got)
+		}
+	}
+	if !callErr(t, session, "search_contacts", map[string]any{"query": " "}) {
+		t.Fatal("empty query accepted")
+	}
+}
+
+func TestSaveDraftAppendsTheIdentitySignature(t *testing.T) {
+	store := seededStore(t)
+	seedThread(t, store)
+	cfg := draftCfg()
+	cfg.Accounts[0].Signature = "Alice"
+	cfg.Accounts[0].Signatures = map[string]string{aliasAddr: "Alice\nWork Ltd."}
+	session := connectCfg(t, store, cfg)
+
+	// A reply from the alias: its signature, above the quote.
+	var out saveDraftResult
+	call(t, session, "save_draft", map[string]any{
+		"reply_to_message": map[string]any{"folder": "Inbox", "uid": 10}, "quote_original": true, "body": "Yes.",
+	}, &out)
+	if !strings.HasPrefix(out.Draft.Body, "Yes.\n\n-- \nAlice\nWork Ltd.\n\nOn ") || !strings.Contains(out.Draft.Body, "> Are you coming?") {
+		t.Fatalf("reply body = %q", out.Draft.Body)
+	}
+	// A new message from the account address: the default signature, at the end.
+	out = saveDraftResult{}
+	call(t, session, "save_draft", map[string]any{"to": "a@x.test", "body": "Hello"}, &out)
+	if out.Draft.Body != "Hello\n\n-- \nAlice\n" {
+		t.Fatalf("new body = %q", out.Draft.Body)
+	}
+	// Updating the draft does not sign it again.
+	id := out.ID
+	out = saveDraftResult{}
+	call(t, session, "save_draft", map[string]any{"id": id, "subject": "s"}, &out)
+	if strings.Count(out.Draft.Body, "-- \n") != 1 {
+		t.Fatalf("signed twice: %q", out.Draft.Body)
+	}
+	// Opt out.
+	out = saveDraftResult{}
+	call(t, session, "save_draft", map[string]any{"to": "a@x.test", "body": "Hello", "signature": false}, &out)
+	if out.Draft.Body != "Hello" {
+		t.Fatalf("signature=false body = %q", out.Draft.Body)
+	}
+}

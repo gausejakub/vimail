@@ -56,6 +56,18 @@ type Model struct {
 	// first is the default.
 	identities []string
 
+	// contacts are correspondents from cached mail (best first); suggest is
+	// what matches the address being typed in To, Cc or Bcc.
+	contacts   []email.Contact
+	suggest    []email.Contact
+	suggestIdx int
+
+	// signatureFor returns the signature text of a From address; sigBlock is
+	// the block currently in the body, so it can be swapped when From
+	// changes and left alone once the user has edited it.
+	signatureFor func(from string) string
+	sigBlock     string
+
 	// AI state
 	aiCfg     config.AIConfig
 	aiPending bool
@@ -179,6 +191,20 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			return m.updateEditor(msg)
 		}
 
+		// Recipient suggestions: Enter takes the highlighted one, arrows choose.
+		if len(m.suggest) > 0 {
+			switch msg.String() {
+			case "enter":
+				return m.acceptSuggestion(), nil
+			case "down", "ctrl+n":
+				m.suggestIdx = (m.suggestIdx + 1) % len(m.suggest)
+				return m, nil
+			case "up", "ctrl+p":
+				m.suggestIdx = (m.suggestIdx + len(m.suggest) - 1) % len(m.suggest)
+				return m, nil
+			}
+		}
+
 		// To/Subject: Esc saves draft and closes compose
 		if msg.String() == "esc" {
 			return m, m.saveDraftCmd()
@@ -187,7 +213,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		// Delegate to the focused textinput
 		var cmd tea.Cmd
 		m.inputs[m.focused], cmd = m.inputs[m.focused].Update(msg)
-		return m, cmd
+		return m.refreshSuggestions(), cmd
 	}
 
 	// Non-key messages: forward to active input or editor
@@ -233,13 +259,16 @@ func (m Model) updateEditor(msg tea.KeyMsg) (Model, tea.Cmd) {
 }
 
 func (m Model) cycleField(dir int) (Model, tea.Cmd) {
+	m.suggest, m.suggestIdx = nil, 0
 	total := fieldCount + 1 // To, Subject, Editor
 
 	// Blur current
 	if m.focused < fieldCount {
 		m.inputs[m.focused].Blur()
 	}
-
+	if m.focused == fieldFrom {
+		m = m.swapSignature() // From may have changed: use that identity's signature
+	}
 	m.focused = (m.focused + dir + total) % total
 
 	var cmds []tea.Cmd
@@ -296,6 +325,13 @@ func (m Model) View() string {
 	if line := m.attachmentLine(); line != "" {
 		lines = append(lines, lipgloss.NewStyle().Foreground(t.Accent()).Render(truncate("  Attach:  "+line, innerWidth+2)))
 	}
+	for i, c := range m.suggest {
+		style, mark := lipgloss.NewStyle().Foreground(t.TextMuted()), "  "
+		if i == m.suggestIdx {
+			style, mark = lipgloss.NewStyle().Foreground(t.Primary()).Bold(true), "→ "
+		}
+		lines = append(lines, style.Render("         "+mark+c.Suggestion(innerWidth-11)))
+	}
 	lines = append(lines, lipgloss.NewStyle().
 		Foreground(t.BorderNormal()).
 		Render("  "+strings.Repeat("─", innerWidth-2)))
@@ -324,6 +360,8 @@ func (m Model) View() string {
 	lines = append(lines, editorView)
 	var hint string
 	switch {
+	case len(m.suggest) > 0:
+		hint = "  Enter: use suggestion | ↑↓: choose | Tab: next field"
 	case m.aiPending:
 		hint = "  Thinking..."
 	case m.focused == fieldEditor && m.editor.GetMode() == vimtea.ModeCommand:
@@ -379,6 +417,7 @@ func (m Model) open(d email.Draft, focus int) Model {
 	m.focused = focus
 	m.draft = d
 	m.identities = nil
+	m.suggest, m.suggestIdx = nil, 0
 	for i := range m.inputs {
 		m.inputs[i].SetValue("")
 		m.inputs[i].Blur()
@@ -457,7 +496,9 @@ func (m Model) updateFieldStyles() Model {
 func (m Model) saveDraftCmd() tea.Cmd {
 	d, _ := m.currentDraft(false)
 	// If everything is empty, just close without saving
-	if len(d.To) == 0 && len(d.Cc) == 0 && len(d.Bcc) == 0 && d.Subject == "" && d.Body == "" && len(d.Attachments) == 0 {
+	// A body holding nothing but the inserted signature counts as empty.
+	bodyEmpty := strings.TrimSpace(d.Body) == "" || (m.sigBlock != "" && strings.TrimSpace(d.Body) == strings.TrimSpace(m.sigBlock))
+	if len(d.To) == 0 && len(d.Cc) == 0 && len(d.Bcc) == 0 && d.Subject == "" && bodyEmpty && len(d.Attachments) == 0 {
 		return func() tea.Msg { return util.ComposeCloseMsg{} }
 	}
 	return func() tea.Msg { return util.ComposeSaveDraftMsg{Draft: d} }
@@ -680,4 +721,119 @@ func vimteaModeToKeys(m vimtea.EditorMode) keys.Mode {
 // CurrentDraftForTest exposes the assembled draft (lenient) to tests.
 func (m Model) CurrentDraftForTest() (email.Draft, error) {
 	return m.currentDraft(false)
+}
+
+// maxSuggestions is how many matching contacts are offered at once.
+const maxSuggestions = 5
+
+// SetContacts gives the composer the correspondents to complete from.
+func (m Model) SetContacts(contacts []email.Contact) Model {
+	m.contacts = contacts
+	return m
+}
+
+func (m Model) isRecipientField() bool {
+	return m.focused == fieldTo || m.focused == fieldCc || m.focused == fieldBcc
+}
+
+// currentToken returns what is being typed after the last comma of the
+// focused recipient field, and where it starts.
+func (m Model) currentToken() (token string, start int) {
+	value := m.inputs[m.focused].Value()
+	start = strings.LastIndex(value, ",") + 1
+	return strings.TrimSpace(value[start:]), start
+}
+
+// refreshSuggestions recomputes the suggestions after a keystroke. Contacts
+// already in the field are not offered again.
+func (m Model) refreshSuggestions() Model {
+	m.suggest, m.suggestIdx = nil, 0
+	if !m.isRecipientField() || len(m.contacts) == 0 {
+		return m
+	}
+	token, start := m.currentToken()
+	if len([]rune(token)) < 2 {
+		return m
+	}
+	have := email.NewAddressSet(strings.Split(m.inputs[m.focused].Value()[:start], ",")...)
+	for _, c := range email.MatchContacts(m.contacts, token, maxSuggestions*3) {
+		if have[c.Address] || strings.EqualFold(c.Address, token) {
+			continue
+		}
+		m.suggest = append(m.suggest, c)
+		if len(m.suggest) == maxSuggestions {
+			break
+		}
+	}
+	return m
+}
+
+// acceptSuggestion replaces the address being typed with the highlighted
+// contact and leaves the field ready for the next recipient.
+func (m Model) acceptSuggestion() Model {
+	if len(m.suggest) == 0 || !m.isRecipientField() {
+		return m
+	}
+	_, start := m.currentToken()
+	value := m.inputs[m.focused].Value()[:start]
+	if value != "" {
+		value += " "
+	}
+	m.inputs[m.focused].SetValue(value + email.SanitizeLine(m.suggest[m.suggestIdx].Formatted()) + ", ")
+	m.inputs[m.focused].CursorEnd()
+	m.suggest, m.suggestIdx = nil, 0
+	return m
+}
+
+// SuggestionsForTest exposes the current suggestions to tests.
+func (m Model) SuggestionsForTest() []email.Contact { return m.suggest }
+
+// WithSignatures gives the composer the account's signatures. A new
+// message, reply or forward gets the signature of its From address; an
+// opened draft is only checked for one it already carries. Call it after
+// WithIdentities, which settles the From field.
+func (m Model) WithSignatures(signatureFor func(from string) string) Model {
+	m.signatureFor, m.sigBlock = signatureFor, ""
+	if signatureFor == nil {
+		return m
+	}
+	block := email.SignatureBlock(signatureFor(m.inputs[fieldFrom].Value()))
+	body := m.editor.GetBuffer().Text()
+	if m.draft.ID != "" {
+		if block != "" && strings.Count(body, block) == 1 {
+			m.sigBlock = block
+		}
+		return m
+	}
+	if block != "" {
+		m.sigBlock = block
+		m = m.setBody(email.InsertSignature(body, block))
+	}
+	return m
+}
+
+// swapSignature replaces the signature after the From address changed. A
+// signature the user has edited is left as it is.
+func (m Model) swapSignature() Model {
+	if m.signatureFor == nil {
+		return m
+	}
+	block := email.SignatureBlock(m.signatureFor(m.inputs[fieldFrom].Value()))
+	if block == m.sigBlock {
+		return m
+	}
+	body, ok := email.ReplaceSignature(m.editor.GetBuffer().Text(), m.sigBlock, block)
+	if !ok {
+		return m
+	}
+	m.sigBlock = block
+	return m.setBody(body)
+}
+
+// setBody replaces the editor content.
+func (m Model) setBody(body string) Model {
+	m.editor = newEditor(email.SanitizeText(body))
+	m.editorMode = vimtea.ModeNormal
+	m.registerCommands()
+	return m
 }

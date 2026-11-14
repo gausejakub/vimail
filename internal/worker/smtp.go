@@ -33,13 +33,6 @@ func NewSMTPWorker(acct config.AccountConfig, creds *auth.Credentials) *SMTPWork
 // Send sends an email and returns the Message-ID and the raw message to keep
 // in Sent (with Bcc). The transmitted bytes never contain Bcc.
 func (w *SMTPWorker) Send(req SendRequest) (string, []byte, error) {
-	host := w.acct.SMTPHost
-	port := w.acct.SMTPPort
-	if port == 0 {
-		port = 587
-	}
-	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
-
 	if req.From == "" {
 		req.From = w.acct.Email
 	}
@@ -73,44 +66,11 @@ func (w *SMTPWorker) Send(req SendRequest) (string, []byte, error) {
 		envelopeFrom = email.AddrSpec(req.From)
 	}
 
-	tlsMode := w.acct.TLS
-	if tlsMode == "" || (tlsMode == "tls" && port == 587) {
-		tlsMode = "starttls" // SMTP typically uses STARTTLS on port 587.
-	}
-
-	var conn net.Conn
-
-	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
-	switch tlsMode {
-	case "tls":
-		conn, err = tls.DialWithDialer(dialer, "tcp", addr, clientTLSConfig(host))
-	case "starttls":
-		conn, err = dialer.Dial("tcp", addr) // Plaintext initially; upgraded to TLS below.
-	default:
-		return "", nil, fmt.Errorf("SMTP TLS mode %q not supported — use \"tls\" or \"starttls\"", tlsMode)
-	}
+	client, err := w.open()
 	if err != nil {
-		return "", nil, fmt.Errorf("SMTP connect to %s: %w", addr, err)
-	}
-
-	client, err := smtp.NewClient(conn, host)
-	if err != nil {
-		conn.Close()
-		return "", nil, fmt.Errorf("SMTP client: %w", err)
+		return "", nil, err
 	}
 	defer client.Close()
-
-	// STARTTLS if needed.
-	if tlsMode == "starttls" {
-		if err := client.StartTLS(clientTLSConfig(host)); err != nil {
-			return "", nil, fmt.Errorf("SMTP STARTTLS: %w", err)
-		}
-	}
-
-	// Authenticate.
-	if err := w.authenticateSMTP(client); err != nil {
-		return "", nil, fmt.Errorf("SMTP auth: %w", err)
-	}
 
 	// Send.
 	if err := client.Mail(envelopeFrom); err != nil {
@@ -138,6 +98,70 @@ func (w *SMTPWorker) Send(req SendRequest) (string, []byte, error) {
 	}
 
 	return msgID, keepCopy, nil
+}
+
+// open connects to the account's SMTP server, upgrades to TLS and
+// authenticates. The caller closes the client.
+func (w *SMTPWorker) open() (*smtp.Client, error) {
+	host := w.acct.SMTPHost
+	port := w.acct.SMTPPort
+	if port == 0 {
+		port = 587
+	}
+	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
+
+	tlsMode := w.acct.TLS
+	if tlsMode == "" || (tlsMode == "tls" && port == 587) {
+		tlsMode = "starttls" // SMTP typically uses STARTTLS on port 587.
+	}
+
+	var conn net.Conn
+	var err error
+	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+	switch tlsMode {
+	case "tls":
+		conn, err = tls.DialWithDialer(dialer, "tcp", addr, clientTLSConfig(host))
+	case "starttls":
+		conn, err = dialer.Dial("tcp", addr) // Plaintext initially; upgraded to TLS below.
+	default:
+		return nil, fmt.Errorf("SMTP TLS mode %q not supported — use \"tls\" or \"starttls\"", tlsMode)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("SMTP connect to %s: %w", addr, err)
+	}
+
+	client, err := smtp.NewClient(conn, host)
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("SMTP client: %w", err)
+	}
+
+	// STARTTLS if needed.
+	if tlsMode == "starttls" {
+		if err := client.StartTLS(clientTLSConfig(host)); err != nil {
+			client.Close()
+			return nil, fmt.Errorf("SMTP STARTTLS: %w", err)
+		}
+	}
+
+	// Authenticate.
+	if err := w.authenticateSMTP(client); err != nil {
+		client.Close()
+		return nil, fmt.Errorf("SMTP auth: %w", err)
+	}
+	return client, nil
+}
+
+// Check logs in to the SMTP server and disconnects, without sending
+// anything. Account setup uses it to test settings before saving them.
+func (w *SMTPWorker) Check() error {
+	client, err := w.open()
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	client.Quit()
+	return nil
 }
 
 func (w *SMTPWorker) authenticateSMTP(client *smtp.Client) error {

@@ -998,8 +998,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		q := msg.Query
 		n := len(msg.Results)
+		// Say what was searched: the cache alone misses text in bodies that
+		// were never downloaded.
+		text, isErr := fmt.Sprintf("Search %q: %d results in the cache (:ss %s also asks the server)", q, n, q), false
+		if msg.Server != "" {
+			text = fmt.Sprintf("Search %q: %d results (cache and the %s server)", q, n, msg.Server)
+			if msg.ServerError != nil {
+				text, isErr = fmt.Sprintf("Search %q: %d results; server search incomplete: %s", q, n, email.SanitizeLine(msg.ServerError.Error())), true
+			}
+		}
 		cmds = append(cmds, func() tea.Msg {
-			return util.InfoMsg{Text: fmt.Sprintf("Search %q: %d results", q, n), IsError: false}
+			return util.InfoMsg{Text: text, IsError: isErr}
 		})
 		return m, tea.Batch(cmds...)
 
@@ -1622,6 +1631,14 @@ func (m Model) executeCommand(input string) tea.Cmd {
 		query := strings.Join(parts[1:], " ")
 		return m.executeSearch(query)
 
+	case "search-server", "ss":
+		if len(parts) < 2 {
+			return func() tea.Msg {
+				return util.InfoMsg{Text: "Usage: :search-server <query>", IsError: true}
+			}
+		}
+		return m.executeServerSearch(strings.Join(parts[1:], " "))
+
 	case "processes", "ps":
 		return func() tea.Msg { return showProcessesMsg{} }
 
@@ -2197,4 +2214,33 @@ func (m Model) forwardDraft(acct string, orig email.Message) email.Draft {
 		}
 	}
 	return d
+}
+
+// executeServerSearch searches the cache (all accounts) and, for the
+// selected account, the mail server, which also covers bodies that were
+// never downloaded.
+func (m Model) executeServerSearch(query string) tea.Cmd {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil
+	}
+	if m.coordinator == nil {
+		return func() tea.Msg { return util.InfoMsg{Text: "Server search needs a configured account", IsError: true} }
+	}
+	store, coord, acct := m.store, m.coordinator, m.mailbox.SelectedEmail()
+	search := func() tea.Msg {
+		res := coord.SearchServerNow(acct, query, 200)
+		return util.SearchResultsMsg{
+			Query:       query,
+			Results:     email.MergeSearchResults(store.SearchMessages("", query, 200), res.Messages),
+			Server:      acct,
+			ServerError: errors.Join(res.Errors...),
+		}
+	}
+	return tea.Batch(
+		func() tea.Msg {
+			return util.ProcessStartMsg{ID: "search", Label: "⌕ searching " + acct + " on the server"}
+		},
+		tea.Sequence(search, func() tea.Msg { return util.ProcessEndMsg{ID: "search"} }),
+	)
 }

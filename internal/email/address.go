@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"mime"
 	"net/mail"
+	"sort"
 	"strings"
 	"time"
 
@@ -336,4 +337,28 @@ func DecodeHeaderWords(s string) string {
 		return dec
 	}
 	return s
+}
+
+// MergeSearchResults combines local and server search hits into one list,
+// newest first, with each message once (label copies and messages found by
+// both searches share a Message-ID).
+func MergeSearchResults(local, server []Message) []Message {
+	seen := map[string]bool{}
+	key := func(m Message) string {
+		if m.MessageID != "" {
+			return m.Account + "\x00" + m.MessageID
+		}
+		return m.Account + "\x00" + m.Folder + "\x00" + m.ID
+	}
+	out := make([]Message, 0, len(local)+len(server))
+	for _, list := range [][]Message{local, server} {
+		for _, m := range list {
+			if k := key(m); !seen[k] {
+				seen[k] = true
+				out = append(out, m)
+			}
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Date.After(out[j].Date) })
+	return out
 }

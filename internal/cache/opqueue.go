@@ -121,6 +121,10 @@ type MovePayload struct {
 	UIDs        []uint32 `json:"uids"`
 	CacheUIDs   []uint32 `json:"cache_uids,omitempty"`
 	Destination string   `json:"destination"`
+	// SkipCache marks a move whose destination is not cached (Gmail's All
+	// Mail when archiving): the source rows are already gone locally and
+	// there is nothing to reconcile.
+	SkipCache bool `json:"skip_cache,omitempty"`
 }
 
 // QueueOp persists a new operation and returns its ID.

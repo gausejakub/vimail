@@ -132,11 +132,22 @@ func CleanupTemp() {
 // tests can replace it: a test that presses "o" must never launch a real
 // browser on the developer's desktop.
 var OpenExternal = func(path string) error {
-	opener := "open"
-	if runtime.GOOS != "darwin" {
-		opener = "xdg-open"
+	name, args := externalOpener(runtime.GOOS, path)
+	return exec.Command(name, args...).Start()
+}
+
+// externalOpener returns the command that opens a file with the desktop's
+// default application on the given platform.
+func externalOpener(goos, path string) (string, []string) {
+	switch goos {
+	case "darwin":
+		return "open", []string{path}
+	case "windows":
+		// Not "cmd /c start": that would run the path through the shell.
+		return "rundll32", []string{"url.dll,FileProtocolHandler", path}
+	default:
+		return "xdg-open", []string{path}
 	}
-	return exec.Command(opener, path).Start()
 }
 
 // openInBrowser writes the HTML body to a temp file and opens it.

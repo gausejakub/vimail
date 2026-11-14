@@ -16,6 +16,35 @@ every merged PR lands here in the same pass that merges it.
 
 ### Security
 
+## [0.17.0] - 2026-11-14
+
+### Added
+
+- Drafts sync with the mail server: a draft saved in vimail is uploaded to the account's Drafts folder, so it shows up in Gmail and on your phone, and drafts written there appear in vimail. A draft sent or deleted elsewhere disappears from vimail too. Offline, uploads wait in the operation queue. (#65)
+- Cc, Bcc and From fields in the composer, and attachments: `:attach <path>` and `:detach [n]` in the editor. (#65)
+- Reply all (`a`) and forward (`F`). Forwarding keeps the original's attachments; reply all leaves your own addresses out. (#65)
+- Identities: list an account's other addresses (aliases, other domains delivered to the same mailbox) as `identities`, and a reply goes out from the address the original was sent to. (#65)
+- MCP: `save_draft` prepares complete drafts with several To/Cc/Bcc recipients, a From identity, replies (`reply_to_message`, with `reply_all` and `quote_original`) and forwards (`forward_message`), and file attachments from the directories you allow in `[mcp] attachment_dirs`. The new `read_draft` returns every field. MCP still cannot send a draft. (#65)
+- MCP: reading mail returns Cc, Reply-To, Message-ID, In-Reply-To, References, a `thread_id` for grouping a conversation, and whether a message was already answered. `list_accounts` lists each account's identities. (#65)
+
+### Changed
+
+- **Breaking:** in MCP read output, `to` is a list of addresses instead of one string, and it holds every recipient instead of the first. (#65)
+- Replies carry `In-Reply-To` and `References`, so they thread under the original in other mail clients, and the original is marked answered once the reply is sent (a forward marks it forwarded). (#65)
+- Messages already in the cache get their Cc, Reply-To and threading headers on the next syncs; bodies are kept and no full resync is needed. (#65)
+
+### Fixed
+
+- Attachment names such as `=?UTF-8?Q?Digifest_2026...?=` are shown decoded, including names cached earlier. (#65)
+- A failed upload of a sent message to the Sent folder is reported in the log instead of being ignored. (#65)
+- A new draft could overwrite a draft from an earlier session that had been given the same id. (#65)
+
+### Security
+
+- Bcc recipients are sent only in the SMTP envelope; the Bcc header is kept in your Sent copy and drafts and never in the transmitted message. (#65)
+- A From address must be exactly one of the account's identities; a value hiding a second mailbox is refused. (#65)
+- MCP attachments are limited to configured directories, with symlinks resolved, and errors do not reveal whether a file outside them exists. (#65)
+
 ## [0.16.0] - 2026-11-13
 
 ### Added

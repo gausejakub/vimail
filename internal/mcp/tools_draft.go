@@ -259,7 +259,7 @@ func (s *Server) buildDraft(acct string, args saveDraftArgs) (email.Draft, error
 		if err != nil {
 			return d, err
 		}
-		own := email.NewAddressSet(s.ownAddresses()...)
+		own := email.NewAddressSet(append(acctCfg.SenderAddresses(), acct)...) // the replying account, not every account
 		d.To, d.Cc = email.ReplyRecipients(orig, args.ReplyAll, own)
 		d.Subject = email.ReplySubject(orig.Subject)
 		d.InReplyTo = orig.MessageID

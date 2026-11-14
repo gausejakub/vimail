@@ -31,6 +31,8 @@ var bindings = []binding{
 	{"f", "Toggle flag/star"},
 	{"U", "Mark unread"},
 	{"dd", "Delete message"},
+	{"A", "Archive message(s)"},
+	{"m", "Move message(s) to a folder"},
 	{"u", "Restore from Trash"},
 	{"E", "Export message(s) to ZIP"},
 	{"R", "Refresh"},

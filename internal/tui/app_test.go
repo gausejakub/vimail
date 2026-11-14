@@ -1140,3 +1140,48 @@ func TestReplyAllForwardAndFlagKeys(t *testing.T) {
 		m.compose = m.compose.Hide()
 	}
 }
+
+func TestMoveAndArchiveKeys(t *testing.T) {
+	// m opens the command line with "move " typed in, for the selected message.
+	m := testApp()
+	send(&m, "m")
+	if !m.cmdActive || m.cmdInput.Value() != "move " || len(m.pendingMove) != 1 {
+		t.Fatalf("m: cmdActive=%v value=%q pending=%d", m.cmdActive, m.cmdInput.Value(), len(m.pendingMove))
+	}
+	send(&m, "esc")
+	if m.cmdActive || len(m.pendingMove) != 0 {
+		t.Fatalf("esc left the move pending: %d", len(m.pendingMove))
+	}
+
+	// In visual mode m keeps the whole selection for the command.
+	m = testApp()
+	sendKeys(&m, "v", "j", "m")
+	if !m.cmdActive || len(m.pendingMove) != 2 || m.mode != keys.ModeCommand {
+		t.Fatalf("visual m: cmdActive=%v pending=%d mode=%v", m.cmdActive, len(m.pendingMove), m.mode)
+	}
+	send(&m, "esc")
+
+	// A leaves visual mode; without a server connection it only reports.
+	m = testApp()
+	sendKeys(&m, "v", "j", "A")
+	if m.mode != keys.ModeNormal || m.cmdActive {
+		t.Fatalf("visual A: mode=%v cmdActive=%v", m.mode, m.cmdActive)
+	}
+	m = testApp()
+	send(&m, "A")
+	if m.compose.Visible() || m.cmdActive {
+		t.Fatal("A opened something")
+	}
+
+	folders := []email.Folder{{Name: "Inbox"}, {Name: "Archive"}, {Name: "Archive 2024"}, {Name: "Sent"}}
+	for in, want := range map[string]string{"archive": "Archive", "INBOX": "Inbox", "se": "Sent", "Archive 2": "Archive 2024"} {
+		if got, ok := matchFolder(folders, in); !ok || got != want {
+			t.Errorf("matchFolder(%q) = %q, %v; want %q", in, got, ok, want)
+		}
+	}
+	for _, in := range []string{"arch", "nope", ""} { // ambiguous prefix, unknown, empty
+		if got, ok := matchFolder(folders, in); ok {
+			t.Errorf("matchFolder(%q) = %q, want no match", in, got)
+		}
+	}
+}

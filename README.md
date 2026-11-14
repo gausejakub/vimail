@@ -324,6 +324,8 @@ Press `Enter` on a message, or focus the preview pane (`l` / `Tab`) and press `E
 | `f` | Toggle flag/star |
 | `U` | Mark unread |
 | `dd` | Delete message |
+| `A` | Archive the message, or the visual selection (Archive folder; on Gmail, All Mail) |
+| `m` | Move the message, or the visual selection, to a folder: opens `:move ` |
 | `S` | Save attachments to ~/Downloads |
 | `E` | Export message(s) to ZIP |
 | `o` | Open in browser |
@@ -352,7 +354,7 @@ Press `Enter` on a message, or focus the preview pane (`l` / `Tab`) and press `E
 | `:sync` | Sync mail |
 | `:verify [folder]` | Reconcile the current (or named) folder with IMAP and check the cache |
 | `:verify full` | Verify every folder and run SQLite `integrity_check` |
-| `:move <folder>` | Move the selected message to another folder |
+| `:move <folder>` | Move the selected message to another folder; the name ignores case and a unique prefix is enough (`:move arch`) |
 | `:ai` | AI-assisted compose (default agent) |
 | `:ai <name>` | AI-assisted compose with a specific agent |
 | `:ops` / `:queue` | Show operation queue log |

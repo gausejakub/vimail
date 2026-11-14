@@ -58,6 +58,10 @@ type Model struct {
 
 	syncPending   int             // number of accounts still syncing
 	syncCompleted map[string]bool // completion deduplication for the active cycle
+
+	// pendingMove holds the messages a ":move <folder>" started with m (one
+	// message, or a visual selection) applies to; empty for a typed :move.
+	pendingMove []email.Message
 }
 
 // syncTickMsg triggers periodic sync refresh.
@@ -1164,6 +1168,20 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return keys.ModeChangedMsg{Mode: keys.ModeCommand}
 		})
 
+	case key.Matches(msg, keys.Normal.Archive):
+		if sel := m.msglist.SelectedMessage(); sel != nil {
+			cmds = append(cmds, m.archiveCmd([]email.Message{*sel}))
+		}
+
+	case key.Matches(msg, keys.Normal.Move):
+		if sel := m.msglist.SelectedMessage(); sel != nil {
+			m.pendingMove = []email.Message{*sel}
+			m = m.openMovePrompt()
+			cmds = append(cmds, func() tea.Msg {
+				return keys.ModeChangedMsg{Mode: keys.ModeCommand}
+			})
+		}
+
 	case key.Matches(msg, keys.Normal.Compose):
 		m.compose = m.compose.Show().WithIdentities(m.identities(m.mailbox.SelectedEmail())).SetSize(m.width, m.height)
 		m.mode = keys.ModeInsert
@@ -1525,6 +1543,26 @@ func (m Model) handleVisualKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+	case "A", "m":
+		selected := m.msglist.SelectedMessages()
+		lo, _ := m.msglist.VisualRange()
+		m.msglist = m.msglist.ExitVisual()
+		m.msglist = m.msglist.SetCursor(lo)
+		m.mode = keys.ModeNormal
+		if len(selected) == 0 {
+			cmds = append(cmds, func() tea.Msg { return keys.ModeChangedMsg{Mode: keys.ModeNormal} })
+			break
+		}
+		if k == "A" {
+			cmds = append(cmds, func() tea.Msg { return keys.ModeChangedMsg{Mode: keys.ModeNormal} })
+			cmds = append(cmds, m.archiveCmd(selected))
+			break
+		}
+		// Move: ask for the folder, keeping the selection for the command.
+		m.pendingMove = selected
+		m = m.openMovePrompt()
+		cmds = append(cmds, func() tea.Msg { return keys.ModeChangedMsg{Mode: keys.ModeCommand} })
+
 	case "esc", "v", "V":
 		m.msglist = m.msglist.ExitVisual()
 		m.mode = keys.ModeNormal
@@ -1548,6 +1586,7 @@ func (m Model) handleCommandKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, keys.Command.Cancel):
 		m.cmdActive = false
+		m.pendingMove = nil
 		m.cmdInput.Blur()
 		m.cmdInput.Prompt = ":"
 		m.mode = keys.ModeNormal
@@ -1563,6 +1602,7 @@ func (m Model) handleCommandKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			cmd = m.executeCommand(m.cmdInput.Value())
 		}
 		m.cmdActive = false
+		m.pendingMove = nil // the command captured it
 		m.cmdInput.Blur()
 		m.cmdInput.Prompt = ":"
 		m.mode = keys.ModeNormal
@@ -1646,18 +1686,18 @@ func (m Model) executeCommand(input string) tea.Cmd {
 		if len(parts) < 2 {
 			return func() tea.Msg { return util.InfoMsg{Text: "Usage: :move <folder>", IsError: true} }
 		}
-		if m.coordinator == nil {
-			return func() tea.Msg { return util.InfoMsg{Text: "Move requires a configured account", IsError: true} }
+		// Started with m (one message or a visual selection), or typed: the
+		// selected message.
+		msgs := m.pendingMove
+		if len(msgs) == 0 {
+			if sel := m.msglist.SelectedMessage(); sel != nil {
+				msgs = []email.Message{*sel}
+			}
 		}
-		sel := m.msglist.SelectedMessage()
-		if sel == nil || sel.UID == 0 {
+		if len(msgs) == 0 {
 			return func() tea.Msg { return util.InfoMsg{Text: "No message selected", IsError: true} }
 		}
-		acct, source, destination := m.mailbox.SelectedEmail(), m.msglist.CurrentFolder(), strings.Join(parts[1:], " ")
-		if destination == source {
-			return func() tea.Msg { return util.InfoMsg{Text: "Message is already in " + destination, IsError: true} }
-		}
-		return tea.Sequence(m.coordinator.MoveMessages(acct, source, destination, []uint32{sel.UID}), func() tea.Msg { return util.FolderRefreshMsg{Account: acct, Folder: source} })
+		return m.moveCmd(msgs, strings.Join(parts[1:], " "))
 
 	default:
 		return func() tea.Msg {
@@ -2197,4 +2237,142 @@ func (m Model) forwardDraft(acct string, orig email.Message) email.Draft {
 		}
 	}
 	return d
+}
+
+// openMovePrompt opens the command line with "move " typed in, so the user
+// only enters the folder.
+func (m Model) openMovePrompt() Model {
+	m.cmdActive = true
+	m.cmdInput.Prompt = ":"
+	m.cmdInput.SetValue("move ")
+	m.cmdInput.CursorEnd()
+	m.cmdInput.Focus()
+	m.mode = keys.ModeCommand
+	return m
+}
+
+// moveTargets groups messages by the account and folder they live in.
+// Search results carry their own account and folder; everything else is in
+// the folder being shown. Local drafts (no UID) cannot be moved.
+type moveGroup struct {
+	account, folder string
+	uids            []uint32
+}
+
+func (m Model) moveTargets(msgs []email.Message) []moveGroup {
+	var groups []moveGroup
+	index := map[string]int{}
+	for _, msg := range msgs {
+		if msg.UID == 0 {
+			continue
+		}
+		acct, folder := m.msglist.CurrentAccount(), m.msglist.CurrentFolder()
+		if acct == "" {
+			acct = m.mailbox.SelectedEmail()
+		}
+		if msg.Account != "" {
+			acct = msg.Account
+		}
+		if msg.Folder != "" {
+			folder = msg.Folder
+			if i := strings.Index(folder, " +"); i > 0 { // "Inbox +2" in search results
+				folder = folder[:i]
+			}
+		}
+		key := acct + "\x00" + folder
+		i, ok := index[key]
+		if !ok {
+			i = len(groups)
+			index[key] = i
+			groups = append(groups, moveGroup{account: acct, folder: folder})
+		}
+		groups[i].uids = append(groups[i].uids, msg.UID)
+	}
+	return groups
+}
+
+// archiveCmd archives messages and reports the outcome.
+func (m Model) archiveCmd(msgs []email.Message) tea.Cmd {
+	return m.relocateCmd(msgs, "", "archived")
+}
+
+// moveCmd moves messages to a folder of their account.
+func (m Model) moveCmd(msgs []email.Message, destination string) tea.Cmd {
+	return m.relocateCmd(msgs, destination, "moved to "+email.SanitizeLine(destination))
+}
+
+// relocateCmd moves (destination set) or archives (destination empty) the
+// messages through the operation queue, then refreshes the list and reports
+// how many were handled, or the first error.
+func (m Model) relocateCmd(msgs []email.Message, destination, done string) tea.Cmd {
+	if m.coordinator == nil {
+		return func() tea.Msg { return util.InfoMsg{Text: "Needs a configured account", IsError: true} }
+	}
+	groups := m.moveTargets(msgs)
+	if len(groups) == 0 {
+		return func() tea.Msg { return util.InfoMsg{Text: "Nothing to move here", IsError: true} }
+	}
+	coord, store := m.coordinator, m.store
+	refreshAcct, refreshFolder := m.msglist.CurrentAccount(), m.msglist.CurrentFolder()
+	if refreshAcct == "" {
+		refreshAcct = m.mailbox.SelectedEmail()
+	}
+	work := func() tea.Msg {
+		count := 0
+		var firstErr error
+		for _, g := range groups {
+			var res worker.OperationResult
+			if destination == "" {
+				res = coord.ArchiveMessagesNow(g.account, g.folder, g.uids)
+			} else if dest, ok := matchFolder(store.FoldersFor(g.account), destination); !ok {
+				res.Err = fmt.Errorf("no folder %q in %s", email.SanitizeLine(destination), g.account)
+			} else if dest == g.folder {
+				res.Err = fmt.Errorf("already in %s", dest)
+			} else if dest == "Drafts" || g.folder == "Drafts" {
+				res.Err = fmt.Errorf("drafts cannot be moved")
+			} else {
+				res = coord.MoveMessagesNow(g.account, g.folder, dest, g.uids)
+			}
+			// A queued move (offline) has updated the cache and will be
+			// delivered later: that is a success for the user.
+			if res.Err != nil && res.OpID == 0 {
+				if firstErr == nil {
+					firstErr = res.Err
+				}
+				continue
+			}
+			count += len(g.uids)
+		}
+		if firstErr != nil && count == 0 {
+			return util.InfoMsg{Text: firstErr.Error(), IsError: true}
+		}
+		text := fmt.Sprintf("%d %s", count, done)
+		if count == 1 {
+			text = "Message " + done
+		}
+		if firstErr != nil {
+			return util.InfoMsg{Text: text + "; " + firstErr.Error(), IsError: true}
+		}
+		return util.InfoMsg{Text: text}
+	}
+	return tea.Sequence(work, func() tea.Msg { return util.FolderRefreshMsg{Account: refreshAcct, Folder: refreshFolder} })
+}
+
+// matchFolder finds a folder by name, ignoring case, or by a unique prefix,
+// so ":move arch" reaches Archive.
+func matchFolder(folders []email.Folder, name string) (string, bool) {
+	name = strings.TrimSpace(name)
+	var prefix []string
+	for _, f := range folders {
+		if strings.EqualFold(f.Name, name) {
+			return f.Name, true
+		}
+		if name != "" && strings.HasPrefix(strings.ToLower(f.Name), strings.ToLower(name)) {
+			prefix = append(prefix, f.Name)
+		}
+	}
+	if len(prefix) == 1 {
+		return prefix[0], true
+	}
+	return "", false
 }

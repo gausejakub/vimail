@@ -659,6 +659,9 @@ func (m Model) renderMessage(idx int, msg email.Message) string {
 			subject = fmt.Sprintf("(%d) %s", pos.Count, subject)
 		}
 	}
+	if msg.DraftConflict != "" {
+		subject = "⚠ 2 versions · " + subject
+	}
 	// In search mode, prepend folder context to subject.
 	if m.searchActive && msg.Folder != "" {
 		prefix := msg.Folder

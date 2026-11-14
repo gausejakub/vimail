@@ -28,6 +28,10 @@ type Draft struct {
 	// Server copy in the account's Drafts folder (read-only for callers).
 	ServerMessageID string
 	ServerUID       uint32
+	// ConflictWith is the id of another draft that looks like a second
+	// version of this one: the same draft was changed here and in another
+	// mail client before either synced. Empty normally.
+	ConflictWith string
 	// Synced reports that the server copy matches the current local version.
 	Synced bool
 }
@@ -67,21 +71,22 @@ func (a DraftAttachment) AttachmentSize() int {
 // AsMessage returns the draft in the shape used by message lists.
 func (d Draft) AsMessage() Message {
 	return Message{
-		ID:         d.ID,
-		Account:    d.Account,
-		Folder:     "Drafts",
-		From:       d.From,
-		To:         JoinAddresses(d.To),
-		ToList:     d.To,
-		Cc:         d.Cc,
-		Bcc:        d.Bcc,
-		Subject:    d.Subject,
-		Body:       d.Body,
-		Date:       d.Date,
-		MessageID:  d.ServerMessageID,
-		InReplyTo:  d.InReplyTo,
-		References: d.References,
-		ThreadID:   ThreadIDFor(d.ServerMessageID, d.InReplyTo, d.References),
+		ID:            d.ID,
+		Account:       d.Account,
+		Folder:        "Drafts",
+		From:          d.From,
+		To:            JoinAddresses(d.To),
+		ToList:        d.To,
+		Cc:            d.Cc,
+		Bcc:           d.Bcc,
+		Subject:       d.Subject,
+		Body:          d.Body,
+		Date:          d.Date,
+		MessageID:     d.ServerMessageID,
+		InReplyTo:     d.InReplyTo,
+		References:    d.References,
+		ThreadID:      ThreadIDFor(d.ServerMessageID, d.InReplyTo, d.References),
+		DraftConflict: d.ConflictWith,
 		Attachments: func() []Attachment {
 			var out []Attachment
 			for _, a := range d.Attachments {

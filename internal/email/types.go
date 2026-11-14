@@ -42,9 +42,12 @@ type Message struct {
 	Unread      bool
 	Flagged     bool
 	Answered    bool
-	Attachments []Attachment
-	Folder      string // populated by search results for context
-	Account     string // populated by search results for context
+	// DraftConflict is, for a draft, the id of another draft that looks like
+	// a second version of it (see Draft.ConflictWith).
+	DraftConflict string
+	Attachments   []Attachment
+	Folder        string // populated by search results for context
+	Account       string // populated by search results for context
 }
 
 // Attachment represents a file attached to a message.

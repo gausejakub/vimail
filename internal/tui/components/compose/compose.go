@@ -76,6 +76,7 @@ type Model struct {
 // attachMsg and detachMsg come from the editor's :attach / :detach commands.
 type attachMsg struct{ path string }
 type detachMsg struct{ index string }
+type markdownMsg struct{}
 
 func New(aiCfg config.AIConfig) Model {
 	inputs := make([]textinput.Model, fieldCount)
@@ -166,6 +167,14 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 
 	case attachMsg:
 		return m.attach(msg.path)
+
+	case markdownMsg:
+		m.draft.Markdown = !m.draft.Markdown
+		text := "Plain text: sent as written"
+		if m.draft.Markdown {
+			text = "Markdown: sent as text plus a formatted HTML version"
+		}
+		return m, info(text, false)
 
 	case detachMsg:
 		return m.detach(msg.index)
@@ -575,6 +584,9 @@ func (m *Model) registerCommands() {
 		path := strings.Join(args, " ")
 		return func() tea.Msg { return attachMsg{path: path} }
 	})
+	m.editor.AddCommand("markdown", func(buf vimtea.Buffer, args []string) tea.Cmd {
+		return func() tea.Msg { return markdownMsg{} }
+	})
 	m.editor.AddCommand("detach", func(buf vimtea.Buffer, args []string) tea.Cmd {
 		index := strings.Join(args, " ")
 		return func() tea.Msg { return detachMsg{index: index} }
@@ -664,6 +676,9 @@ func (m Model) title() string {
 		title = "Forward"
 	case m.draft.ID != "":
 		title = "Edit Draft"
+	}
+	if m.draft.Markdown {
+		title += " · Markdown"
 	}
 	if m.draft.ConflictWith != "" {
 		// The same draft was changed here and in another mail client.
@@ -840,5 +855,14 @@ func (m Model) setBody(body string) Model {
 	m.editor = newEditor(email.SanitizeText(body))
 	m.editorMode = vimtea.ModeNormal
 	m.registerCommands()
+	return m
+}
+
+// WithMarkdownDefault makes a new message, reply or forward Markdown when
+// the account is set up that way. A saved draft keeps its own setting.
+func (m Model) WithMarkdownDefault(markdown bool) Model {
+	if m.draft.ID == "" {
+		m.draft.Markdown = markdown
+	}
 	return m
 }

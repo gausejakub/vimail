@@ -16,6 +16,9 @@ type Draft struct {
 	Bcc     []string
 	Subject string
 	Body    string
+	// Markdown marks the body as Markdown: the message is sent as
+	// multipart/alternative with the text as written and a rendered HTML part.
+	Markdown bool
 	// Threading headers (Message-IDs without angle brackets).
 	InReplyTo  string
 	References []string

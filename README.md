@@ -98,20 +98,32 @@ Subcommands:
 | Command | Purpose |
 |---------|---------|
 | `vimail` | Launch the TUI |
-| `vimail setup` | Store account credentials in the OS keyring (or test `password_cmd` / `key_cmd`) |
+| `vimail setup` | Add your first account from its email address; with accounts configured, store or re-enter their credentials (or test `password_cmd` / `key_cmd`) |
+| `vimail setup add` | Add another account from its email address |
 | `vimail mcp` | Run the MCP server on stdio for AI clients (see [MCP server](#mcp-server-ai-clients)) |
 | `vimail help` | Show usage |
 
 ### Account Setup
 
-1. Add accounts to `~/.config/vimail/config.toml` (see examples below)
-2. Run `vimail setup` to store credentials in your OS keyring
-
 ```sh
-vimail setup
+vimail setup        # first run: add your first account
+vimail setup add    # add another account
 ```
 
-This walks through each configured account and securely stores your password in the OS keyring. If credentials already exist, it will ask before overwriting.
+Enter your email address and vimail finds the mail servers, shows them to you, asks for the password, tests the login and writes the account to `~/.config/vimail/config.toml`. The password goes to your OS keyring, never into the config file.
+
+How the servers are found, in this order:
+
+1. built-in settings for Gmail, Outlook, iCloud, Fastmail, Yahoo and Seznam;
+2. the domain's MX records, so a custom domain hosted at one of those providers works too;
+3. the autoconfig file the domain publishes (the one Thunderbird reads);
+4. Mozilla's public ISP database, only if you agree, since it tells Mozilla which domain you are setting up;
+5. DNS SRV records, then the usual names (`imap.<domain>`, `mail.<domain>`);
+6. typing them in.
+
+Nothing is sent to a server until you have confirmed it, connections require TLS with a valid certificate, and nothing is saved until the login test passes. Gmail offers an app password or OAuth with your own Google client; Outlook uses OAuth.
+
+You can still write the account block yourself (examples below). With accounts already configured, `vimail setup` walks through them and stores or re-enters their credentials; if credentials already exist, it asks before overwriting.
 
 ### Where passwords are stored
 

@@ -358,32 +358,11 @@ func (w *IMAPWorker) listMailboxes() ([]string, error) {
 	cancel := w.opTimer(opDeadline)
 	defer cancel()
 
-	// Ask for folder roles (RFC 6154) when the server offers them through
-	// the extended LIST; servers with SPECIAL-USE alone put the role
-	// attributes into a plain LIST response.
-	var opts *imap.ListOptions
-	if caps := w.client.Caps(); caps.Has(imap.CapSpecialUse) && caps.Has(imap.CapListExtended) {
-		opts = &imap.ListOptions{ReturnSpecialUse: true}
-	}
-	listCmd := w.client.List("", "*", opts)
-	mailboxes, err := listCmd.Collect()
+	mailboxes, err := w.client.List("", "*", listOptions(w.client)).Collect()
 	if err != nil {
 		return nil, fmt.Errorf("LIST: %w", err)
 	}
-
-	var listed []listedMailbox
-	for _, mbox := range mailboxes {
-		lm := listedMailbox{name: mbox.Mailbox}
-		for _, attr := range mbox.Attrs {
-			if attr == imap.MailboxAttrNoSelect {
-				lm.noSelect = true
-			}
-			if role := roleDisplayName(attr); role != "" && lm.role == "" {
-				lm.role = role
-			}
-		}
-		listed = append(listed, lm)
-	}
+	listed := listedFrom(mailboxes)
 	display := assignFolderNames(listed, w.acct.Folders)
 
 	var names []string

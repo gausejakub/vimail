@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -182,14 +183,18 @@ type searchMessagesArgs struct {
 	Account string `json:"account,omitempty" jsonschema:"account email; may be omitted when exactly one account is configured"`
 	Query   string `json:"query" jsonschema:"text matched against subject, sender, recipients, and cached bodies"`
 	Limit   int    `json:"limit,omitempty" jsonschema:"maximum results (default 50)"`
+	Server  bool   `json:"server,omitempty" jsonschema:"also ask the mail server (IMAP SEARCH over headers and bodies); finds mail whose body was never downloaded, at the cost of a network round trip per folder"`
 }
 
 type searchMessagesResult struct {
-	Account   string          `json:"account"`
-	Query     string          `json:"query"`
-	Limit     int             `json:"limit"`
-	Truncated bool            `json:"truncated"`
-	Messages  []messageHeader `json:"messages"`
+	Account   string `json:"account"`
+	Query     string `json:"query"`
+	Limit     int    `json:"limit"`
+	Truncated bool   `json:"truncated"`
+	// Searched is "cache", or "cache+server" when the server was asked too.
+	Searched     string          `json:"searched"`
+	ServerErrors []string        `json:"server_errors,omitempty"`
+	Messages     []messageHeader `json:"messages"`
 }
 
 // resolveAccount validates the requested account against the cache, and lets
@@ -334,6 +339,7 @@ func truncateBody(message *readMessageResult, maxChars int) {
 // explicit through list_recent_messages fresh=true or read_messages
 // fetch_missing=true.
 func (s *Server) registerReadTools() {
+	s.registerContactTool()
 	s.registerReadDraft()
 	addTool(s, &sdk.Tool{
 		Name:        "list_recent_messages",
@@ -610,7 +616,7 @@ func (s *Server) registerReadTools() {
 
 	addTool(s, &sdk.Tool{
 		Name:        "search_messages",
-		Description: "Search the local cache across subject, sender, recipients, and cached bodies. Results contain real folder/UID handles and report when the requested limit truncated the result set.",
+		Description: "Search mail by text. By default only the local cache is searched: subject, sender, To, Cc, Reply-To, and the bodies that have been downloaded, so a phrase inside a message that was never opened is not found. Set server=true to also ask the mail server, which searches every header and body (Trash, Spam and Drafts excluded). `searched` says which was done. Results contain real folder/UID handles and report when the requested limit truncated the result set.",
 	}, func(ctx context.Context, req *sdk.CallToolRequest, args searchMessagesArgs) (*sdk.CallToolResult, searchMessagesResult, error) {
 		acct, err := s.resolveAccount(args.Account)
 		if err != nil {
@@ -627,7 +633,20 @@ func (s *Server) registerReadTools() {
 			limit = maxSearchLimit
 		}
 		matches := s.store.SearchMessages(acct, args.Query, limit+1)
-		out := searchMessagesResult{Account: acct, Query: args.Query, Limit: limit}
+		out := searchMessagesResult{Account: acct, Query: args.Query, Limit: limit, Searched: "cache"}
+		if args.Server {
+			if s.coord == nil {
+				out.ServerErrors = []string{"server search unavailable: no coordinator configured"}
+			} else {
+				s.resolveCreds()
+				res := s.coord.SearchServerNow(acct, args.Query, limit+1)
+				out.Searched = "cache+server"
+				for _, err := range res.Errors {
+					out.ServerErrors = append(out.ServerErrors, email.SanitizeLine(err.Error()))
+				}
+				matches = email.MergeSearchResults(matches, res.Messages)
+			}
+		}
 		if len(matches) > limit {
 			out.Truncated = true
 			matches = matches[:limit]
@@ -636,6 +655,55 @@ func (s *Server) registerReadTools() {
 			out.Messages = append(out.Messages, header(m, true))
 		}
 		logging.Debug("mcp", "search_messages", logging.Acct(acct), logging.KV("returned", len(out.Messages)), logging.KV("truncated", out.Truncated))
+		return nil, out, nil
+	})
+}
+
+type searchContactsArgs struct {
+	Query string `json:"query" jsonschema:"part of a name or address, e.g. 'martin' (case and diacritics are ignored)"`
+	Limit int    `json:"limit,omitempty" jsonschema:"maximum contacts (default 10, max 50)"`
+}
+
+type contactInfo struct {
+	Name     string `json:"name,omitempty"`
+	Address  string `json:"address"`
+	Sent     int    `json:"sent" jsonschema:"messages the user wrote to this address"`
+	Received int    `json:"received" jsonschema:"messages received from this address"`
+	LastSeen string `json:"last_seen,omitempty"`
+}
+
+type searchContactsResult struct {
+	Query    string        `json:"query"`
+	Contacts []contactInfo `json:"contacts"`
+}
+
+// registerContactTool registers search_contacts, the lookup the composer
+// uses to complete recipients.
+func (s *Server) registerContactTool() {
+	addTool(s, &sdk.Tool{
+		Name: "search_contacts",
+		Description: "Find correspondents by part of a name or address, from mail in the local cache across all accounts (Trash and Spam excluded). " +
+			"People the user has written to rank first; sent and received counts show how established a contact is. " +
+			"Use it to resolve a name to an address before save_draft. An address that only ever wrote to the user (sent = 0) is not verified: confirm it with the user.",
+	}, func(ctx context.Context, req *sdk.CallToolRequest, args searchContactsArgs) (*sdk.CallToolResult, searchContactsResult, error) {
+		if strings.TrimSpace(args.Query) == "" {
+			return nil, searchContactsResult{}, fmt.Errorf("query is required")
+		}
+		limit := args.Limit
+		if limit <= 0 {
+			limit = 10
+		}
+		if limit > 50 {
+			limit = 50
+		}
+		out := searchContactsResult{Query: args.Query, Contacts: []contactInfo{}}
+		for _, c := range email.MatchContacts(s.store.Contacts(s.cfg.OwnAddresses()), args.Query, limit) {
+			info := contactInfo{Name: email.SanitizeLine(c.Name), Address: email.SanitizeLine(c.Address), Sent: c.Sent, Received: c.Received}
+			if !c.Last.IsZero() {
+				info.LastSeen = c.Last.Format(time.RFC3339)
+			}
+			out.Contacts = append(out.Contacts, info)
+		}
 		return nil, out, nil
 	})
 }

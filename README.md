@@ -141,6 +141,24 @@ identities = ["Jakub <jakub@alias.example>", "jakub@other-domain.example"]
 
 The mail provider must allow sending as these addresses (Gmail: *Settings → Accounts → Send mail as*), or it may rewrite the From header. The SMTP envelope sender stays the account's own address.
 
+### Signatures
+
+Set a signature on an account, and optionally one per identity. It is added to new messages, replies and forwards under the usual `-- ` line, above the quoted original. Changing the From field in the composer switches to that identity's signature, unless you have edited it.
+
+```toml
+[[accounts]]
+email = "jakub@example.com"
+identities = ["Jakub <jakub@alias.example>"]
+signature = """
+Jakub
+"""
+
+[accounts.signatures]
+"jakub@alias.example" = "file:~/.config/vimail/work-signature.txt"
+```
+
+A value starting with `file:` is read from that file each time. Drafts prepared over MCP get the signature of their From identity too; `signature: false` on `save_draft` leaves it out.
+
 ### Drafts
 
 Drafts are saved locally and uploaded to the account's server Drafts folder, so they also show up in other mail clients (Gmail, your phone). Every save replaces the server copy. Drafts written in another client appear in vimail after the next sync. A draft deleted or sent elsewhere disappears from vimail too, unless it has edits that have not been uploaded yet. Offline, uploads wait in the operation queue (`:ops`).

@@ -64,6 +64,8 @@ type saveDraftArgs struct {
 	Forward            *originalRef `json:"forward_message,omitempty" jsonschema:"make this a forward of account/folder/uid: the original's headers and body are appended. New drafts only"`
 	ForwardAttachments *bool        `json:"forward_attachments,omitempty" jsonschema:"with forward_message: include the original's attachments (default true)"`
 
+	Signature *bool `json:"signature,omitempty" jsonschema:"new drafts only: append the signature configured for the From identity (default true); do not write a signature into body yourself"`
+
 	Attachments *[]string `json:"attachments,omitempty" jsonschema:"local file paths to attach (must be inside an [mcp] attachment_dirs directory). Replaces the draft's attachments; [] removes them; omit to keep them"`
 }
 
@@ -340,6 +342,15 @@ func (s *Server) buildDraft(acct string, args saveDraftArgs) (email.Draft, error
 	}
 	if total > maxDraftAttachmentBytes {
 		return d, fmt.Errorf("attachments total %d bytes; the limit is %d", total, maxDraftAttachmentBytes)
+	}
+	// The signature of the sending identity, on new drafts: above the quoted
+	// or forwarded original, like in the composer.
+	if args.ID == "" && (args.Signature == nil || *args.Signature) {
+		from := d.From
+		if from == "" {
+			from = acct
+		}
+		d.Body = email.InsertSignature(d.Body, email.SignatureBlock(acctCfg.SignatureFor(from)))
 	}
 	d.Date = time.Now()
 	return d, nil

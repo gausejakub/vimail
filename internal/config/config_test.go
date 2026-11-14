@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -88,5 +90,37 @@ key_cmd = "pass show vimail/key"
 	}
 	if cfg.Cache.KeyCmd != "pass show vimail/key" {
 		t.Errorf("key_cmd = %q", cfg.Cache.KeyCmd)
+	}
+}
+
+func TestSignatureFor(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	if err := os.WriteFile(filepath.Join(dir, ".signature"), []byte("From a file\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	a := AccountConfig{
+		Email:     "me@x.test",
+		Signature: "Default",
+		Signatures: map[string]string{
+			"Work@Corp.test": "Work sig",
+			"file@x.test":    "file:~/.signature",
+			"gone@x.test":    "file:~/missing",
+		},
+	}
+	for from, want := range map[string]string{
+		"me@x.test":                "Default",
+		"Jakub <work@corp.test>":   "Work sig",
+		"file@x.test":              "From a file\n",
+		"gone@x.test":              "",
+		"someone@else.test":        "Default",
+		"x <a@x.test>, <b@x.test>": "Default", // not one address: the account's
+	} {
+		if got := a.SignatureFor(from); got != want {
+			t.Errorf("SignatureFor(%q) = %q, want %q", from, got, want)
+		}
+	}
+	if got := (AccountConfig{}).SignatureFor("me@x.test"); got != "" {
+		t.Errorf("no signature configured: %q", got)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/gausejakub/vimail/internal/config"
 	"github.com/gausejakub/vimail/internal/email"
+	"github.com/gausejakub/vimail/internal/tui/util"
 )
 
 // A stored draft can come from an AI client (MCP save_draft); opening it must
@@ -90,5 +91,61 @@ func TestRecipientSuggestions(t *testing.T) {
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab}) // Subject
 	if m = typeInto(m, "martin"); len(m.SuggestionsForTest()) != 0 {
 		t.Fatal("suggestions in the Subject field")
+	}
+}
+
+func TestSignaturesFollowTheFromIdentity(t *testing.T) {
+	ids := []string{"Jakub <me@x.test>", "Jakub Gause <work@corp.test>"}
+	sigs := func(from string) string {
+		switch email.AddrSpec(from) {
+		case "work@corp.test":
+			return "Jakub Gause\nCorp s.r.o."
+		case "me@x.test":
+			return "J."
+		}
+		return ""
+	}
+	body := func(m Model) string { d, _ := m.CurrentDraftForTest(); return d.Body }
+
+	// New message: default identity's signature, with room above it.
+	m := New(config.AIConfig{}).SetSize(120, 40).Show().WithIdentities(ids).WithSignatures(sigs)
+	if got := body(m); got != "\n\n-- \nJ.\n" {
+		t.Fatalf("new message body = %q", got)
+	}
+	// Untouched, it is still an empty message: Esc closes without a draft.
+	m.focused = fieldSubject
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if _, ok := cmd().(util.ComposeCloseMsg); !ok {
+		t.Fatalf("Esc on a signature-only message = %T, want close without saving", cmd())
+	}
+
+	// Reply: signature above the quote; changing From swaps it.
+	quote := "On Thu, 12 Nov 2026 at 10:00, Petr <p@x.test> wrote:\n> hi\n"
+	m = New(config.AIConfig{}).SetSize(120, 40).
+		ShowReply(email.Draft{From: ids[1], To: []string{"p@x.test"}, Body: "\n\n" + quote}).WithIdentities(ids).WithSignatures(sigs)
+	if got := body(m); !strings.Contains(got, "-- \nJakub Gause\nCorp s.r.o.\n\nOn Thu") {
+		t.Fatalf("reply body = %q", got)
+	}
+	m.focused = fieldFrom
+	m.inputs[fieldFrom].SetValue("me@x.test")
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab}) // leave From
+	if got := body(m); !strings.Contains(got, "-- \nJ.\n\nOn Thu") || strings.Contains(got, "Corp") {
+		t.Fatalf("after switching From: %q", got)
+	}
+
+	// Once edited, the signature is the user's: switching From leaves it.
+	m = m.setBody(strings.Replace(body(m), "J.", "J. (sent from my terminal)", 1))
+	m.focused = fieldFrom
+	m.inputs[fieldFrom].SetValue("work@corp.test")
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if got := body(m); !strings.Contains(got, "sent from my terminal") || strings.Contains(got, "Corp") {
+		t.Fatalf("edited signature replaced: %q", got)
+	}
+
+	// A saved draft is opened as it is, not signed a second time.
+	saved := "text\n\n-- \nJ.\n"
+	m = New(config.AIConfig{}).SetSize(120, 40).ShowDraft(email.Draft{ID: "d1", From: ids[0], Body: saved}).WithIdentities(ids).WithSignatures(sigs)
+	if got := body(m); got != strings.TrimRight(saved, "\n") && got != saved {
+		t.Fatalf("draft body changed: %q", got)
 	}
 }

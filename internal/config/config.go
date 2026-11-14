@@ -1,6 +1,7 @@
 package config
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,6 +37,11 @@ type AccountConfig struct {
 	// was addressed to. The provider must allow sending as the address
 	// (e.g. Gmail "Send mail as"), or it may rewrite From.
 	Identities []string `toml:"identities"`
+	// Signature is appended to new messages, replies and forwards, under
+	// the usual "-- " line. Signatures gives an identity its own, keyed by
+	// address. A value starting with "file:" is read from that path.
+	Signature  string            `toml:"signature"`
+	Signatures map[string]string `toml:"signatures"`
 }
 
 // SenderAddresses returns every address the account may send from: the
@@ -208,4 +214,41 @@ func Load() (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// maxSignatureBytes bounds a signature read from a file.
+const maxSignatureBytes = 16 * 1024
+
+// SignatureFor returns the signature text for a From address: the
+// identity's own from `signatures`, else the account's `signature`. An
+// unreadable signature file yields no signature.
+func (a AccountConfig) SignatureFor(from string) string {
+	sig := a.Signature
+	if addr, ok := email.SingleAddress(from); ok {
+		for key, value := range a.Signatures {
+			if strings.EqualFold(strings.TrimSpace(key), addr) {
+				sig = value
+				break
+			}
+		}
+	}
+	if path, isFile := strings.CutPrefix(sig, "file:"); isFile {
+		path = strings.TrimSpace(path)
+		if path == "~" || strings.HasPrefix(path, "~/") {
+			if home, err := os.UserHomeDir(); err == nil {
+				path = filepath.Join(home, strings.TrimPrefix(path, "~"))
+			}
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return ""
+		}
+		defer f.Close()
+		data, err := io.ReadAll(io.LimitReader(f, maxSignatureBytes))
+		if err != nil {
+			return ""
+		}
+		sig = string(data)
+	}
+	return sig
 }

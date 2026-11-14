@@ -346,7 +346,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			})
 			return m, tea.Batch(cmds...)
 		}
-		m.compose = m.compose.ShowDraft(draft).WithIdentities(m.identities(acct)).SetSize(m.width, m.height)
+		m.compose = m.compose.ShowDraft(draft).WithIdentities(m.identities(acct)).WithSignatures(m.signatureFor(acct)).SetSize(m.width, m.height)
 		cmds = append(cmds, m.loadContactsCmd())
 		m.mode = keys.ModeNormal
 		cmds = append(cmds, func() tea.Msg {
@@ -1172,7 +1172,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		})
 
 	case key.Matches(msg, keys.Normal.Compose):
-		m.compose = m.compose.Show().WithIdentities(m.identities(m.mailbox.SelectedEmail())).SetSize(m.width, m.height)
+		m.compose = m.compose.Show().WithIdentities(m.identities(m.mailbox.SelectedEmail())).WithSignatures(m.signatureFor(m.mailbox.SelectedEmail())).SetSize(m.width, m.height)
 		cmds = append(cmds, m.loadContactsCmd())
 		m.mode = keys.ModeInsert
 		cmds = append(cmds, func() tea.Msg {
@@ -1193,7 +1193,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			} else {
 				d = m.replyDraft(acct, orig, key.Matches(msg, keys.Normal.ReplyAll))
 			}
-			m.compose = m.compose.ShowReply(d).WithIdentities(m.identities(acct)).SetSize(m.width, m.height)
+			m.compose = m.compose.ShowReply(d).WithIdentities(m.identities(acct)).WithSignatures(m.signatureFor(acct)).SetSize(m.width, m.height)
 			cmds = append(cmds, m.loadContactsCmd())
 			m.mode = keys.ModeNormal
 			cmds = append(cmds, func() tea.Msg {
@@ -2224,4 +2224,18 @@ func (m *Model) loadContactsCmd() tea.Cmd {
 	m.contactsAt = time.Now()
 	store, own := m.store, m.cfg.OwnAddresses()
 	return func() tea.Msg { return contactsLoadedMsg{contacts: store.Contacts(own)} }
+}
+
+// signatureFor returns the signature lookup of an account, for the composer.
+func (m Model) signatureFor(acct string) func(from string) string {
+	a, ok := m.cfg.Account(acct)
+	if !ok {
+		return nil
+	}
+	return func(from string) string {
+		if strings.TrimSpace(from) == "" {
+			from = a.Email
+		}
+		return a.SignatureFor(from)
+	}
 }

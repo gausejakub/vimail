@@ -10,11 +10,36 @@ every merged PR lands here in the same pass that merges it.
 
 ### Added
 
+- `vimail setup add`: add an account by entering only its email address. vimail finds the servers (built-in providers, MX records, the domain's autoconfig, Thunderbird's database after asking, SRV records), shows them for confirmation, checks the login and appends the account to your config. (#81)
+- Recipient suggestions in To, Cc and Bcc from addresses in your cached mail. People you have written to come first; MCP gets a `search_contacts` tool. (#82)
+- Signatures: `signature` on an account and `signatures` per identity (a value can be `file:path`). New messages, replies and forwards get the signature of their From address, and it switches when you change From. MCP drafts are signed too (`signature: false` opts out). (#83)
+- Archive with `A` (Gmail: removes the message from the folder), and `m` to move the message or the visual selection to a folder you type. (#84)
+- `:search-server <query>` / `:ss` searches the selected account on the mail server as well, which also finds bodies that were never downloaded; MCP `search_messages` takes `server: true`. (#85)
+- Desktop notifications for new mail: `[notifications] enabled = true`, with optional folders, accounts, `hide_subject` and a custom command. (#86)
+- `:threads` groups the message list by conversation (`threads = true` under `[general]` makes it the default). (#87)
+- Windows builds (amd64 and arm64) in releases. (#88)
+- A draft changed in vimail and in another mail client before either synced is shown as `⚠ 2 versions` on both copies, also over MCP; nothing is merged or lost. (#89)
+- Markdown: `:markdown` in the composer, or `markdown = true` on an account, sends the message with a formatted HTML version next to the text as written; MCP `save_draft` takes `markdown`. (#90)
+- Calendar invitations are shown as an event block at the top of the message, and `:accept`, `:tentative` and `:decline` send the organizer your answer. (#91)
+- OpenPGP through your own GnuPG (`[pgp] enabled = true`): signatures are checked and encrypted mail is decrypted when reading, and `:sign` / `:encrypt` (or `pgp_sign` / `pgp_encrypt` on an account) sign and encrypt what you send. The verdict is shown as a separate `PGP:` line that a message cannot fake. (#92)
+
 ### Changed
+
+- Sent, Drafts, Trash, Spam and Archive are found from the roles the mail server advertises, so folders in any language work; `folders = { sent = "..." }` on an account names them by hand when a server advertises nothing. (#80)
+- Searching the cache also matches Cc and Reply-To. (#85)
 
 ### Fixed
 
+- Replying in one account to a message from another of your own accounts opened the reply with an empty To; it now goes back to that address. Reply all still leaves out the account you reply from. (#93)
+- Gmail's `[Gmail]` container and old labels named like All Mail no longer appear as folders, and folders the server no longer lists are dropped from the sidebar. (#80)
+
 ### Security
+
+- Setup by email shows exactly where your password will go before anything is sent, requires TLS, and ignores server names and login names from DNS or autoconfig that are not plain host or login names. (#81)
+- Recipient suggestions show the address first and never rank someone who has only written to you above people you have written to, so a look-alike display name cannot take a colleague's place. (#82)
+- Markdown mail never contains anything the text does not show: images become text, a link whose text differs from its address shows the address, and raw HTML is dropped. (#90)
+- Invitation answers carry only the event's identifying lines and your own attendee line; an organizer who is not the sender is pointed out. (#91)
+- OpenPGP verdicts apply only to the content that was actually signed or encrypted, which is also what attachments are saved from and what forwards and invitation answers use; the key must hold a valid user id for the sender's From address. (#92)
 
 ## [0.17.0] - 2026-11-14
 

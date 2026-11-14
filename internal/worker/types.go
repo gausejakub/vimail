@@ -34,7 +34,10 @@ type SendRequest struct {
 	Subject string
 	Body    string
 	// Markdown sends the body with a rendered text/html alternative.
-	Markdown    bool
+	Markdown bool
+	// Calendar adds a calendar object as an alternative of the body (the
+	// answer to an invitation).
+	Calendar    *CalendarPart
 	InReplyTo   string
 	References  []string
 	Attachments []email.DraftAttachment
@@ -79,7 +82,7 @@ func (r SendRequest) envelopeRecipients() []string {
 func (r SendRequest) sendPayload() cache.SendPayload {
 	return cache.SendPayload{
 		From: r.From, To: r.To, ToList: r.ToList, Cc: r.Cc, Bcc: r.Bcc,
-		Subject: r.Subject, Body: r.Body, Markdown: r.Markdown, InReplyTo: r.InReplyTo, References: r.References,
+		Subject: r.Subject, Body: r.Body, Markdown: r.Markdown, Calendar: r.Calendar.payload(), InReplyTo: r.InReplyTo, References: r.References,
 		Attachments: r.Attachments, Source: r.Source, MessageID: r.MessageID, Date: r.Date,
 	}
 }
@@ -88,7 +91,7 @@ func (r SendRequest) sendPayload() cache.SendPayload {
 func sendRequestFromPayload(p cache.SendPayload) SendRequest {
 	return SendRequest{
 		From: p.From, To: p.To, ToList: p.ToList, Cc: p.Cc, Bcc: p.Bcc,
-		Subject: p.Subject, Body: p.Body, Markdown: p.Markdown, InReplyTo: p.InReplyTo, References: p.References,
+		Subject: p.Subject, Body: p.Body, Markdown: p.Markdown, Calendar: calendarFromPayload(p.Calendar), InReplyTo: p.InReplyTo, References: p.References,
 		Attachments: p.Attachments, Source: p.Source, MessageID: p.MessageID, Date: p.Date,
 	}
 }
@@ -233,4 +236,24 @@ type RestoreResult struct {
 type UIDMove struct {
 	Source      uint32
 	Destination uint32
+}
+
+// CalendarPart is a calendar object sent with a message.
+type CalendarPart struct {
+	Method string // iTIP method, e.g. "REPLY"
+	Data   []byte
+}
+
+func (c *CalendarPart) payload() *cache.CalendarPayload {
+	if c == nil {
+		return nil
+	}
+	return &cache.CalendarPayload{Method: c.Method, Data: c.Data}
+}
+
+func calendarFromPayload(p *cache.CalendarPayload) *CalendarPart {
+	if p == nil {
+		return nil
+	}
+	return &CalendarPart{Method: p.Method, Data: p.Data}
 }

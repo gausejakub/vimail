@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/emersion/go-imap/v2"
+	"github.com/gausejakub/vimail/internal/email"
 )
 
 func TestAssignFolderNames(t *testing.T) {
@@ -46,5 +47,46 @@ func TestAssignFolderNames(t *testing.T) {
 			t.Fatalf("%q and %q both display as %q", mailbox, other, name)
 		}
 		seen[name] = mailbox
+	}
+}
+
+func TestNotSelectable(t *testing.T) {
+	for _, attr := range []imap.MailboxAttr{`\Noselect`, `\NoSelect`, `\NonExistent`, `\nonexistent`} {
+		if !notSelectable(attr) {
+			t.Errorf("%s not treated as not selectable", attr)
+		}
+	}
+	for _, attr := range []imap.MailboxAttr{`\HasChildren`, `\All`, `\Sent`, `\Marked`} {
+		if notSelectable(attr) {
+			t.Errorf("%s treated as not selectable", attr)
+		}
+	}
+}
+
+type fakeFolders struct {
+	names   []string
+	deleted []string
+}
+
+func (f *fakeFolders) FoldersFor(string) []email.Folder {
+	var out []email.Folder
+	for _, n := range f.names {
+		out = append(out, email.Folder{Name: n})
+	}
+	return out
+}
+
+func (f *fakeFolders) DeleteFolder(_, name string) error {
+	f.deleted = append(f.deleted, name)
+	return nil
+}
+
+// Folders cached by mistake or no longer listed (Gmail's "[Gmail]"
+// container, a hidden "[Gmail]All Mail" label) leave the sidebar.
+func TestPruneCachedFolders(t *testing.T) {
+	f := &fakeFolders{names: []string{"Inbox", "Sent", "[Gmail]", "[Gmail]All Mail", "Work"}}
+	pruneCachedFolders(f, "me@x.test", []string{"Inbox", "Sent", "Work"})
+	if !reflect.DeepEqual(f.deleted, []string{"[Gmail]", "[Gmail]All Mail"}) {
+		t.Fatalf("deleted = %q", f.deleted)
 	}
 }

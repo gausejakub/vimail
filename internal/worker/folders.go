@@ -121,3 +121,34 @@ func displayTaken(display map[string]string, name string) bool {
 	}
 	return false
 }
+
+// notSelectable reports whether a LIST attribute means the name cannot be
+// opened: \Noselect, or \NonExistent, which servers answering the extended
+// LIST (Gmail's "[Gmail]" container) send in its place (RFC 5258).
+// Attribute names are case-insensitive.
+func notSelectable(attr imap.MailboxAttr) bool {
+	return strings.EqualFold(string(attr), string(imap.MailboxAttrNoSelect)) ||
+		strings.EqualFold(string(attr), string(imap.MailboxAttrNonExistent))
+}
+
+// folderPruner is the part of the cache pruneCachedFolders needs.
+type folderPruner interface {
+	FoldersFor(acctEmail string) []email.Folder
+	DeleteFolder(acctEmail, folder string) error
+}
+
+// pruneCachedFolders drops cached folders the server no longer lists under
+// that name (renamed, deleted, now hidden, or cached by mistake), so they do
+// not linger in the sidebar. Only the local copy is removed; the server is
+// not touched. Called with the complete result of a successful LIST.
+func pruneCachedFolders(store folderPruner, acctEmail string, listed []string) {
+	keep := make(map[string]bool, len(listed))
+	for _, name := range listed {
+		keep[name] = true
+	}
+	for _, f := range store.FoldersFor(acctEmail) {
+		if !keep[f.Name] {
+			store.DeleteFolder(acctEmail, f.Name)
+		}
+	}
+}

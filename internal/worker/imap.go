@@ -375,7 +375,7 @@ func (w *IMAPWorker) listMailboxes() ([]string, error) {
 	for _, mbox := range mailboxes {
 		lm := listedMailbox{name: mbox.Mailbox}
 		for _, attr := range mbox.Attrs {
-			if attr == imap.MailboxAttrNoSelect {
+			if notSelectable(attr) {
 				lm.noSelect = true
 			}
 			if role := roleDisplayName(attr); role != "" && lm.role == "" {
@@ -400,13 +400,16 @@ func (w *IMAPWorker) listMailboxes() ([]string, error) {
 		if raw := email.SanitizeLine(lm.name); raw != displayName && !displayTaken(display, raw) {
 			w.store.DeleteFolder(w.acct.Email, raw)
 		}
-		// Skip redundant folders from sync and sidebar.
-		if w.acct.ShouldSkipFolder(displayName) {
+		// Skip redundant folders from sync and sidebar. A folder named like a
+		// skipped one (a "[Gmail]All Mail" label next to the real All Mail)
+		// stays hidden too, as it did before roles were read.
+		if w.acct.ShouldSkipFolder(displayName) || w.acct.ShouldSkipFolder(FolderName(lm.name)) {
 			continue
 		}
 		names = append(names, displayName)
 		w.store.EnsureFolder(w.acct.Email, displayName)
 	}
+	pruneCachedFolders(w.store, w.acct.Email, names)
 
 	return names, nil
 }

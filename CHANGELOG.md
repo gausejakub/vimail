@@ -10,6 +10,16 @@ every merged PR lands here in the same pass that merges it.
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Security
+
+## [0.18.0] - 2026-11-14
+
+### Added
+
 - `vimail setup add`: add an account by entering only its email address. vimail finds the servers (built-in providers, MX records, the domain's autoconfig, Thunderbird's database after asking, SRV records), shows them for confirmation, checks the login and appends the account to your config. (#81)
 - Recipient suggestions in To, Cc and Bcc from addresses in your cached mail. People you have written to come first; MCP gets a `search_contacts` tool. (#82)
 - Signatures: `signature` on an account and `signatures` per identity (a value can be `file:path`). New messages, replies and forwards get the signature of their From address, and it switches when you change From. MCP drafts are signed too (`signature: false` opts out). (#83)

@@ -115,7 +115,19 @@ func (f *Flow) Add(ctx context.Context, existing config.Config) (config.AccountC
 	}
 	for {
 		f.show(settings, address)
-		answer, err := f.ask("Use these servers? Your password will be sent to them. [Y]es / [e]dit / [n]o", "y")
+		question, def := "Use these servers? Your password will be sent to them. [Y]es / [e]dit / [n]o", "y"
+		// Servers named only by DNS, and not part of the address's own
+		// domain: nothing vouches for them. Someone answering the DNS
+		// lookup in the domain's place would get the password, so the
+		// answer is not Yes by default.
+		if domain, ok := autoconfig.SplitAddress(address); ok && settings.FromDNS {
+			if outside := settings.OutsideDomain(domain); len(outside) > 0 {
+				f.say("WARNING: %s is not part of %s, and these settings come from DNS alone, which is not authenticated.", email.SanitizeLine(strings.Join(outside, ", ")), email.SanitizeLine(domain))
+				f.say("Check them against your provider's help page before you continue.")
+				question, def = "Use these servers? Your password will be sent to them. [y]es / [e]dit / [N]o", "n"
+			}
+		}
+		answer, err := f.ask(question, def)
 		if err != nil {
 			return acct, err
 		}

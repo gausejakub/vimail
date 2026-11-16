@@ -86,7 +86,12 @@ type InvitationReply struct {
 // RespondToInvitationNow answers the invitation in a message: it sends the
 // organizer a calendar REPLY with the user's participation status, from the
 // address that was invited. The message is read without marking it read.
-func (c *Coordinator) RespondToInvitationNow(acctEmail, folder string, uid uint32, status string) InvitationReply {
+//
+// The answer goes to the organizer the invitation names, which the sender
+// of the message chose. When that is someone else, the answer would be mail
+// from the user to a third party, with the sender's words in its subject;
+// it is sent only with anyOrganizer, after the user has seen who it goes to.
+func (c *Coordinator) RespondToInvitationNow(acctEmail, folder string, uid uint32, status string, anyOrganizer bool) InvitationReply {
 	out := InvitationReply{Status: status}
 	acct, ok := c.accountByEmail(acctEmail)
 	if !ok {
@@ -117,6 +122,14 @@ func (c *Coordinator) RespondToInvitationNow(acctEmail, folder string, uid uint3
 		return out
 	}
 	out.Summary, out.Organizer = ev.Summary, ev.Organizer.Address
+	if sender := messageSender(raw); !anyOrganizer && ev.Organizer.Address != "" && ev.Organizer.Address != sender {
+		from := sender
+		if from == "" {
+			from = "unknown"
+		}
+		out.Err = fmt.Errorf("the answer would go to %s, not to the sender of this message (%s); add ! to send it anyway (:accept!, :tentative!, :decline!)", ev.Organizer.Address, from)
+		return out
+	}
 
 	// Answer as the attendee that was invited: one of the account's
 	// addresses if it is on the list, otherwise the account address.
@@ -165,6 +178,6 @@ func (c *Coordinator) RespondToInvitationNow(acctEmail, folder string, uid uint3
 }
 
 // RespondToInvitation is RespondToInvitationNow as a tea.Cmd.
-func (c *Coordinator) RespondToInvitation(acctEmail, folder string, uid uint32, status string) tea.Cmd {
-	return func() tea.Msg { return c.RespondToInvitationNow(acctEmail, folder, uid, status) }
+func (c *Coordinator) RespondToInvitation(acctEmail, folder string, uid uint32, status string, anyOrganizer bool) tea.Cmd {
+	return func() tea.Msg { return c.RespondToInvitationNow(acctEmail, folder, uid, status, anyOrganizer) }
 }

@@ -191,7 +191,12 @@ func DefaultConfig() Config {
 		AI: AIConfig{
 			Default: "claude",
 			Agents: []AIAgentConfig{
-				{Name: "claude", Cmd: "claude", Args: []string{"--print", "-p", "{prompt}"}},
+				// The prompt holds text from received mail. It goes in on
+				// stdin (no {prompt} argument), so it is not in the process
+				// list, and the agent gets no tools and no MCP servers: it
+				// writes text, and cannot be talked into reading files or
+				// calling anything by a message it is shown.
+				{Name: "claude", Cmd: "claude", Args: []string{"--tools", "", "--strict-mcp-config", "--print"}},
 			},
 		},
 	}

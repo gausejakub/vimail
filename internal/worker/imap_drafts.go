@@ -65,7 +65,7 @@ func (w *IMAPWorker) refetchHeaders(folder string, uids []uint32) (int, error) {
 		if data == nil {
 			break
 		}
-		buf, err := data.Collect()
+		buf, err := collectHeader(data)
 		if err != nil || buf.UID == 0 {
 			continue
 		}
@@ -193,7 +193,7 @@ func (w *IMAPWorker) uidHoldsMessage(folder string, uids []uint32, messageID str
 		if data == nil {
 			break
 		}
-		buf, err := data.Collect()
+		buf, err := collectHeader(data)
 		if err == nil && buf.Envelope != nil && buf.Envelope.MessageID == messageID {
 			found = true
 		}

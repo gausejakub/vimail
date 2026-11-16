@@ -21,7 +21,7 @@ const browserCSP = "default-src 'none'; img-src data: cid:; style-src 'unsafe-in
 // soon as the message opens (confirming the open, or landing on a phishing
 // page). The body is therefore parsed and rebuilt with the policy first in
 // <head> and without the elements that can navigate or call out on their own:
-// meta http-equiv (except Content-Type), <base>, <link>, <script>, frames and
+// meta http-equiv and charset declarations, <base>, <link>, <script>, frames and
 // plugins, and <noscript> (whose content is markup only for browsers with
 // scripting off, the usual place to hide a refresh). Comments are dropped as well, so the
 // rebuilt markup cannot be re-read differently by the browser.
@@ -29,7 +29,11 @@ const browserCSP = "default-src 'none'; img-src data: cid:; style-src 'unsafe-in
 // It returns an error for markup that cannot be parsed (e.g. nested too
 // deeply); callers should then fall back to the plain-text body.
 func BrowserSafeHTML(raw string) (string, error) {
-	doc, err := html.ParseWithOptions(strings.NewReader(raw), html.ParseOptionEnableScripting(false))
+	// Control bytes go before parsing, so the names the checks below see are
+	// the names that are written out ("ifra\x01me" is not an iframe here but
+	// would be one after the bytes were removed), and again after rendering,
+	// because a character reference (&#27;) only becomes a control then.
+	doc, err := html.ParseWithOptions(strings.NewReader(stripHTMLControls(raw)), html.ParseOptionEnableScripting(false))
 	if err != nil {
 		return "", err
 	}
@@ -47,12 +51,57 @@ func BrowserSafeHTML(raw string) (string, error) {
 		},
 	}
 	head.InsertBefore(csp, head.FirstChild)
+	// The file is written as UTF-8 and must be read as UTF-8. The message's
+	// own charset declarations were removed (isActiveNode); this one comes
+	// first, ahead of the policy, so nothing the sender wrote can precede it.
+	// With a declaration such as ISO-2022-JP a browser decodes the bytes
+	// differently from the parser above: escape sequences switch it into a
+	// two-byte mode that swallows quotes and tags, the policy included, and
+	// what was an attribute value here becomes live markup there.
+	charset := &html.Node{
+		Type: html.ElementNode, DataAtom: atom.Meta, Data: "meta",
+		Attr: []html.Attribute{{Key: "charset", Val: "utf-8"}},
+	}
+	head.InsertBefore(charset, head.FirstChild)
 
 	var buf bytes.Buffer
 	if err := html.Render(&buf, doc); err != nil {
 		return "", err
 	}
-	return buf.String(), nil
+	return stripHTMLControls(buf.String()), nil
+}
+
+// stripHTMLControls removes the bytes no HTML document needs and an encoding
+// switch is built from: C0 controls other than tab and line breaks (ESC
+// starts every ISO-2022 sequence), DEL, and invalid UTF-8. The result is
+// valid UTF-8 under any reading.
+func stripHTMLControls(s string) string {
+	s = strings.ToValidUTF8(s, "�")
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r == '\t' || r == '\n' || r == '\r':
+			return r
+		case r < 0x20, r == 0x7f, r >= 0x80 && r <= 0x9f:
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// safeAttributeName reports whether an attribute name is made of the
+// characters real attribute names use. The parser accepts nearly anything
+// between two attributes; such bytes sit outside every quoted value, where a
+// browser that reads the file differently would take them as markup.
+func safeAttributeName(key string) bool {
+	if key == "" {
+		return false
+	}
+	for _, r := range key {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == ':' || r == '.') {
+			return false
+		}
+	}
+	return true
 }
 
 func stripActiveNodes(n *html.Node) {
@@ -83,7 +132,10 @@ func safeStyleElement(n *html.Node) bool {
 			return false
 		}
 		css, ok := safeCSS(c.Data)
-		if !ok {
+		// The text of a <style> element is written out as is, so it must not
+		// contain an end tag: the element would close there and the rest
+		// would be markup that no check has seen.
+		if !ok || strings.Contains(css, "</") {
 			return false
 		}
 		c.Data = css
@@ -103,6 +155,8 @@ func safeAttributes(n *html.Node) []html.Attribute {
 		key := strings.ToLower(a.Key)
 		val := strings.ToLower(strings.TrimSpace(a.Val))
 		switch {
+		case !safeAttributeName(a.Key):
+			continue
 		case strings.HasPrefix(key, "on"): // event handlers
 			continue
 		case key == "style":
@@ -150,12 +204,15 @@ func safeCSS(css string) (out string, ok bool) {
 	for i := 0; i < len(css); {
 		switch {
 		case strings.HasPrefix(lower[i:], "@import"):
-			// Drop the whole rule, up to and including its ";".
+			// Drop the whole rule, up to and including its ";". A space
+			// takes its place: with nothing there, the text on either side
+			// would join into a new token ("ur" + "l(…)", "</sty" + "le>").
 			if end := strings.IndexByte(css[i:], ';'); end >= 0 {
 				i += end + 1
 			} else {
 				i = len(css)
 			}
+			b.WriteByte(' ')
 		case strings.HasPrefix(lower[i:], "image-set("):
 			b.WriteString("x-blocked()")
 			i = cssCallEnd(css, i+len("image-set(")) + 1
@@ -168,7 +225,10 @@ func safeCSS(css string) (out string, ok bool) {
 			// An embedded image is kept; "(" cannot appear in a valid
 			// unquoted URL, and keeping it would hide a nested url( from
 			// this scan.
-			if hasScheme(strings.TrimSpace(target), "data:", "cid:") && end < len(css) && !strings.Contains(target, "(") {
+			// A line break or a quote inside the argument ends it early for
+			// a browser (a broken string), so the text kept here would hold
+			// rules of its own, such as an @import.
+			if hasScheme(strings.TrimSpace(target), "data:", "cid:") && end < len(css) && !strings.ContainsAny(target, "(\n\r\f\"'{}") {
 				b.WriteString(css[i : end+1])
 			} else {
 				b.WriteString("url()")
@@ -257,8 +317,11 @@ func isActiveNode(n *html.Node) bool {
 			"animate", "set", "animatetransform", "animatemotion":
 			return true
 		case "meta":
+			// Every http-equiv (refresh, a second policy, and Content-Type,
+			// which declares a charset) and every charset declaration: the
+			// rebuilt document declares UTF-8 itself.
 			for _, a := range n.Attr {
-				if strings.EqualFold(a.Key, "http-equiv") && !strings.EqualFold(strings.TrimSpace(a.Val), "content-type") {
+				if strings.EqualFold(a.Key, "http-equiv") || strings.EqualFold(a.Key, "charset") {
 					return true
 				}
 			}

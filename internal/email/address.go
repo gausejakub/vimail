@@ -307,10 +307,14 @@ func QuoteReply(orig Message) string {
 	return b.String()
 }
 
+// ForwardMarker is the line that starts the forwarded message in a forward.
+// Everything from it on was written by someone else.
+const ForwardMarker = "---------- Forwarded message ----------"
+
 // ForwardBody returns the inline header block and body of a forwarded message.
 func ForwardBody(orig Message) string {
 	var b strings.Builder
-	b.WriteString("---------- Forwarded message ----------\n")
+	b.WriteString(ForwardMarker + "\n")
 	b.WriteString("From: " + SanitizeLine(orig.From) + "\n")
 	b.WriteString("Date: " + orig.Date.Format(time.RFC1123Z) + "\n")
 	b.WriteString("Subject: " + SanitizeLine(orig.Subject) + "\n")

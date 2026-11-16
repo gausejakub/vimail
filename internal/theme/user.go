@@ -130,7 +130,8 @@ func (t *userTheme) load() []error {
 			errs = append(errs, fmt.Errorf("unknown key %q", key))
 		case !isString || !hexColorRe.MatchString(s):
 			// Only #rrggbb: the value ends up in terminal color sequences.
-			errs = append(errs, fmt.Errorf("%s = %v is not a #rrggbb color", key, value))
+			// %q: the value is printed to the terminal at startup.
+			errs = append(errs, fmt.Errorf("%s = %q is not a #rrggbb color", key, fmt.Sprint(value)))
 		default:
 			colors[key] = lipgloss.Color(s)
 		}

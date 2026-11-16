@@ -52,7 +52,7 @@ func TestInvitationIsShownAndAnswered(t *testing.T) {
 		}
 	}
 
-	res := env.coord.RespondToInvitationNow(me, "Inbox", invite.UID, email.PartAccepted)
+	res := env.coord.RespondToInvitationNow(me, "Inbox", invite.UID, email.PartAccepted, false)
 	if res.Err != nil || res.Organizer != "trefil@partner.test" || res.Summary != "Digifest planning" {
 		t.Fatalf("answer: %+v", res)
 	}
@@ -93,7 +93,7 @@ func TestInvitationIsShownAndAnswered(t *testing.T) {
 	}
 
 	// A message without an invitation cannot be answered; nothing is sent.
-	if res := env.coord.RespondToInvitationNow(me, "Inbox", plain.UID, email.PartDeclined); res.Err == nil {
+	if res := env.coord.RespondToInvitationNow(me, "Inbox", plain.UID, email.PartDeclined, false); res.Err == nil {
 		t.Fatal("answered a message without an invitation")
 	}
 	if n := len(env.smtp.messages()); n != 1 {
@@ -116,7 +116,7 @@ func TestInvitationAnswerFollowsPGPDefaults(t *testing.T) {
 
 	// No key for the organizer: refused, nothing sent.
 	env.coord.SetPGP(pgptest.Keyring(t, alias, me))
-	if res := env.coord.RespondToInvitationNow(me, "Inbox", uid, email.PartAccepted); res.Err == nil || !strings.Contains(res.Err.Error(), "trefil@partner.test") {
+	if res := env.coord.RespondToInvitationNow(me, "Inbox", uid, email.PartAccepted, false); res.Err == nil || !strings.Contains(res.Err.Error(), "trefil@partner.test") {
 		t.Fatalf("answer without the organizer's key: %+v", res)
 	}
 	if n := len(env.smtp.messages()); n != 0 {
@@ -124,11 +124,39 @@ func TestInvitationAnswerFollowsPGPDefaults(t *testing.T) {
 	}
 	// With the key: encrypted.
 	env.coord.SetPGP(pgptest.Keyring(t, alias, me, "trefil@partner.test"))
-	if res := env.coord.RespondToInvitationNow(me, "Inbox", uid, email.PartAccepted); res.Err != nil {
+	if res := env.coord.RespondToInvitationNow(me, "Inbox", uid, email.PartAccepted, false); res.Err != nil {
 		t.Fatalf("answer: %v", res.Err)
 	}
 	sent := env.smtp.messages()
 	if len(sent) != 1 || !strings.HasPrefix(headerLine(sent[0].data, "Content-Type"), "multipart/encrypted") || strings.Contains(string(sent[0].data), "BEGIN:VCALENDAR") {
 		t.Fatalf("answer not encrypted: %s", headerLine(sent[0].data, "Content-Type"))
+	}
+}
+
+// The organizer of an invitation is chosen by whoever sent it. When it is
+// someone else, answering would send mail from the user to a third party;
+// that needs the user's explicit say-so.
+func TestInvitationNamingAnotherOrganizerNeedsConfirmation(t *testing.T) {
+	env := newE2E(t)
+	forged := strings.Replace(inviteMessage, "ORGANIZER;CN=Petr Trefil:mailto:trefil@partner.test", "ORGANIZER;CN=Victim:mailto:victim@elsewhere.test", 1)
+	if forged == inviteMessage {
+		t.Fatal("test message has no organizer line to replace")
+	}
+	env.imap.appendRaw(t, me, "INBOX", []byte(forged))
+	env.sync(t, me)
+	uid := env.store.MessagesFor(me, "Inbox")[0].UID
+
+	res := env.coord.RespondToInvitationNow(me, "Inbox", uid, email.PartAccepted, false)
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "victim@elsewhere.test") || !strings.Contains(res.Err.Error(), ":accept!") {
+		t.Fatalf("answer to a third party without confirmation: %+v", res)
+	}
+	if n := len(env.smtp.messages()); n != 0 {
+		t.Fatalf("%d messages sent before the user confirmed", n)
+	}
+	if res := env.coord.RespondToInvitationNow(me, "Inbox", uid, email.PartAccepted, true); res.Err != nil {
+		t.Fatalf("confirmed answer: %v", res.Err)
+	}
+	if sent := env.smtp.messages(); len(sent) != 1 || sent[0].rcpts[0] != "victim@elsewhere.test" {
+		t.Fatalf("confirmed answer not sent: %+v", sent)
 	}
 }

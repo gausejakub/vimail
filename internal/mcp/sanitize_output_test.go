@@ -70,3 +70,40 @@ func TestSaveDraftSanitizesArguments(t *testing.T) {
 		t.Fatalf("rejected call stored a draft: %d drafts", len(store.Drafts(testAcct)))
 	}
 }
+
+// A client that asks its user before destructive calls must ask for these:
+// a move can target Trash or Spam, and marking everything read is not undone.
+func TestMoveAndMarkAllReadAreDestructive(t *testing.T) {
+	for _, name := range []string{"move_message", "mark_all_read", "delete_message", "send_email"} {
+		if toolKinds[name] != toolDestructive {
+			t.Errorf("%s is not classified destructive", name)
+		}
+	}
+}
+
+// read_message is bounded like read_messages: text beyond what the reader
+// sees in the preview must not reach the client unannounced.
+func TestBodyIsBoundedAndKeepsItsFullLength(t *testing.T) {
+	long := make([]rune, maxBodyChars+500)
+	for i := range long {
+		long[i] = 'a'
+	}
+	m := readMessageResult{Body: string(long)}
+	truncateBody(&m, maxBodyChars)
+	if !m.BodyTruncated || len([]rune(m.Body)) != maxBodyChars || m.BodyChars != maxBodyChars+500 {
+		t.Fatalf("truncated=%v len=%d chars=%d", m.BodyTruncated, len([]rune(m.Body)), m.BodyChars)
+	}
+	truncateBody(&m, 100) // a caller's smaller limit, applied afterwards
+	if len([]rune(m.Body)) != 100 || m.BodyChars != maxBodyChars+500 {
+		t.Fatalf("second limit: len=%d chars=%d", len([]rune(m.Body)), m.BodyChars)
+	}
+}
+
+// Characters the preview does not draw must not reach an AI client either:
+// text can be encoded in zero-width characters and variation selectors.
+func TestOutputDropsZeroWidthCharacters(t *testing.T) {
+	h := header(email.Message{Subject: "pay​‌‍­️͏ㅤ now"}, false)
+	if h.Subject != "pay now" {
+		t.Fatalf("subject = %+q", h.Subject)
+	}
+}

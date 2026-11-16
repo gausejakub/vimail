@@ -3,8 +3,10 @@ package logging
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -221,5 +223,16 @@ func TestLevelFiltering(t *testing.T) {
 	}
 	if entries[0].Msg != "at level" || entries[1].Msg != "after lowering" {
 		t.Fatalf("unexpected entries: %+v", entries)
+	}
+}
+
+func TestRedactAddresses(t *testing.T) {
+	in := "SMTP RCPT TO: 550 5.1.1 <bob.smith+x@example.co.uk>: Recipient address rejected (alice@example.com)"
+	got := RedactAddresses(in)
+	if strings.Contains(got, "example") || strings.Contains(got, "bob") || !strings.Contains(got, "550 5.1.1") {
+		t.Fatalf("RedactAddresses = %q", got)
+	}
+	if got := Err(errors.New("no route to mail.example.com:993")).Value; got != "no route to mail.example.com:993" {
+		t.Fatalf("a host name was changed: %v", got)
 	}
 }

@@ -121,3 +121,23 @@ func TestSenderCannotBeHiddenOrReplaced(t *testing.T) {
 		t.Fatalf("inner From replaced the sender: %q", res.Security)
 	}
 }
+
+// With two From fields the mail server and this parser may each pick a
+// different one: the list would show the first sender while the signature is
+// matched to the second. The message then has no sender to vouch for.
+func TestTwoFromHeadersGiveNoSender(t *testing.T) {
+	c := pgptest.Keyring(t, "mallory@corp.test", "me@x.test")
+	_, signed, err := ComposeMessage(SendRequest{From: "mallory@corp.test", ToList: []string{"me@x.test"}, Subject: "s", Body: "pay now", Sign: true}, ComposeOptions{PGP: c})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, extra := range []string{"From: CEO <ceo@corp.test>\r\n", "FROM: mallory@corp.test\r\n"} {
+		res, err := ParseBodyPGP(append([]byte(extra), signed...), c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(res.Security, "SENDER UNKNOWN") {
+			t.Errorf("with %q the verdict is %q, want SENDER UNKNOWN", strings.TrimSpace(extra), res.Security)
+		}
+	}
+}

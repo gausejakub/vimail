@@ -2,6 +2,7 @@ package compose
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -211,5 +212,32 @@ func TestSignAndEncryptToggles(t *testing.T) {
 	m = New(config.AIConfig{}).SetSize(120, 40).ShowDraft(email.Draft{ID: "d", Body: "x"}).WithPGP(true, true, check)
 	if d, _ := m.CurrentDraftForTest(); d.Sign || d.Encrypt {
 		t.Fatal("account defaults overrode a saved draft")
+	}
+}
+
+// A long recipient list runs out of its one-line field. The count stays in
+// view, the field shows its start, and a draft saved from the composer is
+// no longer marked as written by an AI client.
+func TestLongRecipientListsStayVisible(t *testing.T) {
+	var to []string
+	for i := 0; i < 40; i++ {
+		to = append(to, fmt.Sprintf("person%02d@example.com", i))
+	}
+	d := email.Draft{ID: "d1", To: to, Bcc: []string{"hidden@evil.test"}, Subject: "s", Body: "b", ByAgent: true}
+	m := New(config.AIConfig{}).SetSize(100, 30).ShowDraft(d)
+	view := m.View()
+	if !strings.Contains(view, "41 recipients: To 40 · Cc 0 · Bcc 1") {
+		t.Fatalf("no recipient count in the composer:\n%s", view)
+	}
+	if !strings.Contains(view, "person00@example.com") {
+		t.Fatalf("the To field does not show its first recipient:\n%s", view)
+	}
+	saved, err := m.currentDraft(false)
+	if err != nil || saved.ByAgent {
+		t.Fatalf("draft from the composer: ByAgent=%v err=%v", saved.ByAgent, err)
+	}
+	// One recipient, fitting: no extra line.
+	if s := New(config.AIConfig{}).SetSize(100, 30).ShowDraft(email.Draft{To: []string{"a@b.test"}}).recipientSummary(); s != "" {
+		t.Fatalf("summary for one recipient: %q", s)
 	}
 }

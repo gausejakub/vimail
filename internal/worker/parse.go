@@ -481,3 +481,52 @@ func isMIMEToken(s string) bool {
 	}
 	return true
 }
+
+// maxHeaderSection bounds one header section of a header FETCH. The fields
+// asked for (References, Delivered-To, X-Original-To) are a few kilobytes.
+const maxHeaderSection = 1 << 20
+
+// collectHeader reads one message of a header FETCH into a buffer. It is the
+// client library's Collect with a bound: Collect reads every literal whole,
+// so a server (or whoever sits in its place) could answer a header fetch
+// with a literal of any size and exhaust memory. A larger section is cut at
+// the bound and the rest is read and discarded.
+func collectHeader(data *imapclient.FetchMessageData) (*imapclient.FetchMessageBuffer, error) {
+	buf := &imapclient.FetchMessageBuffer{SeqNum: data.SeqNum}
+	var firstErr error
+	for {
+		item := data.Next()
+		if item == nil {
+			break
+		}
+		switch item := item.(type) {
+		case imapclient.FetchItemDataBodySection:
+			var b []byte
+			if item.Literal != nil {
+				var err error
+				if b, err = readLimitedDrain(item.Literal, maxHeaderSection); err != nil && firstErr == nil {
+					firstErr = err
+				}
+			}
+			buf.BodySection = append(buf.BodySection, imapclient.FetchBodySectionBuffer{Section: item.Section, Bytes: b})
+		case imapclient.FetchItemDataBinarySection:
+			// Never asked for; read past it without keeping it.
+			if item.Literal != nil {
+				io.Copy(io.Discard, item.Literal)
+			}
+		case imapclient.FetchItemDataFlags:
+			buf.Flags = item.Flags
+		case imapclient.FetchItemDataEnvelope:
+			buf.Envelope = item.Envelope
+		case imapclient.FetchItemDataInternalDate:
+			buf.InternalDate = item.Time
+		case imapclient.FetchItemDataRFC822Size:
+			buf.RFC822Size = item.Size
+		case imapclient.FetchItemDataUID:
+			buf.UID = item.UID
+		case imapclient.FetchItemDataModSeq:
+			buf.ModSeq = item.ModSeq
+		}
+	}
+	return buf, firstErr
+}

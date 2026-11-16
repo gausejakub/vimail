@@ -75,11 +75,18 @@ func (c *Client) run(stdin []byte, args ...string) (stdout []byte, status []stri
 	if err != nil {
 		return nil, nil, err
 	}
-	full := append([]string{"--batch", "--no-tty", "--status-fd", "3", "--display-charset", "utf-8"}, args...)
+	// --no-auto-key-retrieve: opening a message must not fetch the key that
+	// signed it from a server the sender chose, whatever gpg.conf says. That
+	// request would tell the sender when and from where the mail was read.
+	full := append([]string{"--batch", "--no-tty", "--status-fd", "3", "--display-charset", "utf-8", "--no-auto-key-retrieve"}, args...)
 	cmd := exec.CommandContext(ctx, c.bin(), full...)
 	cmd.Stdin = bytes.NewReader(stdin)
-	var out, errOut bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &errOut
+	// gpg decompresses what it decrypts: a message of a few kilobytes can
+	// expand to gigabytes. Output is bounded, and gpg is stopped once the
+	// bound is passed, instead of filling memory.
+	out := &boundedBuffer{limit: MaxOutput, onOverflow: cancel}
+	errOut := &boundedBuffer{limit: 1 << 20}
+	cmd.Stdout, cmd.Stderr = out, errOut
 	cmd.ExtraFiles = []*os.File{pw}
 	cmd.Env = os.Environ()
 	if c != nil && c.Home != "" {
@@ -102,14 +109,50 @@ func (c *Client) run(stdin []byte, args ...string) (stdout []byte, status []stri
 			status = append(status, rest)
 		}
 	}
+	if out.overflowed {
+		return nil, nil, ErrTooLarge
+	}
 	if runErr != nil {
-		msg := lastLine(errOut.String())
+		msg := lastLine(errOut.buf.String())
 		if ctx.Err() != nil {
 			msg = "timed out"
 		}
-		return out.Bytes(), status, fmt.Errorf("gpg: %s", msg)
+		return out.buf.Bytes(), status, fmt.Errorf("gpg: %s", msg)
 	}
-	return out.Bytes(), status, nil
+	return out.buf.Bytes(), status, nil
+}
+
+// MaxOutput bounds what one gpg run may write to its output. A message is at
+// most 50 MB when fetched; its plaintext has no reason to be larger than this.
+var MaxOutput = 100 << 20
+
+// ErrTooLarge means gpg produced more output than a message can hold: a
+// decompression bomb. No verdict from that run is used.
+var ErrTooLarge = errors.New("gpg produced more output than a message can hold; not used")
+
+// boundedBuffer keeps at most limit bytes. Past the limit it drops the data,
+// records the overflow and calls onOverflow (which stops gpg); it keeps
+// accepting writes so the copy from the process ends without an error.
+type boundedBuffer struct {
+	buf        bytes.Buffer
+	limit      int
+	overflowed bool
+	onOverflow func()
+}
+
+func (b *boundedBuffer) Write(p []byte) (int, error) {
+	if b.overflowed {
+		return len(p), nil
+	}
+	if b.buf.Len()+len(p) > b.limit {
+		b.overflowed = true
+		b.buf.Reset()
+		if b.onOverflow != nil {
+			b.onOverflow()
+		}
+		return len(p), nil
+	}
+	return b.buf.Write(p)
 }
 
 func lastLine(s string) string {
@@ -242,6 +285,9 @@ func (c *Client) Verify(data, signature []byte, sender string) (Signature, error
 // message's From address ("" when unknown).
 func (c *Client) Decrypt(data []byte, sender string) ([]byte, *Signature, error) {
 	out, status, err := c.run(data, append(senderArgs(sender), "--decrypt")...)
+	if errors.Is(err, ErrTooLarge) {
+		return nil, nil, err
+	}
 	decrypted := false
 	for _, line := range status {
 		if line == "DECRYPTION_OKAY" {

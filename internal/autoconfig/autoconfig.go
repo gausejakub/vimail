@@ -44,6 +44,10 @@ type Settings struct {
 	Provider string
 	// Source says where the settings came from, for showing to the user.
 	Source string
+	// FromDNS marks settings read from DNS records alone (SRV). DNS is not
+	// authenticated: whoever can answer the lookup chooses the servers, and
+	// a certificate for a host of their own is all they need.
+	FromDNS bool
 	// Note is provider-specific guidance (e.g. that an app password is needed).
 	Note string
 }
@@ -343,7 +347,7 @@ func fromSRV(ctx context.Context, r Resolver, domain string) (Settings, bool) {
 	}
 	return Settings{
 		IMAPHost: imapHost, IMAPPort: imapPort, SMTPHost: smtpHost, SMTPPort: smtpPort,
-		AuthMethod: "plain", Source: "DNS SRV records of " + domain,
+		AuthMethod: "plain", Source: "DNS SRV records of " + domain, FromDNS: true,
 	}, true
 }
 
@@ -400,4 +404,21 @@ func validUsername(u string) bool {
 		}
 	}
 	return true
+}
+
+// OutsideDomain returns the hosts of s that are neither domain nor one of
+// its subdomains.
+func (s Settings) OutsideDomain(domain string) []string {
+	domain = strings.ToLower(strings.TrimSuffix(domain, "."))
+	var out []string
+	for _, host := range []string{s.IMAPHost, s.SMTPHost} {
+		h := strings.ToLower(strings.TrimSuffix(host, "."))
+		if h == "" || h == domain || strings.HasSuffix(h, "."+domain) {
+			continue
+		}
+		if len(out) == 0 || out[0] != h {
+			out = append(out, h)
+		}
+	}
+	return out
 }

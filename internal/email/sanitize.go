@@ -36,6 +36,17 @@ func isUnsafeRune(r rune) bool {
 		r == 0x180E,                // Mongolian vowel separator (invisible)
 		r >= 0x2060 && r <= 0x2064, // word joiner, invisible operators
 		r >= 0x206A && r <= 0x206F, // deprecated format controls
+		// Zero-width and blank characters. The preview never drew them, so
+		// the reader could not see text encoded in them (as bits, in runs of
+		// zero-width space and joiners, or as nibbles, in the sixteen
+		// variation selectors) while an AI client received it.
+		r == 0x200B,                                        // zero-width space (the joiners: see joinerAllowed)
+		r == 0x00AD,                                        // soft hyphen
+		r == 0x034F,                                        // combining grapheme joiner
+		r >= 0xFE00 && r <= 0xFE0D,                         // variation selectors 1-14 (15 and 16: see joinerAllowed)
+		r == 0x115F, r == 0x1160, r == 0x3164, r == 0xFFA0, // Hangul fillers (blank)
+		r == 0x17B4, r == 0x17B5, // Khmer inherent vowels (invisible)
+		r >= 0x1D173 && r <= 0x1D17A, // musical format controls
 		// Unicode tag characters and the variation-selector supplement are
 		// invisible on screen but readable by an AI client: text hidden in
 		// them is a prompt injection the user cannot see ("ASCII smuggling").
@@ -70,7 +81,7 @@ func sanitize(s string, multiline bool) string {
 			}
 			continue
 		}
-		if isUnsafeRune(r) {
+		if isUnsafeRune(r) || isJoiner(r) {
 			clean = false
 			break
 		}
@@ -82,7 +93,8 @@ func sanitize(s string, multiline bool) string {
 	s = reEscapeSeq.ReplaceAllString(s, "")
 	var b strings.Builder
 	b.Grow(len(s))
-	for _, r := range s {
+	runes := []rune(s)
+	for i, r := range runes {
 		switch {
 		case r == '\n' || r == '\t':
 			if multiline {
@@ -95,9 +107,73 @@ func sanitize(s string, multiline bool) string {
 				b.WriteByte(' ')
 			}
 		case isUnsafeRune(r):
+		case isJoiner(r) && !joinerAllowed(runes, i):
 		default:
 			b.WriteRune(r)
 		}
 	}
 	return b.String()
+}
+
+// isJoiner reports the four invisible characters that ordinary text needs in
+// one place only: the zero-width joiner and non-joiner, and variation
+// selectors 15 and 16 (text and emoji presentation).
+func isJoiner(r rune) bool {
+	return r == 0x200C || r == 0x200D || r == 0xFE0E || r == 0xFE0F
+}
+
+// joinerAllowed reports whether the joiner at runes[i] sits where real text
+// puts it: inside an emoji sequence (woman + joiner + laptop, heart +
+// selector, a keycap) or between two letters of a script that joins.
+// Anywhere else, and in any run of them, it carries nothing a reader can
+// see, only what a program can decode, and is removed.
+func joinerAllowed(runes []rune, i int) bool {
+	prev, next := rune(0), rune(0)
+	if i > 0 {
+		prev = runes[i-1]
+	}
+	if i+1 < len(runes) {
+		next = runes[i+1]
+	}
+	switch runes[i] {
+	case 0xFE0E, 0xFE0F:
+		if prev >= '0' && prev <= '9' || prev == '#' || prev == '*' {
+			return next == 0x20E3 // keycap
+		}
+		return isEmojiBase(prev)
+	case 0x200D:
+		if prev == 0xFE0F && i > 1 {
+			prev = runes[i-2]
+		}
+		return isEmojiBase(prev) && isEmojiBase(next) || isJoiningLetter(prev) && isJoiningLetter(next)
+	default: // 0x200C
+		return isJoiningLetter(prev) && isJoiningLetter(next)
+	}
+}
+
+// isEmojiBase reports runes that emoji sequences are built from.
+func isEmojiBase(r rune) bool {
+	switch {
+	case r >= 0x1F000 && r <= 0x1FAFF, // pictographs, flags, skin tones
+		r >= 0x2190 && r <= 0x21FF, // arrows
+		r >= 0x2300 && r <= 0x23FF, // technical
+		r >= 0x25A0 && r <= 0x27BF, // shapes, symbols, dingbats
+		r >= 0x2900 && r <= 0x297F, r >= 0x2B00 && r <= 0x2BFF,
+		r == 0x00A9, r == 0x00AE, r == 0x203C, r == 0x2049, r == 0x2122, r == 0x2139, r == 0x24C2,
+		r == 0x3030, r == 0x303D, r == 0x3297, r == 0x3299:
+		return true
+	}
+	return false
+}
+
+// joiningScripts are the scripts whose spelling uses the zero-width joiner
+// and non-joiner between letters.
+var joiningScripts = []*unicode.RangeTable{
+	unicode.Arabic, unicode.Syriac, unicode.Mongolian, unicode.Devanagari, unicode.Bengali,
+	unicode.Gurmukhi, unicode.Gujarati, unicode.Oriya, unicode.Tamil, unicode.Telugu,
+	unicode.Kannada, unicode.Malayalam, unicode.Sinhala, unicode.Myanmar, unicode.Khmer, unicode.Tibetan,
+}
+
+func isJoiningLetter(r rune) bool {
+	return r >= 0x80 && unicode.In(r, joiningScripts...)
 }

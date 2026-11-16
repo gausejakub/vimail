@@ -3,6 +3,7 @@ package cache
 import (
 	"database/sql"
 	"encoding/json"
+	"github.com/gausejakub/vimail/internal/logging"
 	"time"
 
 	"github.com/gausejakub/vimail/internal/email"
@@ -266,6 +267,9 @@ func (s *SQLiteStore) UpdateOpPayload(id int64, payload interface{}) error {
 // FailOp marks an operation as failed with an error message. Failed ops
 // remain retryable via PendingOps. Owner-guarded like CompleteOp.
 func (s *SQLiteStore) FailOp(id int64, errMsg string) {
+	// This column is not encrypted, and a server's reply can name the
+	// recipient it refused.
+	errMsg = logging.RedactAddresses(errMsg)
 	now := time.Now().UTC()
 	var attempts int
 	if err := s.db.QueryRow(`SELECT attempts FROM pending_ops WHERE id = ? AND (owner = ? OR owner = '')`, id, s.procID).Scan(&attempts); err != nil {
@@ -369,4 +373,25 @@ func (s *SQLiteStore) queryOps(query string, args ...interface{}) []QueuedOp {
 type CalendarPayload struct {
 	Method string `json:"method"`
 	Data   []byte `json:"data"`
+}
+
+// DropFolderOps ends the queued operations that act on a folder's messages
+// by UID (delete, move, restore, flag, mark read or unread): they are marked
+// failed with no attempts left, and reason says why. It is called when the
+// folder's UIDVALIDITY changed: the UIDs those operations carry now belong
+// to other messages, and replaying them would act on the wrong mail. It
+// returns how many operations were dropped.
+func (s *SQLiteStore) DropFolderOps(account, folder, reason string) int {
+	now := time.Now().UTC().Format(time.RFC3339)
+	res, err := s.db.Exec(`UPDATE pending_ops
+		SET status = ?, attempts = ?, owner = '', lease_until = NULL, error = ?, updated_at = ?
+		WHERE account = ? AND folder = ? AND status IN (?, ?, ?) AND type IN (?, ?, ?, ?, ?, ?)`,
+		string(OpFailed), opMaxAttempts, reason, now,
+		account, folder, string(OpPending), string(OpFailed), string(OpRunning),
+		string(OpDelete), string(OpMove), string(OpRestore), string(OpFlag), string(OpMarkRead), string(OpMarkUnread))
+	if err != nil {
+		return 0
+	}
+	n, _ := res.RowsAffected()
+	return int(n)
 }

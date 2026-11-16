@@ -736,9 +736,19 @@ func padLeft(s string, width int) string {
 // sanitize strips newlines, carriage returns, tabs, and other control
 // characters that would break the fixed-row layout.
 // displayName extracts the human-readable name from "Name <email>" format.
+// displayName returns the name shown for a sender in the list. A display
+// name that is itself an address, and not the real one ("ceo@corp.com"
+// <someone@elsewhere>), is a disguise: the list has room for the name only,
+// so the real address is shown in its place.
 func displayName(addr string) string {
 	if idx := strings.Index(addr, " <"); idx > 0 {
-		return addr[:idx]
+		name := addr[:idx]
+		if strings.Contains(name, "@") {
+			if real := email.AddrSpec(addr); real != "" && !strings.EqualFold(strings.Trim(name, "\"' "), real) {
+				return real
+			}
+		}
+		return name
 	}
 	return addr
 }

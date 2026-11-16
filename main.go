@@ -98,6 +98,13 @@ func initCacheKey(store *cache.SQLiteStore, cfg config.Config) error {
 		store.SetEncryptionKey(key)
 		return nil
 	case errors.Is(err, keyring.ErrNotFound):
+		// The keyring answers but has no key. With encrypted mail already in
+		// the cache that is not a first run: the key was lost (another
+		// keyring, a wiped one). A new key could not read that mail, and
+		// would be stored as if nothing had happened.
+		if store.HasEncryptedBodies() {
+			return fmt.Errorf("the cache holds encrypted mail but the OS keyring has no key for it (%q); restore the keyring entry, or remove the cache to start fresh", "vimail/_cache_encryption_key")
+		}
 		// First run — generate and store a new key.
 		newKey, genErr := cache.GenerateEncryptionKey()
 		if genErr == nil {
@@ -170,7 +177,8 @@ func openStore(cfg config.Config) (*cache.SQLiteStore, *sql.DB, error) {
 
 // runMCP serves the Model Context Protocol on stdio for local AI clients.
 // It logs to its own file (vimail-mcp.log) so it never contends with the
-// TUI over log rotation, and v1 never opens IMAP connections.
+// TUI over log rotation. It opens its own IMAP connections for syncing and,
+// when writing is allowed, for delivering queued changes.
 func runMCP() {
 	home, _ := os.UserHomeDir()
 	logDir := filepath.Join(home, ".local", "share", "vimail")

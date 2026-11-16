@@ -182,3 +182,14 @@ func TestAutoconfigUsernameIsRestricted(t *testing.T) {
 		}
 	}
 }
+
+func TestOutsideDomain(t *testing.T) {
+	in := Settings{IMAPHost: "imap.example.com", SMTPHost: "smtp.example.com."}
+	if got := in.OutsideDomain("example.com"); len(got) != 0 {
+		t.Fatalf("own subdomains reported outside: %v", got)
+	}
+	out := Settings{IMAPHost: "imap.evil.net", SMTPHost: "notexample.com"}
+	if got := out.OutsideDomain("example.com"); len(got) != 2 {
+		t.Fatalf("OutsideDomain = %v, want both hosts", got)
+	}
+}

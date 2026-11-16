@@ -42,6 +42,11 @@ type Draft struct {
 	ConflictWith string
 	// Synced reports that the server copy matches the current local version.
 	Synced bool
+	// ByAgent marks a draft whose current version was written by an MCP
+	// client. Saving it from the composer clears the mark. An MCP client
+	// may only update drafts that carry it: what the user wrote or edited
+	// is not rewritten behind their back.
+	ByAgent bool
 }
 
 // Draft source kinds.

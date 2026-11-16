@@ -356,6 +356,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.compose = m.compose.ShowDraft(draft).WithIdentities(m.identities(acct)).WithSignatures(m.signatureFor(acct)).WithPGP(m.pgpDefaults(acct)).SetSize(m.width, m.height)
 		cmds = append(cmds, m.loadContactsCmd())
+		if draft.ByAgent {
+			// Recipients and text were set by an AI client, possibly from a
+			// message it read: say so before the user sends it as their own.
+			n := len(draft.To) + len(draft.Cc) + len(draft.Bcc)
+			cmds = append(cmds, func() tea.Msg {
+				return util.InfoMsg{Text: fmt.Sprintf("Written by an AI client (MCP): check all %d recipients, Cc and Bcc included, before sending", n)}
+			})
+		}
 		m.mode = keys.ModeNormal
 		cmds = append(cmds, func() tea.Msg {
 			return keys.ModeChangedMsg{Mode: keys.ModeNormal}
@@ -1724,8 +1732,11 @@ func (m Model) executeCommand(input string) tea.Cmd {
 	case "threads":
 		return func() tea.Msg { return util.ToggleThreadsMsg{} }
 
-	case "accept", "tentative", "decline":
-		status := map[string]string{"accept": email.PartAccepted, "tentative": email.PartTentative, "decline": email.PartDeclined}[parts[0]]
+	case "accept", "tentative", "decline", "accept!", "tentative!", "decline!":
+		// With "!" the answer is sent even when the invitation names an
+		// organizer who is not the sender of the message.
+		anyOrganizer := strings.HasSuffix(parts[0], "!")
+		status := map[string]string{"accept": email.PartAccepted, "tentative": email.PartTentative, "decline": email.PartDeclined}[strings.TrimSuffix(parts[0], "!")]
 		sel := m.msglist.SelectedMessage()
 		if sel == nil || sel.UID == 0 {
 			return func() tea.Msg {
@@ -1747,7 +1758,7 @@ func (m Model) executeCommand(input string) tea.Cmd {
 		}
 		return tea.Batch(
 			func() tea.Msg { return util.ProcessStartMsg{ID: "invite", Label: "↑ answering the invitation"} },
-			m.coordinator.RespondToInvitation(acct, folder, sel.UID, status),
+			m.coordinator.RespondToInvitation(acct, folder, sel.UID, status, anyOrganizer),
 		)
 
 	case "processes", "ps":

@@ -2,10 +2,13 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/gausejakub/vimail/internal/cache"
+	"github.com/gausejakub/vimail/internal/email"
 	"github.com/gausejakub/vimail/internal/logging"
 	"github.com/gausejakub/vimail/internal/worker"
 )
@@ -47,11 +50,20 @@ func (s *Server) registerSendTool() {
 		// SendNow goes through the queued SendAndArchive path: the op is
 		// claimed before executing (never a duplicate send across the TUI
 		// and this process) and a failure leaves it retryable.
+		// A send that failed stays queued and is retried on its own. A
+		// client that answers "send failed" by calling again would put a
+		// second copy in the queue, and both would be delivered.
+		body := email.SanitizeText(args.Body)
+		if id := s.queuedSend(acct, args.To, args.Subject, body); id != 0 {
+			return nil, sendEmailResult{}, fmt.Errorf("this message (same recipients, subject and text) is already queued as operation %d and is retried automatically; it was not queued again (see list_operations)", id)
+		}
 		sendReq := worker.SendRequest{
 			From:    acct,
 			To:      args.To,
 			Subject: args.Subject,
-			Body:    args.Body,
+			// Cleaned like a draft saved over MCP: no escape sequences or
+			// invisible characters in mail the user never typed.
+			Body: body,
 		}
 		// The account's OpenPGP defaults hold here too: an account set to
 		// encrypt must not send in the clear because the mail came through
@@ -67,4 +79,22 @@ func (s *Server) registerSendTool() {
 		logging.Info("mcp", "send_email", logging.Acct(acct), logging.KV("message_id", res.MessageID))
 		return nil, sendEmailResult{Account: acct, To: args.To, MessageID: res.MessageID}, nil
 	})
+}
+
+// queuedSend returns the id of an unfinished send of the same message in the
+// account's queue, or 0.
+func (s *Server) queuedSend(acct, to, subject, body string) int64 {
+	for _, op := range s.store.PendingOps() {
+		if op.Type != cache.OpSend || op.Account != acct {
+			continue
+		}
+		var p cache.SendPayload
+		if json.Unmarshal(op.Payload, &p) != nil {
+			continue
+		}
+		if p.To == to && p.Subject == subject && p.Body == body && len(p.Cc) == 0 && len(p.Bcc) == 0 {
+			return op.ID
+		}
+	}
+	return 0
 }

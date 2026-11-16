@@ -159,9 +159,12 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			)
 		}
 		// Preserve quoted lines from the original body and only replace the new text
-		quoted := extractQuotedTail(m.editor.GetBuffer().Text())
+		quoted := ai.PreservedTail(m.editor.GetBuffer().Text())
 		newBody := strings.TrimRight(msg.Text, "\n")
 		if quoted != "" {
+			if !strings.HasPrefix(quoted, "\n") {
+				quoted = "\n" + quoted // a blank line above the original
+			}
 			newBody = newBody + "\n" + quoted
 		}
 		m.editor = newEditor(newBody)
@@ -358,6 +361,12 @@ func (m Model) View() string {
 	for _, input := range m.inputs {
 		lines = append(lines, "  "+input.View())
 	}
+	// A recipient field shows one line; a long list runs out of it. The
+	// count is always in view, so an address added out of sight (by an AI
+	// client that wrote the draft, or a padded name) does not go unnoticed.
+	if line := m.recipientSummary(); line != "" {
+		lines = append(lines, lipgloss.NewStyle().Foreground(t.Warning()).Render(truncate("  "+line, innerWidth+2)))
+	}
 	if line := m.attachmentLine(); line != "" {
 		lines = append(lines, lipgloss.NewStyle().Foreground(t.Accent()).Render(truncate("  Attach:  "+line, innerWidth+2)))
 	}
@@ -465,6 +474,11 @@ func (m Model) open(d email.Draft, focus int) Model {
 	m.inputs[fieldCc].SetValue(email.SanitizeLine(email.JoinAddresses(d.Cc)))
 	m.inputs[fieldBcc].SetValue(email.SanitizeLine(email.JoinAddresses(d.Bcc)))
 	m.inputs[fieldSubject].SetValue(email.SanitizeLine(d.Subject))
+	// A value longer than its field is shown from the start, not from the
+	// end: the first recipients are the ones the eye checks.
+	for _, f := range []int{fieldTo, fieldCc, fieldBcc, fieldSubject} {
+		m.inputs[f].CursorStart()
+	}
 	if focus < fieldCount {
 		m.inputs[focus].Focus()
 	}
@@ -551,6 +565,7 @@ func (m Model) DraftID() string {
 // is kept as typed so saving a half-written draft never loses it.
 func (m Model) currentDraft(strict bool) (email.Draft, error) {
 	d := m.draft
+	d.ByAgent = false // saved or sent from the composer: the user has had it in hand
 	d.Subject = m.inputs[fieldSubject].Value()
 	d.Body = m.editor.GetBuffer().Text()
 	var err error
@@ -743,27 +758,6 @@ func truncate(s string, width int) string {
 	return s
 }
 
-func extractQuotedTail(body string) string {
-	lines := strings.Split(body, "\n")
-
-	// Find where the trailing quoted block starts by scanning backwards
-	quoteStart := len(lines)
-	for i := len(lines) - 1; i >= 0; i-- {
-		trimmed := strings.TrimSpace(lines[i])
-		if strings.HasPrefix(trimmed, ">") || trimmed == "" {
-			quoteStart = i
-		} else {
-			break
-		}
-	}
-
-	if quoteStart >= len(lines) {
-		return ""
-	}
-
-	return strings.Join(lines[quoteStart:], "\n")
-}
-
 func vimteaModeToKeys(m vimtea.EditorMode) keys.Mode {
 	switch m {
 	case vimtea.ModeInsert:
@@ -915,4 +909,35 @@ func (m Model) WithPGP(sign, encrypt bool, check func(email.Draft) error) Model 
 		m.draft.Sign, m.draft.Encrypt = sign, encrypt
 	}
 	return m
+}
+
+// recipientSummary counts the recipients in To, Cc and Bcc. It returns ""
+// while every field shows all it holds (at most one address each, fitting
+// its width).
+func (m Model) recipientSummary() string {
+	count := func(f int) int {
+		v := strings.TrimSpace(m.inputs[f].Value())
+		if v == "" {
+			return 0
+		}
+		if list, err := email.SplitAddressField(v); err == nil {
+			return len(list)
+		}
+		return strings.Count(strings.TrimRight(v, ", "), ",") + 1
+	}
+	to, cc, bcc := count(fieldTo), count(fieldCc), count(fieldBcc)
+	hidden := false
+	for _, f := range []int{fieldTo, fieldCc, fieldBcc} {
+		if w := m.inputs[f].Width; w > 0 && lipgloss.Width(m.inputs[f].Value()) > w {
+			hidden = true
+		}
+	}
+	if !hidden && to <= 1 && cc <= 1 && bcc <= 1 {
+		return ""
+	}
+	s := fmt.Sprintf("%d recipients: To %d · Cc %d · Bcc %d", to+cc+bcc, to, cc, bcc)
+	if hidden {
+		s += " (a field holds more than it shows)"
+	}
+	return s
 }

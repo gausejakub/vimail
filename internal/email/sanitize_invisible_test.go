@@ -27,3 +27,26 @@ func TestSanitizeRemovesInvisibleSmugglingCharacters(t *testing.T) {
 		t.Errorf("emoji sequence changed: %q", SanitizeText(in))
 	}
 }
+
+// Zero-width characters and variation selectors can spell out text as bits
+// or nibbles. They stay only where writing needs them: inside an emoji
+// sequence and between letters of a joining script.
+func TestSanitizeKeepsJoinersOnlyWhereTextNeedsThem(t *testing.T) {
+	for in, want := range map[string]string{
+		"pay​‌‍‌‍ now":   "pay now",
+		"a‍b":            "ab",
+		"a️︎︁b":          "ab",
+		"soft­hyphen͏ㅤᅟ": "softhyphen",
+		"👩‍‍💻":           "👩💻",
+		"👩‍💻 ❤️ 1️⃣ 🏳️‍🌈": "👩‍💻 ❤️ 1️⃣ 🏳️‍🌈",
+		"می‌خواهم":        "می‌خواهم", // Persian
+		"1️2":             "12",
+	} {
+		if got := SanitizeText(in); got != want {
+			t.Errorf("SanitizeText(%+q) = %+q, want %+q", in, got, want)
+		}
+		if got := SanitizeText(SanitizeText(in)); got != want {
+			t.Errorf("not stable for %+q: %+q", in, got)
+		}
+	}
+}

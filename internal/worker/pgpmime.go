@@ -305,6 +305,12 @@ func messageSender(data []byte) string {
 		return ""
 	}
 	defer mr.Close()
+	// Two From fields: the server that built the envelope shown in the list
+	// and this parser may each pick a different one, so a signature could be
+	// matched to a sender other than the one on screen. No sender, then.
+	if len(mr.Header.Values("From")) != 1 {
+		return ""
+	}
 	list, err := mr.Header.AddressList("From")
 	if err != nil || len(list) != 1 {
 		return ""

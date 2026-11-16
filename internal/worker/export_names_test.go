@@ -97,3 +97,27 @@ func TestExportEntriesAreRebuiltAndCannotCollide(t *testing.T) {
 		}
 	}
 }
+
+func TestSafeFilenameGuardsWindowsDeviceNames(t *testing.T) {
+	for in, want := range map[string]string{
+		"CON.txt": "_CON.txt", "nul": "_nul", "Com1.pdf": "_Com1.pdf", "aux .doc": "_aux .doc",
+		"console.txt": "console.txt", "report.pdf": "report.pdf",
+	} {
+		if got := safeFilename(in); got != want {
+			t.Errorf("safeFilename(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestDangerousTypesAreFlagged(t *testing.T) {
+	for _, name := range []string{"a.scf", "a.library-ms", "a.search-ms", "a.chm", "a.vhd", "a.xll", "a.msc", "a.settingcontent-ms", "a.mht", "a.inetloc", "a.mobileconfig", "a.XLL", "invoice.pdf.scf"} {
+		if !isDangerousFilename(name) {
+			t.Errorf("%s is not flagged", name)
+		}
+	}
+	for _, name := range []string{"a.pdf", "a.txt", "a.png", "a.docx", "a.ics"} {
+		if isDangerousFilename(name) {
+			t.Errorf("%s is flagged", name)
+		}
+	}
+}

@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -82,6 +83,20 @@ func TestSendFailureLeavesOpRetryable(t *testing.T) {
 	}
 	if ops[0].Error == "" {
 		t.Error("failed send op has no error recorded for the :ops view")
+	}
+
+	// The client answers the failure by sending again: the queued copy is
+	// retried on its own, so a second one must not join it.
+	if msg := errText(t, session, "send_email", map[string]any{"to": "bob@example.com", "subject": "hi", "body": "test"}); !strings.Contains(msg, "already queued") {
+		t.Fatalf("second send of the same message: %q", msg)
+	}
+	if ops := store.RecentOps(10); len(ops) != 1 {
+		t.Fatalf("%d send operations queued, want the one", len(ops))
+	}
+	// A different message is still accepted into the queue.
+	_ = errText(t, session, "send_email", map[string]any{"to": "bob@example.com", "subject": "another", "body": "test"})
+	if ops := store.RecentOps(10); len(ops) != 2 {
+		t.Fatalf("%d operations after a different message, want 2", len(ops))
 	}
 }
 

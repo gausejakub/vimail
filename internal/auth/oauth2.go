@@ -135,9 +135,17 @@ func (r *OAuth2Resolver) RunAuthorizationCodeFlow(acct config.AccountConfig) (*o
 	if cfg.ClientID == "" {
 		return nil, fmt.Errorf("Gmail OAuth2 requires oauth_client_id in the account config (see README)")
 	}
+	// The usual port first (it can be forwarded over SSH); when something
+	// else holds it, any free loopback port. Google's desktop clients accept
+	// every loopback port, so another local user cannot block sign-in by
+	// sitting on one.
 	listener, err := listenLoopback("tcp", gmailLoopbackAddress)
 	if err != nil {
-		return nil, fmt.Errorf("start OAuth callback listener on %s: %w", gmailLoopbackAddress, err)
+		var fallbackErr error
+		if listener, fallbackErr = listenLoopback("tcp", "127.0.0.1:0"); fallbackErr != nil {
+			return nil, fmt.Errorf("start OAuth callback listener on %s: %w", gmailLoopbackAddress, err)
+		}
+		fmt.Fprintf(setupOutput, "\nPort %s is in use; receiving the sign-in on %s instead.\n", gmailLoopbackAddress, listener.Addr())
 	}
 	defer listener.Close()
 	cfg.RedirectURL = "http://" + listener.Addr().String() + "/oauth/callback"

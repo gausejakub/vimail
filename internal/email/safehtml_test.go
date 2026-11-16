@@ -50,8 +50,8 @@ func TestBrowserSafeHTMLRemovesNavigatingElements(t *testing.T) {
 			continue
 		}
 		lower := strings.ToLower(out)
-		if !strings.HasPrefix(lower, `<html><head><meta http-equiv="content-security-policy"`) {
-			t.Errorf("%s: policy is not first in head: %.120s", name, out)
+		if !strings.HasPrefix(lower, `<html><head><meta charset="utf-8"/><meta http-equiv="content-security-policy"`) {
+			t.Errorf("%s: charset and policy are not first in head: %.120s", name, out)
 		}
 		if n := strings.Count(lower, "http-equiv"); n != 1 && !(name == "refresh-dup-attr" && n == 2) {
 			t.Errorf("%s: %d http-equiv metas survive: %s", name, n, out)
@@ -104,10 +104,14 @@ func TestBrowserSafeHTMLKeepsContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"<title>Hi</title>", "p{color:red}", `<a href="https://example.com">link</a>`, `src="cid:logo"`, `http-equiv="Content-Type"`, "form-action &#39;none&#39;"} {
+	for _, want := range []string{"<title>Hi</title>", "p{color:red}", `<a href="https://example.com">link</a>`, `src="cid:logo"`, `<meta charset="utf-8"/>`, "form-action &#39;none&#39;"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in %s", want, out)
 		}
+	}
+	// The message's own charset declaration is replaced by vimail's.
+	if strings.Contains(out, "Content-Type") {
+		t.Errorf("the message's Content-Type declaration survives in %s", out)
 	}
 }
 
@@ -132,6 +136,76 @@ func TestWriteBrowserProbes(t *testing.T) {
 		}
 		if err := os.WriteFile(filepath.Join(dir, name+".html"), []byte(out), 0600); err != nil {
 			t.Fatal(err)
+		}
+	}
+}
+
+// The sender's charset declaration must not survive: a browser told to read
+// the file as ISO-2022-JP decodes escape sequences into a two-byte mode that
+// swallows quotes and tags (the policy included), so text that was an
+// attribute value to the sanitizer becomes a live event handler.
+func TestBrowserSafeHTMLForcesUTF8(t *testing.T) {
+	in := "<html lang=\"\x1b$B\"><head><meta charset=\"iso-2022-jp\">" +
+		"<meta http-equiv=\"Content-Type\" content=\"text/html; charset=iso-2022-jp\"><title>\x1b(B</title></head>" +
+		"<body><img alt=\"\x1b$B\">\x1b(B<a title=\" onerror=alert(1) src=x \">x</a>" +
+		"<img alt=\"a\" \x1b(Bx=\"y\"></body></html>"
+	out, err := BrowserSafeHTML(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lower := strings.ToLower(out)
+	if strings.Contains(lower, "iso-2022") || strings.Contains(lower, "content-type") {
+		t.Fatalf("the sender's charset declaration survived:\n%s", out)
+	}
+	if strings.ContainsAny(out, "\x1b\x00\x7f") {
+		t.Fatalf("control bytes survived:\n%q", out)
+	}
+	charset := strings.Index(out, `<meta charset="utf-8"/>`)
+	csp := strings.Index(out, "Content-Security-Policy")
+	if charset < 0 || csp < 0 || charset > csp {
+		t.Fatalf("UTF-8 must be declared before the policy (charset=%d csp=%d):\n%s", charset, csp, out)
+	}
+	if !strings.HasPrefix(out, `<html lang="$B"><head><meta charset="utf-8"/>`) {
+		t.Fatalf("something precedes the charset declaration:\n%s", out)
+	}
+	if strings.Contains(out, `x="y"`) {
+		t.Fatalf("an attribute with an escape sequence in its name survived:\n%q", out)
+	}
+}
+
+// Removing an @import must not join the text around it into something new:
+// "</sty" + "le>" closed the element, and what followed was written out as
+// markup no check had seen (a meta refresh, a script).
+func TestBrowserSafeHTMLStyleCannotCloseItself(t *testing.T) {
+	for _, in := range []string{
+		`<style></sty@import x;le><meta http-equiv="refresh" content="0;url=http://evil.example/"></style>hi`,
+		`<style></sty@import x;le><script>alert(1)</script><img src="http://evil.example/p.gif"></style>hi`,
+		`<style>a{}</STY@import x;LE ><meta http-equiv=refresh content=0></style>`,
+	} {
+		out, err := BrowserSafeHTML(in)
+		if err != nil {
+			continue // shown as plain text instead
+		}
+		lower := strings.ToLower(out)
+		if strings.Contains(lower, "refresh") || strings.Contains(lower, "<script") || strings.Contains(lower, "evil.example") {
+			t.Errorf("markup escaped from <style>:\n in: %s\nout: %s", in, out)
+		}
+	}
+}
+
+func TestSafeCSSRemovalDoesNotJoinTokens(t *testing.T) {
+	for _, in := range []string{
+		"a{background:ur@import x;l(http://evil.example/a)}",
+		"@namespace x url(\"data:a\n); @import 'http://evil.example/x.css'; y{content:\"z)\"}",
+		"a{background:url('data:a' ) } @import \"http://evil.example/x.css\"; b{background:url(http://evil.example/b)}",
+	} {
+		out, ok := safeCSS(in)
+		if !ok {
+			continue
+		}
+		lower := strings.ToLower(out)
+		if strings.Contains(lower, "url(http") || strings.Contains(lower, "@import") {
+			t.Errorf("remote load survived:\n in: %q\nout: %q", in, out)
 		}
 	}
 }

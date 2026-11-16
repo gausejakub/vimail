@@ -1,6 +1,7 @@
 package pgp_test
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -82,5 +83,34 @@ func TestMissingKeysAndAddressMatching(t *testing.T) {
 	// No gpg at all.
 	if _, err := (&pgp.Client{Bin: "/nonexistent/gpg"}).Sign([]byte("x"), "me@x.test"); err == nil {
 		t.Fatal("missing gpg binary not reported")
+	}
+}
+
+// A few kilobytes of ciphertext can decompress to gigabytes. The output is
+// bounded and nothing of such a message is returned.
+func TestDecryptRefusesDecompressionBomb(t *testing.T) {
+	c := pgptest.Keyring(t, "alice@example.com")
+	old := pgp.MaxOutput
+	pgp.MaxOutput = 1 << 20
+	defer func() { pgp.MaxOutput = old }()
+
+	cipher, err := c.Encrypt(make([]byte, 8<<20), []string{"alice@example.com"}, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cipher) > 1<<20 {
+		t.Fatalf("test needs a compressed ciphertext, got %d bytes", len(cipher))
+	}
+	plain, sig, err := c.Decrypt(cipher, "alice@example.com")
+	if !errors.Is(err, pgp.ErrTooLarge) || plain != nil || sig != nil {
+		t.Fatalf("Decrypt = %d bytes, %v, %v; want ErrTooLarge and nothing else", len(plain), sig, err)
+	}
+	// An ordinary message still decrypts.
+	small, err := c.Encrypt([]byte("hello"), []string{"alice@example.com"}, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain, _, err := c.Decrypt(small, "alice@example.com"); err != nil || string(plain) != "hello" {
+		t.Fatalf("Decrypt = %q, %v", plain, err)
 	}
 }

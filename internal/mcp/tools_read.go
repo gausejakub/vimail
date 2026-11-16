@@ -253,7 +253,7 @@ func header(m email.Message, includeFolder bool) messageHeader {
 		h.Unread = false
 	}
 	if includeFolder {
-		h.Folder = m.Folder
+		h.Folder = email.SanitizeLine(m.Folder)
 	}
 	return h
 }
@@ -323,6 +323,11 @@ func (s *Server) readCachedMessage(account, folder string, uid uint32) (readMess
 	if !bodyCached {
 		out.Note = "body not cached yet — use read_messages with fetch_missing=true or open it in the TUI"
 	}
+	// Bounded for every caller. A body can be tens of megabytes, far more
+	// than the reader sees in the preview (which shows the first 512 KB):
+	// text placed after that point would reach the client unseen by the
+	// user, and fill its context.
+	truncateBody(&out, maxBodyChars)
 	for _, attachment := range m.Attachments {
 		out.Attachments = append(out.Attachments, email.SanitizeLine(attachment.Filename))
 	}
@@ -334,7 +339,9 @@ func truncateBody(message *readMessageResult, maxChars int) {
 		return
 	}
 	runes := []rune(message.Body)
-	message.BodyChars = len(runes)
+	if !message.BodyTruncated { // else it already holds the full length
+		message.BodyChars = len(runes)
+	}
 	if len(runes) > maxChars {
 		message.Body = string(runes[:maxChars])
 		message.BodyTruncated = true
@@ -394,7 +401,7 @@ func (s *Server) registerReadTools() {
 					newCount, syncErr := s.coord.SyncAccountNow(account)
 					status := recentSyncResult{Account: account, NewMessages: newCount, DurationMs: time.Since(started).Milliseconds()}
 					if syncErr != nil {
-						status.Error = syncErr.Error()
+						status.Error = email.SanitizeLine(syncErr.Error())
 					}
 					out.Sync = append(out.Sync, status)
 				}
@@ -505,7 +512,7 @@ func (s *Server) registerReadTools() {
 		out := listFoldersResult{Account: acct}
 		for _, f := range s.store.FoldersFor(acct) {
 			out.Folders = append(out.Folders, folderInfo{
-				Name:   f.Name,
+				Name:   email.SanitizeLine(f.Name),
 				Unread: f.UnreadCount,
 				Total:  s.store.MessageCount(acct, f.Name),
 			})
@@ -590,12 +597,12 @@ func (s *Server) registerReadTools() {
 		for _, ref := range args.Messages {
 			account, err := s.resolveAccount(ref.Account)
 			if err != nil {
-				out.Errors = append(out.Errors, readMessageError{messageRef: ref, Error: err.Error()})
+				out.Errors = append(out.Errors, readMessageError{messageRef: ref, Error: email.SanitizeLine(err.Error())})
 				continue
 			}
 			message, err := s.readCachedMessage(account, ref.Folder, ref.UID)
 			if err != nil {
-				out.Errors = append(out.Errors, readMessageError{messageRef: ref, Error: err.Error()})
+				out.Errors = append(out.Errors, readMessageError{messageRef: ref, Error: email.SanitizeLine(err.Error())})
 				continue
 			}
 			if args.FetchMissing && !message.BodyCached {
@@ -603,12 +610,12 @@ func (s *Server) registerReadTools() {
 					message.Note = "body fetch unavailable: no coordinator configured"
 					out.Errors = append(out.Errors, readMessageError{messageRef: ref, Error: message.Note})
 				} else if _, fetchErr := s.coord.PeekBodyNow(account, ref.Folder, ref.UID); fetchErr != nil {
-					message.Note = "body fetch failed: " + fetchErr.Error()
-					out.Errors = append(out.Errors, readMessageError{messageRef: ref, Error: fetchErr.Error()})
+					message.Note = "body fetch failed: " + email.SanitizeLine(fetchErr.Error())
+					out.Errors = append(out.Errors, readMessageError{messageRef: ref, Error: email.SanitizeLine(fetchErr.Error())})
 				} else {
 					message, err = s.readCachedMessage(account, ref.Folder, ref.UID)
 					if err != nil {
-						out.Errors = append(out.Errors, readMessageError{messageRef: ref, Error: err.Error()})
+						out.Errors = append(out.Errors, readMessageError{messageRef: ref, Error: email.SanitizeLine(err.Error())})
 						continue
 					}
 				}

@@ -151,9 +151,9 @@ func (w *IMAPWorker) dial(withIDLE bool) (*imapclient.Client, error) {
 
 	switch tlsMode {
 	case "tls":
-		client, err = imapclient.DialTLS(addr, opts)
+		client, err = dialIMAP(addr, "tls", opts)
 	case "starttls":
-		client, err = imapclient.DialStartTLS(addr, opts)
+		client, err = dialIMAP(addr, "starttls", opts)
 	case "none":
 		// A bearer token grants full mailbox access and cannot be scoped to
 		// this server; never send one over an unencrypted connection.
@@ -161,9 +161,10 @@ func (w *IMAPWorker) dial(withIDLE bool) (*imapclient.Client, error) {
 			return nil, fmt.Errorf("refusing to send an OAuth2 token to %s without TLS (tls = \"none\")", addr)
 		}
 		log.Printf("WARNING: IMAP connecting to %s without TLS — credentials sent in plaintext", addr)
-		client, err = imapclient.DialInsecure(addr, opts)
+		client, err = dialIMAP(addr, "none", opts)
 	default:
-		client, err = imapclient.DialTLS(addr, opts)
+		// A typo must not pick a mode silently, in either direction.
+		return nil, fmt.Errorf("IMAP TLS mode %q not supported — use \"tls\", \"starttls\" or \"none\"", tlsMode)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("IMAP connect to %s: %w", addr, err)
@@ -453,6 +454,7 @@ func (w *IMAPWorker) VerifyFolder(folder string) (VerifyResult, error) {
 		if err := w.store.PurgeFolder(w.acct.Email, folder); err != nil {
 			return result, err
 		}
+		w.store.DropFolderOps(w.acct.Email, folder, ErrUIDValidityChanged.Error())
 		result.UIDValidityReset = true
 	}
 	_ = w.store.SetUIDValidity(w.acct.Email, folder, sel.UIDValidity)
@@ -484,7 +486,7 @@ func (w *IMAPWorker) VerifyFolder(folder string) (VerifyResult, error) {
 				if data == nil {
 					break
 				}
-				buf, collectErr := data.Collect()
+				buf, collectErr := collectHeader(data)
 				if collectErr != nil {
 					continue
 				}
@@ -571,7 +573,7 @@ func (w *IMAPWorker) VerifyFolder(folder string) (VerifyResult, error) {
 			if data == nil {
 				break
 			}
-			buf, collectErr := data.Collect()
+			buf, collectErr := collectHeader(data)
 			if collectErr != nil {
 				continue
 			}
@@ -606,11 +608,17 @@ func (w *IMAPWorker) syncFolder(folder string, full bool, onProgress ...func(fet
 	}
 
 	// Check UIDVALIDITY.
+	// A changed UIDVALIDITY means every UID now names a different message:
+	// the cached rows go, in a full sync too. Otherwise the new message at a
+	// UID would be shown with the body, attachments and signature verdict
+	// cached for the old one.
 	storedUV, _ := w.store.GetUIDValidity(w.acct.Email, folder)
+	if storedUV != 0 && storedUV != selData.UIDValidity {
+		w.store.PurgeFolder(w.acct.Email, folder)
+		// Operations queued against the old numbering must never replay.
+		w.store.DropFolderOps(w.acct.Email, folder, ErrUIDValidityChanged.Error())
+	}
 	if !full {
-		if storedUV != 0 && storedUV != selData.UIDValidity {
-			w.store.PurgeFolder(w.acct.Email, folder)
-		}
 		w.store.SetUIDValidity(w.acct.Email, folder, selData.UIDValidity)
 	}
 
@@ -648,7 +656,7 @@ func (w *IMAPWorker) syncFolder(folder string, full bool, onProgress ...func(fet
 			break
 		}
 
-		buf, err := msgData.Collect()
+		buf, err := collectHeader(msgData)
 		if err != nil {
 			log.Printf("collect fetch data: %v", err)
 			continue
@@ -735,7 +743,7 @@ func (w *IMAPWorker) FetchBody(folder string, uid uint32) (BodyResult, error) {
 				}
 				parsed, err := w.parseBody(data)
 				if err != nil {
-					result = BodyResult{Text: string(data)}
+					result = BodyResult{Text: email.SanitizeText(string(data))}
 				} else {
 					result = parsed
 				}
@@ -847,7 +855,7 @@ func (w *IMAPWorker) fetchBodyDirect(folder string, uid uint32, peek bool) (Body
 				}
 				parsed, err := w.parseBody(data)
 				if err != nil {
-					result = BodyResult{Text: string(data)}
+					result = BodyResult{Text: email.SanitizeText(string(data))}
 				} else {
 					result = parsed
 				}
@@ -892,7 +900,7 @@ func (w *IMAPWorker) fetchBodyDirect(folder string, uid uint32, peek bool) (Body
 								}
 								parsed, err := w.parseBody(data)
 								if err != nil {
-									result = BodyResult{Text: string(data)}
+									result = BodyResult{Text: email.SanitizeText(string(data))}
 								} else {
 									result = parsed
 								}
@@ -994,9 +1002,12 @@ func (w *IMAPWorker) setFlagBatch(folder string, uids []uint32, flag imap.Flag, 
 	defer cancel()
 
 	imapName := w.imapMailboxName(folder)
-	selCmd := w.client.Select(imapName, nil)
-	if _, err := selCmd.Wait(); err != nil {
+	selData, err := w.client.Select(imapName, nil).Wait()
+	if err != nil {
 		return fmt.Errorf("SELECT %s: %w", imapName, err)
+	}
+	if err := w.uidsCurrent(folder, selData.UIDValidity); err != nil {
+		return err
 	}
 
 	for i := 0; i < len(uids); i += imapUIDChunkSize {
@@ -1110,6 +1121,10 @@ func (w *IMAPWorker) AppendToFolder(folder string, message []byte, flags []imap.
 	if w.client == nil {
 		return fmt.Errorf("not connected")
 	}
+	// A server that stops answering must not hold opMu, and with it every
+	// operation of the account, forever.
+	cancel := w.opTimer(syncDeadline)
+	defer cancel()
 
 	imapName := w.imapMailboxName(folder)
 	size := int64(len(message))
@@ -1141,9 +1156,12 @@ func (w *IMAPWorker) MoveToTrash(folder string, uid uint32) error {
 	trashName := w.trashMailboxName()
 
 	// SELECT source folder.
-	selCmd := w.client.Select(imapName, nil)
-	if _, err := selCmd.Wait(); err != nil {
+	selData, err := w.client.Select(imapName, nil).Wait()
+	if err != nil {
 		return fmt.Errorf("SELECT %s: %w", imapName, err)
+	}
+	if err := w.uidsCurrent(folder, selData.UIDValidity); err != nil {
+		return err
 	}
 
 	var seqSet imap.UIDSet
@@ -1191,11 +1209,13 @@ func (w *IMAPWorker) MoveToTrashBatch(folder string, uids []uint32, onProgress f
 
 	// SELECT once for all chunks.
 	cancel := w.opTimer(w.commandDeadline)
-	selCmd := w.client.Select(imapName, nil)
-	_, err := selCmd.Wait()
+	selData, err := w.client.Select(imapName, nil).Wait()
 	cancel()
 	if err != nil {
 		return fmt.Errorf("SELECT %s: %w", imapName, err)
+	}
+	if err := w.uidsCurrent(folder, selData.UIDValidity); err != nil {
+		return err
 	}
 
 	for i := 0; i < len(uids); i += imapUIDChunkSize {
@@ -1271,9 +1291,12 @@ func (w *IMAPWorker) MoveToFolder(srcFolder string, uid uint32, dstFolder string
 	srcName := w.imapMailboxName(srcFolder)
 	dstName := w.imapMailboxName(dstFolder)
 
-	selCmd := w.client.Select(srcName, nil)
-	if _, err := selCmd.Wait(); err != nil {
+	selData, err := w.client.Select(srcName, nil).Wait()
+	if err != nil {
 		return fmt.Errorf("SELECT %s: %w", srcName, err)
+	}
+	if err := w.uidsCurrent(srcFolder, selData.UIDValidity); err != nil {
+		return err
 	}
 
 	var seqSet imap.UIDSet
@@ -1323,11 +1346,13 @@ func (w *IMAPWorker) MoveToFolderBatchWithUIDs(srcFolder string, uids []uint32, 
 	dstName := w.imapMailboxName(dstFolder)
 
 	cancel := w.opTimer(w.commandDeadline)
-	selCmd := w.client.Select(srcName, nil)
-	_, err := selCmd.Wait()
+	selData, err := w.client.Select(srcName, nil).Wait()
 	cancel()
 	if err != nil {
 		return nil, fmt.Errorf("SELECT %s: %w", srcName, err)
+	}
+	if err := w.uidsCurrent(srcFolder, selData.UIDValidity); err != nil {
+		return nil, err
 	}
 
 	moves := make([]UIDMove, 0, len(uids))
@@ -1466,8 +1491,56 @@ func (w *IMAPWorker) expunge(uids imap.UIDSet) error {
 		}
 		return nil
 	}
-	if err := w.client.Expunge().Close(); err != nil {
-		return fmt.Errorf("EXPUNGE: %w", err)
+	// No UID EXPUNGE on this server, and a plain EXPUNGE removes every
+	// message flagged \Deleted, also those another client flagged and left.
+	// Their flag is taken off for the EXPUNGE and put back afterwards; if
+	// putting it back fails they are simply no longer marked, never lost.
+	found, err := w.client.UIDSearch(&imap.SearchCriteria{Flag: []imap.Flag{imap.FlagDeleted}}, nil).Wait()
+	if err != nil {
+		return fmt.Errorf("UID SEARCH DELETED: %w", err)
+	}
+	var others imap.UIDSet
+	for _, uid := range found.AllUIDs() {
+		if !uids.Contains(uid) {
+			others.AddNum(uid)
+		}
+	}
+	deleted := &imap.StoreFlags{Op: imap.StoreFlagsDel, Silent: true, Flags: []imap.Flag{imap.FlagDeleted}}
+	if len(others) > 0 {
+		if err := w.client.Store(others, deleted, nil).Close(); err != nil {
+			return fmt.Errorf("protecting messages another client marked deleted: %w", err)
+		}
+	}
+	expungeErr := w.client.Expunge().Close()
+	if len(others) > 0 {
+		deleted.Op = imap.StoreFlagsAdd
+		if err := w.client.Store(others, deleted, nil).Close(); err != nil {
+			log.Printf("IMAP: could not restore the \\Deleted flag of other messages for %s: %v", w.acct.Email, err)
+		}
+	}
+	if expungeErr != nil {
+		return fmt.Errorf("EXPUNGE: %w", expungeErr)
 	}
 	return nil
+}
+
+// ErrUIDValidityChanged means a folder's UIDs were renumbered on the server
+// since the cache last saw it: the UIDs an operation carries no longer name
+// the messages the user chose.
+var ErrUIDValidityChanged = errors.New("the folder changed on the server (new UIDVALIDITY); the operation was not applied, sync and try again")
+
+// uidsCurrent checks, after a SELECT, that the UIDs about to be acted on
+// still mean what they meant in the cache. Every UID a write carries comes
+// from the cache, so the server's UIDVALIDITY must be the cached one. When
+// it is not (the folder was recreated, or the server rebuilt its index),
+// acting on the UIDs would delete, move or flag whichever other messages
+// hold those numbers now. Queued operations for the folder are dropped: no
+// retry can make their UIDs right again.
+func (w *IMAPWorker) uidsCurrent(folder string, serverValidity uint32) error {
+	stored, err := w.store.GetUIDValidity(w.acct.Email, folder)
+	if err != nil || stored == 0 || serverValidity == 0 || stored == serverValidity {
+		return nil
+	}
+	w.store.DropFolderOps(w.acct.Email, folder, ErrUIDValidityChanged.Error())
+	return ErrUIDValidityChanged
 }

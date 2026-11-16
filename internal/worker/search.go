@@ -71,7 +71,7 @@ func (w *IMAPWorker) FetchHeaders(folder string, uids []uint32) error {
 		if data == nil {
 			break
 		}
-		buf, err := data.Collect()
+		buf, err := collectHeader(data)
 		if err != nil || buf.UID == 0 {
 			continue
 		}

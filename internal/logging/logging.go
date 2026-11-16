@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -66,7 +67,17 @@ func Err(err error) Field {
 	if err == nil {
 		return Field{}
 	}
-	return Field{"error", err.Error()}
+	return Field{"error", RedactAddresses(err.Error())}
+}
+
+var addressRe = regexp.MustCompile(`[^\s<>"'(),;:@=]+@[^\s<>"'(),;:@=]+\.[^\s<>"'(),;:@=]+`)
+
+// RedactAddresses replaces email addresses in text with a placeholder. An
+// error from a mail server often quotes the address it refused ("550
+// <bob@example.com>: unknown user"); logs and the operation queue name
+// accounts in their own field and record no recipients.
+func RedactAddresses(s string) string {
+	return addressRe.ReplaceAllString(s, "[address]")
 }
 
 // Logger is the async structured logger.
@@ -126,6 +137,9 @@ func InitFile(logDir, fileName string, level Level) error {
 	if err != nil {
 		return err
 	}
+	// The mode above only applies to a new file; one left by an older version
+	// may be readable by others.
+	f.Chmod(0600)
 
 	l := &Logger{
 		ch:   make(chan Entry, chanSize),

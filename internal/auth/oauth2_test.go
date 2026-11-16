@@ -160,3 +160,45 @@ func TestResolvePersistsRotationAndClearsInvalidGrant(t *testing.T) {
 		t.Fatalf("invalid grant err=%v deleted=%v", err, deleted)
 	}
 }
+
+// Another local user sitting on the usual callback port must not block
+// sign-in: the flow moves to a free loopback port and says so.
+func TestGmailLoopbackFallsBackWhenThePortIsTaken(t *testing.T) {
+	oldEndpoint, oldListen, oldOpen, oldStore, oldOutput := gmailEndpoint, listenLoopback, openAuthURL, storeTokenPassword, setupOutput
+	t.Cleanup(func() {
+		gmailEndpoint, listenLoopback, openAuthURL, storeTokenPassword, setupOutput = oldEndpoint, oldListen, oldOpen, oldStore, oldOutput
+	})
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"access_token":"access","refresh_token":"refresh","token_type":"Bearer","expires_in":3600}`)
+	}))
+	defer tokenServer.Close()
+	gmailEndpoint = oauth2.Endpoint{AuthURL: "https://accounts.example/auth", TokenURL: tokenServer.URL}
+	var asked []string
+	listenLoopback = func(network, address string) (net.Listener, error) {
+		asked = append(asked, address)
+		if address == gmailLoopbackAddress {
+			return nil, errors.New("address already in use")
+		}
+		return net.Listen(network, address)
+	}
+	var output bytes.Buffer
+	setupOutput = &output
+	storeTokenPassword = func(key, value string) error { return nil }
+	openAuthURL = func(authURL string) error {
+		parsed, _ := url.Parse(authURL)
+		redirect := parsed.Query().Get("redirect_uri")
+		if !strings.HasPrefix(redirect, "http://127.0.0.1:") || strings.Contains(redirect, ":53682/") {
+			t.Errorf("redirect_uri = %q, want another loopback port", redirect)
+		}
+		go http.Get(redirect + "?state=" + url.QueryEscape(parsed.Query().Get("state")) + "&code=ok")
+		return nil
+	}
+	tok, err := (&OAuth2Resolver{}).RunAuthorizationCodeFlow(config.AccountConfig{Email: "alice@gmail.com", AuthMethod: "oauth2-gmail", OAuthClientID: "client"})
+	if err != nil || tok.AccessToken != "access" {
+		t.Fatalf("flow with the port taken: %+v, %v", tok, err)
+	}
+	if len(asked) != 2 || asked[1] != "127.0.0.1:0" || !strings.Contains(output.String(), "is in use") {
+		t.Fatalf("listened on %v; output %q", asked, output.String())
+	}
+}

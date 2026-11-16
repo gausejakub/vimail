@@ -1,7 +1,12 @@
 package mcp
 
 import (
+	"context"
+	"errors"
+
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/gausejakub/vimail/internal/email"
 )
 
 // Mail read through these tools is written by third parties. An AI client
@@ -28,9 +33,13 @@ var toolKinds = map[string]toolKind{
 	"list_recent_messages": toolRead, "list_operations": toolRead,
 	"read_message": toolRead, "read_messages": toolRead, "search_messages": toolRead, "read_draft": toolRead, "search_contacts": toolRead,
 	"sync": toolMaintenance, "verify": toolMaintenance,
-	"mark_read": toolWrite, "mark_unread": toolWrite, "mark_all_read": toolWrite,
-	"flag_message": toolWrite, "unflag_message": toolWrite, "move_message": toolWrite,
+	"mark_read": toolWrite, "mark_unread": toolWrite,
+	"flag_message": toolWrite, "unflag_message": toolWrite,
 	"restore_messages": toolWrite, "save_draft": toolWrite,
+	// move_message can put a message in Trash or Spam, which is a delete by
+	// another name; mark_all_read changes every message at once and cannot
+	// be undone. A client that asks before destructive calls must ask here.
+	"move_message": toolDestructive, "mark_all_read": toolDestructive,
 	"delete_message": toolDestructive, "delete_draft": toolDestructive,
 	"send_email": toolDestructive,
 }
@@ -73,5 +82,14 @@ func addTool[In, Out any](s *Server, t *sdk.Tool, h sdk.ToolHandlerFor[In, Out])
 	if returnsMail[t.Name] {
 		t.Description += untrustedNote
 	}
-	sdk.AddTool(s.srv, t, h)
+	// An error can quote a mail server's reply or a folder name: third-party
+	// text, cleaned like every other field before it reaches the client.
+	safe := func(ctx context.Context, req *sdk.CallToolRequest, in In) (*sdk.CallToolResult, Out, error) {
+		res, out, err := h(ctx, req, in)
+		if err != nil {
+			err = errors.New(email.SanitizeLine(err.Error()))
+		}
+		return res, out, err
+	}
+	sdk.AddTool(s.srv, t, safe)
 }

@@ -131,6 +131,11 @@ func (w *SMTPWorker) open() (*smtp.Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("SMTP connect to %s: %w", addr, err)
 	}
+	// net/smtp sets no deadlines: a server (or someone on the path, before
+	// TLS) that accepts the connection and then says nothing would hold the
+	// send forever, and the retry that follows could deliver it twice. The
+	// whole session ends before the queue hands the operation to a retry.
+	conn.SetDeadline(time.Now().Add(smtpSessionDeadline))
 
 	client, err := smtp.NewClient(conn, host)
 	if err != nil {
@@ -254,3 +259,8 @@ func recipientAddresses(to string) []string {
 	}
 	return out
 }
+
+// smtpSessionDeadline bounds one SMTP session, from greeting to QUIT. It is
+// shorter than the queue's lease on a send (10 minutes), so a stalled attempt
+// has ended before the same message is tried again.
+const smtpSessionDeadline = 8 * time.Minute

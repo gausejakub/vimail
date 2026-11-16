@@ -3,6 +3,7 @@ package email
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"golang.org/x/net/html"
 )
@@ -50,12 +51,20 @@ func FuzzBrowserSafeHTML(f *testing.F) {
 		if err != nil {
 			return
 		}
+		// The file is read as UTF-8 whatever the message declared, and holds
+		// none of the bytes an encoding switch is made of.
+		if !utf8.ValidString(out) || strings.ContainsAny(out, "\x1b\x00\x7f") {
+			t.Fatalf("control bytes or invalid UTF-8 in the rebuilt document\nin:  %q\nout: %q", s, out)
+		}
+		if i := strings.Index(out, `<meta charset="utf-8"/>`); i < 0 || i > strings.Index(out, "Content-Security-Policy") {
+			t.Fatalf("UTF-8 is not declared first\nin:  %q\nout: %q", s, out)
+		}
 		for _, scripting := range []bool{false, true} {
 			doc, err := html.ParseWithOptions(strings.NewReader(out), html.ParseOptionEnableScripting(scripting))
 			if err != nil {
 				t.Fatalf("rebuilt document does not parse: %v", err)
 			}
-			policies := 0
+			policies, charsets := 0, 0
 			var walk func(n *html.Node)
 			walk = func(n *html.Node) {
 				if n.Type == html.ElementNode {
@@ -65,6 +74,11 @@ func FuzzBrowserSafeHTML(f *testing.F) {
 							if strings.EqualFold(a.Key, "http-equiv") && a.Val == "Content-Security-Policy" {
 								isPolicy = true
 								policies++
+							}
+							// vimail's own declaration, and only that one.
+							if len(n.Attr) == 1 && a.Key == "charset" && a.Val == "utf-8" {
+								isPolicy = true
+								charsets++
 							}
 						}
 					}
@@ -82,6 +96,9 @@ func FuzzBrowserSafeHTML(f *testing.F) {
 				}
 			}
 			walk(doc)
+			if charsets != 1 {
+				t.Fatalf("%d charset declarations (scripting=%v) in %q", charsets, scripting, out)
+			}
 			if policies < 1 {
 				t.Fatalf("policy missing (scripting=%v) in %q", scripting, out)
 			}

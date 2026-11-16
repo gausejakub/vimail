@@ -529,3 +529,38 @@ func TestSaveDraftSignAndEncrypt(t *testing.T) {
 		t.Fatalf("read_draft: %+v", read)
 	}
 }
+
+// A draft the user wrote, or edited after an MCP client saved it, cannot be
+// rewritten over MCP: recipients and text must not change behind their back.
+func TestSaveDraftCannotOverwriteTheUsersDraft(t *testing.T) {
+	store := seededStore(t)
+	session := connect(t, store)
+
+	// Written in the composer.
+	mine := email.Draft{ID: "draft-mine", Account: testAcct, To: []string{"bob@example.com"}, Subject: "mine", Body: "my text", Date: time.Now()}
+	if err := store.SaveDraft(testAcct, mine); err != nil {
+		t.Fatal(err)
+	}
+	if msg := errText(t, session, "save_draft", map[string]any{"id": "draft-mine", "to": "mallory@evil.test"}); !strings.Contains(msg, "cannot be changed over MCP") {
+		t.Fatalf("overwriting the user's draft: %q", msg)
+	}
+	if d, _ := store.Draft(testAcct, "draft-mine"); len(d.To) != 1 || d.To[0] != "bob@example.com" || d.Body != "my text" {
+		t.Fatalf("the user's draft changed: %+v", d)
+	}
+
+	// Written over MCP: can be updated over MCP, until the user saves it.
+	var created saveDraftResult
+	call(t, session, "save_draft", map[string]any{"to": "bob@example.com", "subject": "s", "body": "v1"}, &created)
+	call(t, session, "save_draft", map[string]any{"id": created.ID, "body": "v2"}, &created)
+	d, _ := store.Draft(testAcct, created.ID)
+	if !d.ByAgent || d.Body != "v2" {
+		t.Fatalf("MCP draft: %+v", d)
+	}
+	d.ByAgent = false // what saving from the composer does
+	if err := store.SaveDraft(testAcct, d); err != nil {
+		t.Fatal(err)
+	}
+	if msg := errText(t, session, "save_draft", map[string]any{"id": created.ID, "bcc": []string{"mallory@evil.test"}}); !strings.Contains(msg, "cannot be changed over MCP") {
+		t.Fatalf("overwriting a draft the user edited: %q", msg)
+	}
+}

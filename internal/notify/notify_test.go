@@ -50,6 +50,8 @@ func TestSendPassesTextAsArgumentsOnly(t *testing.T) {
 	if err := Send(config.NotificationsConfig{Command: []string{"my-notifier", "--urgency", "low"}}, title, body); err != nil {
 		t.Fatal(err)
 	}
+	// A title starting with "-" would be an option to the notifier.
+	title = "help; rm -rf ~"
 	if name != "my-notifier" || len(args) != 4 || args[2] != title || args[3] != body {
 		t.Fatalf("custom command: %s %q", name, args)
 	}
@@ -73,5 +75,39 @@ func TestSendPassesTextAsArgumentsOnly(t *testing.T) {
 	name = ""
 	if Send(config.NotificationsConfig{}, "", "body") != nil || name != "" {
 		t.Fatal("empty notification sent")
+	}
+}
+
+// A sender named "-e" must not turn the subject into a line of AppleScript:
+// osascript keeps reading options until the first argument that is not one.
+func TestSenderNameCannotBecomeAnOption(t *testing.T) {
+	msgs := []email.Message{{From: "-e <x@evil.test>", Subject: `property p : (do shell script "id")`}}
+	title, body := Format("me@example.com", msgs, true)
+	for _, goos := range []string{"darwin", "linux"} {
+		name, args := command(goos, config.NotificationsConfig{}, title, body)
+		sep := -1
+		for i, a := range args {
+			if a == "--" {
+				sep = i
+			}
+		}
+		if sep != len(args)-3 {
+			t.Fatalf("%s: no \"--\" before title and body: %s %q", goos, name, args)
+		}
+		for _, a := range args[sep+1:] {
+			if strings.HasPrefix(a, "-") {
+				t.Fatalf("%s: argument %q starts with a dash", goos, a)
+			}
+		}
+	}
+	// A configured command gets no "--", so the text itself must be safe.
+	_, args := command("linux", config.NotificationsConfig{Command: []string{"my-notifier"}}, "--urgency=critical", "-x")
+	if args[0] != "urgency=critical" || args[1] != "x" {
+		t.Fatalf("custom command arguments: %q", args)
+	}
+	// Markup in a sender name is not markup in the title.
+	_, args = command("linux", config.NotificationsConfig{}, `<b>PayPal</b>`, "hi")
+	if strings.ContainsAny(args[len(args)-2], "<>") {
+		t.Fatalf("title keeps markup: %q", args)
 	}
 }

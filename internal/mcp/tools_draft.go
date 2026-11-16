@@ -199,6 +199,7 @@ func (s *Server) registerSaveDraft() {
 		if err != nil {
 			return nil, saveDraftResult{}, err
 		}
+		d.ByAgent = true
 		if err := s.store.SaveDraft(acct, d); err != nil {
 			return nil, saveDraftResult{}, err
 		}
@@ -208,7 +209,7 @@ func (s *Server) registerSaveDraft() {
 		} else {
 			s.resolveCreds()
 			if err := s.coord.FlushDraftOpsNow(acct); err != nil {
-				out.ServerSyncError = err.Error()
+				out.ServerSyncError = email.SanitizeLine(err.Error())
 			}
 		}
 		saved, _ := s.store.Draft(acct, d.ID)
@@ -250,6 +251,13 @@ func (s *Server) buildDraft(acct string, args saveDraftArgs) (email.Draft, error
 		existing, ok := s.store.Draft(acct, args.ID)
 		if !ok {
 			return d, fmt.Errorf("draft %q not found for %s", args.ID, acct)
+		}
+		// Only drafts whose current version came through MCP. A draft the
+		// user wrote, or edited after an MCP client saved it, is theirs: a
+		// client steered by a message it read could otherwise change its
+		// recipients or text without anything on screen saying so.
+		if !existing.ByAgent {
+			return d, fmt.Errorf("draft %q was written or edited in vimail and cannot be changed over MCP; save a new draft instead (omit id)", args.ID)
 		}
 		d = existing
 	} else {

@@ -936,6 +936,28 @@ var dangerousExts = map[string]bool{
 	".php": true, ".html": true, ".htm": true, ".svg": true, ".jnlp": true,
 	".reg": true, ".vbe": true, ".jse": true, ".cpl": true, ".dll": true,
 	".xlam": true, ".dotm": true, ".one": true, ".zsh": true, ".fish": true,
+	// Windows: shell and search files that fetch from a remote host when a
+	// folder merely lists them, scripts, installers, disk images, add-ins.
+	".scf": true, ".library-ms": true, ".search-ms": true, ".searchconnector-ms": true,
+	".msc": true, ".chm": true, ".hlp": true, ".vhd": true, ".vhdx": true, ".cab": true,
+	".xll": true, ".wsh": true, ".wsc": true, ".ws": true, ".sct": true, ".vb": true,
+	".msp": true, ".mst": true, ".msu": true, ".inf": true, ".ocx": true, ".sys": true,
+	".settingcontent-ms": true, ".appref-ms": true, ".application": true, ".gadget": true,
+	".diagcab": true, ".msix": true, ".msixbundle": true, ".appx": true, ".appxbundle": true,
+	".appinstaller": true, ".theme": true, ".themepack": true, ".website": true,
+	".psm1": true, ".psd1": true, ".ps1xml": true, ".iqy": true, ".slk": true,
+	".ppam": true, ".xlsb": true, ".xltm": true, ".potm": true, ".ppsm": true, ".sldm": true,
+	".mht": true, ".mhtml": true, ".xhtml": true, ".xht": true, ".shtml": true, ".xsl": true,
+	// macOS and Linux.
+	".fileloc": true, ".inetloc": true, ".mobileconfig": true, ".tool": true, ".prefpane": true,
+	".service": true, ".ksh": true, ".csh": true, ".lua": true, ".elf": true, ".bin": true,
+	".so": true, ".dylib": true, ".apk": true, ".ipa": true, ".flatpakref": true, ".snap": true,
+}
+
+var windowsDeviceNames = map[string]bool{
+	"CON": true, "PRN": true, "AUX": true, "NUL": true, "CONIN$": true, "CONOUT$": true,
+	"COM1": true, "COM2": true, "COM3": true, "COM4": true, "COM5": true, "COM6": true, "COM7": true, "COM8": true, "COM9": true,
+	"LPT1": true, "LPT2": true, "LPT3": true, "LPT4": true, "LPT5": true, "LPT6": true, "LPT7": true, "LPT8": true, "LPT9": true,
 }
 
 // safeFilename reduces an attacker-supplied attachment name to a plain file
@@ -952,6 +974,11 @@ func safeFilename(name string) string {
 	name = strings.NewReplacer(":", "_", "*", "_", "?", "_", "\"", "_", "<", "_", ">", "_", "|", "_").Replace(name)
 	name = strings.TrimLeft(strings.TrimSpace(name), ".")
 	name = strings.TrimRight(name, ". ")
+	// Device names on Windows, with any extension ("CON.txt"): opening one
+	// reaches the device, not a file.
+	if stem, _, _ := strings.Cut(name, "."); windowsDeviceNames[strings.ToUpper(strings.TrimSpace(stem))] {
+		name = "_" + name
+	}
 	if runes := []rune(name); len(runes) > 200 {
 		ext := filepath.Ext(name)
 		if len([]rune(ext)) > 20 {
@@ -982,6 +1009,11 @@ func writeNewFile(path string, data []byte) (string, error) {
 			if werr != nil {
 				os.Remove(candidate)
 				return "", werr
+			}
+			// Best effort: a file system without the marker (FAT, a network
+			// share) must not fail the save.
+			if err := markFromInternet(candidate); err != nil {
+				logging.Warn("save", "could not mark the file as downloaded", logging.Err(err))
 			}
 			return candidate, nil
 		}

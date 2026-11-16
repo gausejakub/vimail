@@ -263,6 +263,8 @@ func migrateFullHeaders(db *sql.DB) {
 		// OpenPGP: sign and/or encrypt when the draft is sent.
 		`pgp_sign BOOLEAN NOT NULL DEFAULT 0`,
 		`pgp_encrypt BOOLEAN NOT NULL DEFAULT 0`,
+		// The current version was written by an MCP client, not the user.
+		`by_agent BOOLEAN NOT NULL DEFAULT 0`,
 	} {
 		db.Exec(`ALTER TABLE drafts ADD COLUMN ` + col)
 	}

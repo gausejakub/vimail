@@ -70,7 +70,7 @@ jobs:
 
       - name: govulncheck
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0 # pinned: the scanner is code that runs here too
           govulncheck ./...
 
       - name: govulncheck vimtea

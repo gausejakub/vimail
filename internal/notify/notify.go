@@ -96,23 +96,48 @@ func Send(cfg config.NotificationsConfig, title, body string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	name, args := command(runtime.GOOS, cfg, title, body)
+	return run(ctx, name, args...)
+}
+
+// command returns the notifier and its arguments for a platform.
+//
+// Title and body are a sender's name and subject. Neither may start with
+// "-": a notifier reads such an argument as an option, and osascript reads
+// the argument after a "-e" as a line of AppleScript, so a sender named "-e"
+// would have had its subject run as a script. The leading dashes are removed
+// for every notifier (a configured command cannot be given a "--" it may not
+// understand), and the built-in ones get "--" as well.
+func command(goos string, cfg config.NotificationsConfig, title, body string) (string, []string) {
+	title, body = plainArgument(title), plainArgument(body)
 	if len(cfg.Command) > 0 {
-		args := append(append([]string{}, cfg.Command[1:]...), title, body)
-		return run(ctx, cfg.Command[0], args...)
+		return cfg.Command[0], append(append([]string{}, cfg.Command[1:]...), title, body)
 	}
-	switch runtime.GOOS {
+	switch goos {
 	case "darwin":
 		// Title and body are passed as arguments to the script, not pasted
 		// into it, so their content cannot become AppleScript.
-		return run(ctx, "osascript",
+		return "osascript", []string{
 			"-e", "on run argv",
 			"-e", "display notification (item 2 of argv) with title (item 1 of argv)",
 			"-e", "end run",
-			title, body)
+			"--", title, body}
 	default:
 		// Notification servers render a small HTML subset in the body; the
-		// body is escaped so a subject cannot add markup or links. "--"
-		// keeps a title starting with "-" from being read as an option.
-		return run(ctx, "notify-send", "--app-name=vimail", "--icon=mail-unread", "--", title, html.EscapeString(body))
+		// body is escaped so a subject cannot add markup or links. The
+		// title is plain text by the specification, but some servers
+		// render markup there too, so its angle brackets are replaced
+		// rather than escaped (an escape would show literally elsewhere).
+		title = strings.NewReplacer("<", "‹", ">", "›").Replace(title)
+		return "notify-send", []string{"--app-name=vimail", "--icon=mail-unread", "--", title, html.EscapeString(body)}
 	}
+}
+
+// plainArgument makes text safe to pass as a command-line argument that is
+// not an option: it never starts with "-".
+func plainArgument(s string) string {
+	if t := strings.TrimLeft(s, "- \t"); t != "" {
+		return t
+	}
+	return "(no text)"
 }

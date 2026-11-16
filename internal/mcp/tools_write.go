@@ -8,6 +8,7 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/gausejakub/vimail/internal/cache"
+	"github.com/gausejakub/vimail/internal/email"
 	"github.com/gausejakub/vimail/internal/logging"
 	"github.com/gausejakub/vimail/internal/worker"
 )
@@ -247,7 +248,7 @@ func (s *Server) registerWriteTools() {
 			out.Note = "marked read in cache and on server"
 		}
 		if delivery.Err != nil {
-			out.Error = delivery.Err.Error()
+			out.Error = email.SanitizeLine(delivery.Err.Error())
 		}
 		if len(uids) == 1 {
 			out.UID = uids[0]
@@ -307,7 +308,7 @@ func (s *Server) registerWriteTools() {
 					OperationID: delivery.OpID, ServerUpdated: delivery.Delivered, Queued: !delivery.Delivered,
 				}
 				if delivery.Err != nil {
-					item.Error = delivery.Err.Error()
+					item.Error = email.SanitizeLine(delivery.Err.Error())
 				}
 				out.Total += item.Count
 				if item.ServerUpdated {
@@ -349,7 +350,7 @@ func (s *Server) registerWriteTools() {
 				out.Note = "updated in cache and on server"
 			}
 			if result.Err != nil {
-				out.Error = result.Err.Error()
+				out.Error = email.SanitizeLine(result.Err.Error())
 			}
 			return nil, out, nil
 		})
@@ -388,7 +389,7 @@ func (s *Server) registerWriteTools() {
 			out.Note = "moved in cache and on server. uids are source-folder UIDs — list the destination folder for new UIDs"
 		}
 		if result.Err != nil {
-			out.Error = result.Err.Error()
+			out.Error = email.SanitizeLine(result.Err.Error())
 		}
 		return nil, out, nil
 	})
@@ -478,12 +479,12 @@ func (s *Server) registerWriteTools() {
 		case restore.Delivered:
 			out.Note = "restored on server; cache refresh needs attention"
 			if restore.Err != nil {
-				out.Note += ": " + restore.Err.Error()
+				out.Note += ": " + email.SanitizeLine(restore.Err.Error())
 			}
 		default:
 			out.Note = "restore queued for retry; messages remain visible in Trash until server delivery"
 			if restore.Err != nil {
-				out.Note += ": " + restore.Err.Error()
+				out.Note += ": " + email.SanitizeLine(restore.Err.Error())
 			}
 		}
 		logging.Info("mcp", "restore_messages", logging.Acct(acct), logging.Fld(destination), logging.KV("requested", len(uids)), logging.KV("delivered", restore.Count), logging.KV("queued", out.Queued))
@@ -557,7 +558,7 @@ func (s *Server) registerWriteTools() {
 		for _, result := range s.coord.VerifyFoldersNow(acct, folders, args.Full) {
 			item := verifyItem{Folder: result.Folder, Messages: result.Messages, StaleRemoved: result.StaleRemoved, MissingAdded: result.MissingAdded, FlagsCorrected: result.FlagsCorrected, QuickCheckOK: result.QuickCheckOK}
 			if result.Err != nil {
-				item.Error = result.Err.Error()
+				item.Error = email.SanitizeLine(result.Err.Error())
 			}
 			out.Results = append(out.Results, item)
 		}

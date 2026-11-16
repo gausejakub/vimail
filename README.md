@@ -204,6 +204,8 @@ A message with an invitation shows the event at the top of its text: title, time
 | `:tentative` | Maybe |
 | `:decline` | Declined |
 
+The answer is mailed to the organizer named in the invitation. If that is not the person who sent you the message, vimail says who it would go to and sends nothing; repeat the command with `!` (`:accept!`) to send it anyway.
+
 vimail sends the organizer a standard calendar reply from the address that was invited, and the status line says where the answer went. The organizer is whoever the invitation names; when that is not the sender of the message, the event block says so. Messages cached before this version show the event after their body is fetched again.
 
 ### OpenPGP (signing and encryption)
@@ -355,7 +357,7 @@ oauth_client_secret = "your-desktop-client-secret"
 tls = "tls"
 ```
 
-Run `vimail setup`; vimail prints the authorization URL (so SSH/headless use still works), attempts to open it in a browser, receives the callback on `127.0.0.1:53682`, and stores tokens in the OS keyring. An unverified published app shows Google's warning screen; leaving it in Testing mode makes refresh tokens expire after seven days. App passwords remain the simplest alternative.
+Run `vimail setup`; vimail prints the authorization URL (so SSH/headless use still works), attempts to open it in a browser, receives the callback on `127.0.0.1:53682` (or another free loopback port when that one is taken), and stores tokens in the OS keyring. An unverified published app shows Google's warning screen; leaving it in Testing mode makes refresh tokens expire after seven days. App passwords remain the simplest alternative.
 
 ### Adding an Outlook / Microsoft 365 account
 
@@ -551,7 +553,7 @@ default = "claude"
 [[ai.agents]]
 name = "claude"
 cmd = "claude"
-args = ["--print", "-p", "{prompt}"]
+args = ["--tools", "", "--strict-mcp-config", "--print"]   # prompt on stdin, no tools
 
 [[ai.agents]]
 name = "ollama"
@@ -580,9 +582,11 @@ Each agent needs:
 |-------|-------------|
 | `name` | Identifier used with `:ai <name>` |
 | `cmd` | Binary name or path (must be in `$PATH`) |
-| `args` | Arguments passed to the binary. `{prompt}` is replaced with the full prompt |
+| `args` | Arguments passed to the binary. `{prompt}` is replaced with the full prompt; without it, the prompt is sent on stdin |
 
-The `{prompt}` placeholder is replaced with the system prompt (which includes To, Subject, and compose context) plus the editor body.
+The prompt is the system prompt (which includes To, Subject, and compose context) plus the editor body. Prefer stdin (no `{prompt}`) when the tool reads it: an argument is visible to other users of the machine in the process list, and Linux limits one argument to 128 KB, which a long quoted thread exceeds.
+
+The prompt contains text from mail you received. Your own text goes in one section; the quoted original, its attribution line and a forwarded message go in a separate one marked as untrusted. That marking is advice to the model, not a barrier, so give the agent nothing to misuse: the built-in `claude` agent runs with all tools and MCP servers switched off (`--tools "" --strict-mcp-config`). If you configure another agent CLI that can read files or run commands, switch those off in its `args` too. An agent that has not answered after three minutes is stopped.
 
 ### Usage examples
 
@@ -594,9 +598,9 @@ The `{prompt}` placeholder is replaced with the system prompt (which includes To
 
 ### Compatible CLI tools
 
-Any tool that accepts a prompt as an argument and prints the response to stdout will work:
+Any tool that takes a prompt on stdin or as an argument and prints the response to stdout will work:
 
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-cli) — `claude --print -p`
+- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-cli) — `claude --tools "" --strict-mcp-config --print` (prompt on stdin)
 - [Ollama](https://ollama.com) — `ollama run <model>`
 - [llm](https://github.com/simonw/llm) — `llm -m <model>`
 - [Gemini CLI](https://github.com/google-gemini/gemini-cli) — `gemini -p`
@@ -618,7 +622,7 @@ Any tool that accepts a prompt as an argument and prints the response to stdout 
 
 Reads (`list_accounts`, `list_folders`, `list_messages`, `read_message`, `search_messages`, `read_draft`, `search_contacts`) are served from the local cache; `search_contacts` resolves part of a name to an address the way the composer does; search results expose usable folder/UID handles and a `truncated` flag. Write tools include `mark_read`, `mark_unread`, `flag_message`, `unflag_message`, `move_message`, Trash-safe delete/restore, draft operations, and `verify`. For natural review tasks, `list_recent_messages` can sync and list a time window across every account in one call, excluding non-received folders and collapsing Gmail label copies; `read_messages` then opens the selected bodies as one batch and can fetch missing bodies without marking messages read.
 
-Drafts are full-fidelity, so a draft prepared by an AI client is a message you can review and send as is. `save_draft` takes `to`, `cc` and `bcc` as address lists (`to` also accepts one comma-separated string), a `from` identity, local file `attachments`, and either `reply_to_message` (`account`/`folder`/`uid`, with `reply_all` and `quote_original`) or `forward_message`. A reply gets `In-Reply-To` and `References` from the original, a `Re:` subject, recipients from Reply-To/From (plus To/Cc for reply-all, without your own addresses), and the identity the original was addressed to as From. Explicit fields override the computed ones; on update (`id`), omitted fields keep their value. The result, and `read_draft`, return every field, plus whether the server Drafts folder already holds this version (`server_sync`). `delete_draft` removes the server copy too. MCP never sends a draft: you open it in vimail and send it yourself.
+Drafts are full-fidelity, so a draft prepared by an AI client is a message you can review and send as is. `save_draft` takes `to`, `cc` and `bcc` as address lists (`to` also accepts one comma-separated string), a `from` identity, local file `attachments`, and either `reply_to_message` (`account`/`folder`/`uid`, with `reply_all` and `quote_original`) or `forward_message`. A reply gets `In-Reply-To` and `References` from the original, a `Re:` subject, recipients from Reply-To/From (plus To/Cc for reply-all, without your own addresses), and the identity the original was addressed to as From. Explicit fields override the computed ones; on update (`id`), omitted fields keep their value. The result, and `read_draft`, return every field, plus whether the server Drafts folder already holds this version (`server_sync`). `delete_draft` removes the server copy too. MCP never sends a draft: you open it in vimail and send it yourself. An MCP client can update (`id`) only drafts whose current version it saved; a draft you wrote, or edited afterwards in vimail, is refused. Opening a draft an AI client wrote says so.
 
 Read tools return `to`, `cc`, `reply_to` (and `bcc` for Sent and Drafts), `message_id`, `in_reply_to`, `references`, a `thread_id` (the root Message-ID of the conversation, for grouping), and `answered`. `list_accounts` lists each account's identities. Messages cached by an older vimail get these headers on the next sync (headers only, bodies are kept); until then `cc` and the threading fields may be empty for them.
 

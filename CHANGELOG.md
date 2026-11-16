@@ -12,9 +12,34 @@ every merged PR lands here in the same pass that merges it.
 
 ### Changed
 
+- The built-in `claude` AI agent now receives the prompt on stdin and runs with tools and MCP servers off (`--tools "" --strict-mcp-config --print`). An `[ai]` section in your config is not changed; see the README if yours still passes `{prompt}`. An agent that has not answered after three minutes is stopped. (#95)
+- `:accept`, `:tentative` and `:decline` send nothing when the invitation's organizer is not the sender of the message; they say who the answer would go to, and `:accept!` sends it. (#95)
+- An unknown `tls` value for IMAP is now an error, as it already was for SMTP, instead of silently meaning `tls`. (#95)
+- MCP: `move_message` and `mark_all_read` are annotated destructive; `read_message` returns at most 200,000 characters and sets `body_truncated`. (#95)
+
 ### Fixed
 
+- After `:ai` on a forward, the forwarded message is kept; it used to be replaced by the agent's text. A reply keeps its "On … wrote:" line. (#95)
+- A folder whose `UIDVALIDITY` changed no longer shows the previous message's body, attachments and signature verdict under a new message after a full sync. (#95)
+
 ### Security
+
+- **Open in browser / export:** a message could run JavaScript in the browser. The rebuilt page kept the message's own charset declaration; with ISO-2022-JP a browser decoded the file differently from the sanitizer, the Content-Security-Policy vanished and an attribute value became an event handler. The page now declares UTF-8 itself, first, and carries no control bytes. (#95)
+- **Open in browser / export:** removing an `@import` from a `<style>` could join `</sty` and `le>` into an end tag, after which a meta refresh or any other markup was written out unchecked. Two smaller gaps in the CSS filter are closed as well. (#95)
+- **Notifications (macOS):** a sender named `-e` had its subject passed to `osascript` as a line of AppleScript. Title and body now follow `--` and never start with a dash, for every notifier; markup in a sender name is not markup in the title on Linux. (#95)
+- **OpenPGP:** an encrypted message of under 2 KB could decompress to hundreds of megabytes in memory. GnuPG output is bounded. Opening a message no longer lets gpg fetch keys from a server, and a message with two From headers has no sender a signature could vouch for. (#95)
+- **AI compose:** a forwarded message and the attribution line of a reply were given to the agent as your own instructions. They are now in the section marked untrusted. (#95)
+- **Queued deletes, moves and flags** could act on other messages after a folder was recreated or renumbered on the server. They are checked against the folder's `UIDVALIDITY` and dropped when it changed. Without `UID EXPUNGE`, deleting no longer purges messages another client had marked deleted. (#95)
+- **Saved attachments and exports** carry the Mark of the Web on Windows and the quarantine attribute on macOS. Windows device names (`CON.txt`) are renamed, and the warning for risky file types covers about 60 more extensions (`.scf`, `.library-ms`, `.chm`, `.vhd`, `.xll`, …). (#95)
+- **Hidden text:** zero-width characters, soft hyphens, blank fillers and stray variation selectors are removed when mail is cached and when it is returned over MCP; they were hidden in the preview but readable by an AI client. Emoji sequences and joining scripts keep the joiners they need. (#95)
+- **Network:** SMTP sessions and the save of the sent copy have deadlines; header fetches are size-bounded; `vimail setup add` warns, and defaults to No, for servers named only by DNS outside your domain. (#95)
+- **MCP:** error text quoting a mail server is sanitized; `send_email` bodies are sanitized like drafts. `save_draft` no longer changes a draft you wrote or edited (only drafts whose current version came over MCP), and `send_email` refuses a message already queued for retry instead of queueing a second copy. (#95)
+- **Composer:** a draft written by an AI client says so when opened, a recipient list longer than its field is shown from its start, and the number of recipients in To, Cc and Bcc is always in view. (#95)
+- **IMAP:** one response may be at most 1 GB; a server can no longer exhaust memory with an endless envelope string or folder list. (#95)
+- **Gmail sign-in** moves to another loopback port when 53682 is taken, so another local user cannot block it. (#95)
+- **Local:** email addresses in error text are replaced by a placeholder in logs and in the operation queue; an old log file is tightened to `0600`; vimail refuses to start, instead of generating a second key, when the keyring has lost the key of an encrypted cache. (#95)
+- The message list shows the real address when a display name is a different address. (#95)
+- Release workflow: tests run in a separate job without the publishing token; govulncheck is pinned. (#95)
 
 ## [0.18.1] - 2026-11-14
 

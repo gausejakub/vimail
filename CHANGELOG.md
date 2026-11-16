@@ -12,6 +12,14 @@ every merged PR lands here in the same pass that merges it.
 
 ### Changed
 
+### Fixed
+
+### Security
+
+## [0.19.0] - 2026-11-16
+
+### Changed
+
 - The built-in `claude` AI agent now receives the prompt on stdin and runs with tools and MCP servers off (`--tools "" --strict-mcp-config --print`). An `[ai]` section in your config is not changed; see the README if yours still passes `{prompt}`. An agent that has not answered after three minutes is stopped. (#95)
 - `:accept`, `:tentative` and `:decline` send nothing when the invitation's organizer is not the sender of the message; they say who the answer would go to, and `:accept!` sends it. (#95)
 - An unknown `tls` value for IMAP is now an error, as it already was for SMTP, instead of silently meaning `tls`. (#95)

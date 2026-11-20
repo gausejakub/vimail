@@ -477,6 +477,9 @@ Press `Enter` on a message, or focus the preview pane (`l` / `Tab`) and press `E
 | `:ai` | AI-assisted compose (default agent) |
 | `:ai <name>` | AI-assisted compose with a specific agent |
 | `:ops` / `:queue` | Show operation queue log |
+| `:mcp` | Show running MCP servers: transport, PID, uptime, connected clients, write/send policy |
+| `:mcp start [port]` | Serve MCP over HTTP from the TUI on 127.0.0.1 (default port 8737) |
+| `:mcp stop` | Stop the TUI's MCP server |
 | `:ps` / `:processes` | Show running background processes |
 | `:search <query>` / `:s <query>` | Search the cache across all accounts: subject, sender, To, Cc, Reply-To and downloaded bodies |
 | `:search-server <query>` / `:ss <query>` | The same, plus a search on the selected account's mail server, which also covers bodies that were never downloaded |
@@ -660,6 +663,17 @@ allow_write = true   # expose mark/flag/move/delete/restore/draft tools
 Leave `allow_send` off unless you need it, and be careful about combining vimail with tools that can reach the network (web fetch, other MCP servers) in the same AI session, since those are how read mail could be sent elsewhere.
 
 The MCP process logs to `~/.local/share/vimail/vimail-mcp.log`.
+
+### Serving MCP from the TUI
+
+`:mcp start` serves the same tools over Streamable HTTP from the running TUI, so a client connects by URL instead of spawning `vimail mcp`. It listens on loopback only (`[mcp] http_addr`, default `127.0.0.1:8737`; `:mcp start 9000` picks another port), and every request must carry the bearer token kept in `~/.local/share/vimail/mcp-token`. The `:mcp` view shows the command to add it to Claude Code:
+
+```sh
+claude mcp add --transport http vimail http://127.0.0.1:8737/mcp \
+  --header "Authorization: Bearer <token>"
+```
+
+The server stops with `:mcp stop` or when vimail quits. `:mcp` also lists the stdio servers AI clients started; each running server keeps a heartbeat file in `~/.local/share/vimail/mcp/`.
 
 ## Logs
 

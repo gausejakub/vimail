@@ -10,6 +10,8 @@ every merged PR lands here in the same pass that merges it.
 
 ### Added
 
+- `:mcp` shows the running MCP servers: stdio ones AI clients started and the TUI's own, with PID, uptime, connected clients and whether they can write or send. `:mcp start [port]` serves MCP over HTTP from the TUI (loopback only, bearer token in `~/.local/share/vimail/mcp-token`, `[mcp] http_addr`), and `:mcp stop` or quitting stops it. (#96)
+
 ### Changed
 
 ### Fixed

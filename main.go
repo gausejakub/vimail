@@ -304,7 +304,11 @@ func runTUI() {
 		p.Kill() // Tell bubbletea to exit.
 	}()
 
-	if _, err := p.Run(); err != nil {
+	final, err := p.Run()
+	if fm, ok := final.(tui.Model); ok {
+		fm.StopMCP()
+	}
+	if err != nil {
 		logging.Error("app", "bubbletea error", logging.Err(err))
 		fmt.Fprintf(os.Stderr, "vimail: %v\n", err)
 		os.Exit(1)

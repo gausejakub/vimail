@@ -330,11 +330,14 @@ func (w *IMAPWorker) IsConnected() bool {
 // Ping checks if the IMAP connection is alive by issuing a NOOP command.
 // Returns true if the connection is healthy.
 func (w *IMAPWorker) Ping() bool {
+	w.opMu.Lock()
+	defer w.opMu.Unlock()
+	// Checked under opMu: a concurrent Disconnect clears the client while
+	// holding it, so a check before locking could see a client that is gone
+	// by the time the lock is ours.
 	if w.client == nil {
 		return false
 	}
-	w.opMu.Lock()
-	defer w.opMu.Unlock()
 	cancel := w.opTimer(10 * time.Second)
 	defer cancel()
 

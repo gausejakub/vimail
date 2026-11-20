@@ -412,3 +412,27 @@ func TestMarkAllReadCoversMessagesMissingFromCache(t *testing.T) {
 		t.Fatalf("seen server messages = %d, want 2", seen)
 	}
 }
+
+// A Ping that waits for opMu while Disconnect holds it and clears the client
+// must not use the client it saw before locking (it used to panic on nil).
+func TestPingDuringDisconnectDoesNotPanic(t *testing.T) {
+	acct, creds, _ := newIMAPTestEndpoint(t)
+	w := NewIMAPWorker(acct, creds, testQueueStore(t))
+	if err := w.Connect(); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	client := w.client
+
+	w.opMu.Lock() // as Disconnect does while an op is in flight
+	result := make(chan bool, 1)
+	go func() { result <- w.Ping() }()
+	time.Sleep(50 * time.Millisecond) // let Ping get past any pre-lock check
+	client.Close()
+	w.client = nil
+	w.fetchClient = nil
+	w.opMu.Unlock()
+
+	if <-result {
+		t.Fatal("Ping reported a disconnected worker healthy")
+	}
+}

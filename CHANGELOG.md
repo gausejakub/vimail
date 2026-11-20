@@ -16,6 +16,12 @@ every merged PR lands here in the same pass that merges it.
 
 ### Security
 
+## [0.20.1] - 2026-11-20
+
+### Fixed
+
+- vimail no longer crashes when it checks an IMAP connection at the moment that connection is being closed (seen when marking messages read). (#97)
+
 ## [0.20.0] - 2026-11-20
 
 ### Added

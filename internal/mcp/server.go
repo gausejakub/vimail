@@ -8,7 +8,9 @@ package mcp
 
 import (
 	"context"
+	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -33,6 +35,10 @@ type Server struct {
 	// credsOnce lazily resolves account credentials on the first sync call,
 	// so starting the server never blocks on keyring access.
 	credsOnce sync.Once
+
+	// reg is this server's entry in the registry of running servers, which
+	// records the clients that connect; nil until it serves.
+	reg atomic.Pointer[Registration]
 }
 
 // New creates an MCP server with the read and write tool sets registered.
@@ -44,12 +50,15 @@ func New(cfg config.Config, store *cache.SQLiteStore, coord *worker.Coordinator)
 		cfg:   cfg,
 		store: store,
 		coord: coord,
-		srv: sdk.NewServer(&sdk.Implementation{
-			Name:    "vmail",
-			Title:   "vmail email client",
-			Version: version,
-		}, &sdk.ServerOptions{Instructions: serverInstructions}),
 	}
+	s.srv = sdk.NewServer(&sdk.Implementation{
+		Name:    "vmail",
+		Title:   "vmail email client",
+		Version: version,
+	}, &sdk.ServerOptions{
+		Instructions:       serverInstructions,
+		InitializedHandler: s.clientConnected,
+	})
 	s.registerReadTools()
 	s.registerWriteTools()
 	// Outbound mail is opt-in: without [mcp] allow_send = true the
@@ -69,7 +78,33 @@ func (s *Server) Run(ctx context.Context) error {
 	retryCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go s.retryPendingOps(retryCtx)
+	if reg, err := Register(RegistryDir(), s.instance("stdio", "")); err == nil {
+		s.reg.Store(reg)
+		defer reg.Close()
+	}
 	return s.srv.Run(ctx, &sdk.StdioTransport{})
+}
+
+func (s *Server) instance(transport, addr string) Instance {
+	return Instance{
+		PID:        os.Getpid(),
+		Transport:  transport,
+		Addr:       addr,
+		StartedAt:  time.Now(),
+		AllowWrite: s.cfg.MCP.AllowWrite,
+		AllowSend:  s.cfg.MCP.AllowSend,
+	}
+}
+
+// clientConnected records the name a client gave when it connected.
+func (s *Server) clientConnected(_ context.Context, req *sdk.InitializedRequest) {
+	name := "unknown client"
+	if req != nil && req.Session != nil {
+		if p := req.Session.InitializeParams(); p != nil && p.ClientInfo != nil && p.ClientInfo.Name != "" {
+			name = p.ClientInfo.Name
+		}
+	}
+	s.reg.Load().AddClient(name)
 }
 
 // retryPendingOps gives a standalone, long-running MCP process the same

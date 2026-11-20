@@ -16,6 +16,7 @@ import (
 	"github.com/gausejakub/vimail/internal/config"
 	"github.com/gausejakub/vimail/internal/email"
 	"github.com/gausejakub/vimail/internal/logging"
+	vmcp "github.com/gausejakub/vimail/internal/mcp"
 	"github.com/gausejakub/vimail/internal/theme"
 	"github.com/gausejakub/vimail/internal/tui/components/compose"
 	"github.com/gausejakub/vimail/internal/tui/components/help"
@@ -44,8 +45,12 @@ type Model struct {
 	showHelp      bool
 	showProcesses bool
 	showOps       bool
-	attPicker     attachmentPicker
-	layout        layout.SplitPaneLayout
+	showMCP       bool
+	mcpInstances  []vmcp.Instance
+	// mcpHTTP is the MCP server :mcp start runs inside this process.
+	mcpHTTP   *vmcp.HTTPServer
+	attPicker attachmentPicker
+	layout    layout.SplitPaneLayout
 
 	mailbox mailbox.Model
 	msglist msglist.Model
@@ -1012,6 +1017,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.showOps = true
 		return m, nil
 
+	case showMCPMsg:
+		m.mcpInstances = msg.instances
+		m.showMCP = true
+		return m, nil
+
+	case mcpStartedMsg:
+		if msg.err != nil {
+			return m, func() tea.Msg { return util.InfoMsg{Text: "MCP server: " + msg.err.Error(), IsError: true} }
+		}
+		m.mcpHTTP = msg.srv
+		return m, listMCPCmd()
+
+	case mcpStoppedMsg:
+		m.mcpHTTP = nil
+		m.showMCP = false
+		text, isErr := "MCP server stopped", false
+		if msg.err != nil {
+			text, isErr = "MCP server: "+msg.err.Error(), true
+		}
+		return m, func() tea.Msg { return util.InfoMsg{Text: text, IsError: isErr} }
+
 	case util.ToggleThreadsMsg:
 		m.msglist = m.msglist.SetThreaded(!m.msglist.Threaded())
 		text := "Conversations: off"
@@ -1105,6 +1131,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.showProcesses {
 			if msg.String() == "esc" || msg.String() == "q" {
 				m.showProcesses = false
+			}
+			return m, nil
+		}
+
+		// MCP overlay
+		if m.showMCP {
+			if msg.String() == "esc" || msg.String() == "q" {
+				m.showMCP = false
 			}
 			return m, nil
 		}
@@ -1767,6 +1801,9 @@ func (m Model) executeCommand(input string) tea.Cmd {
 	case "ops", "operations", "queue":
 		return func() tea.Msg { return showOpsMsg{} }
 
+	case "mcp":
+		return m.mcpCommand(parts[1:])
+
 	case "verify":
 		if m.coordinator == nil {
 			return func() tea.Msg { return util.InfoMsg{Text: "Verification requires a configured account", IsError: true} }
@@ -1913,6 +1950,10 @@ func (m Model) View() string {
 
 	if m.showOps {
 		screen = layout.PlaceOverlayCentered(m.opsView(), screen, m.width, m.height)
+	}
+
+	if m.showMCP {
+		screen = layout.PlaceOverlayCentered(m.mcpView(), screen, m.width, m.height)
 	}
 
 	if m.attPicker.visible {

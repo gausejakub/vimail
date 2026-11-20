@@ -165,6 +165,9 @@ type MCPConfig struct {
 	// which is then uploaded to the server's Drafts folder. "~" expands to
 	// the home directory.
 	AttachmentDirs []string `toml:"attachment_dirs"`
+	// HTTPAddr is the loopback address `:mcp start` serves on in the TUI
+	// (default 127.0.0.1:8737).
+	HTTPAddr string `toml:"http_addr"`
 }
 
 type Config struct {

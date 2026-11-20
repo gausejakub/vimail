@@ -54,6 +54,7 @@ var bindings = []binding{
 	{":search <query>", "Search messages"},
 	{":move <folder>", "Move selected message"},
 	{":verify [folder]", "Verify server/cache state"},
+	{":mcp [start|stop]", "Show running MCP servers; serve one over HTTP"},
 	{":quit", "Quit vimail"},
 }
 
